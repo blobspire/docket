@@ -58,6 +58,10 @@
       return;
     }
     if (e.target.closest("[data-help]")) return toggleHelp();
+    if (e.target.closest("[data-help-close]") || e.target.classList.contains("help")) {
+      $(".help").hidden = true;
+      return;
+    }
     if (e.target.closest("[data-collect]")) {
       fetch("/api/collect", { method: "POST", headers: { "X-Requested-With": "fetch" } }).then(() => toast("Collecting…"));
       return;

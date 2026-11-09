@@ -28,7 +28,8 @@
 {{define "foot"}}
 </main>
 <div class="help" hidden>
-  <div class="help-card">
+  <div class="help-card" role="dialog" aria-label="Keyboard shortcuts">
+    <button class="help-close" type="button" data-help-close aria-label="Close">×</button>
     <h2>Keyboard</h2>
     <dl>
       <dt>j / k</dt><dd>next / previous</dd>
@@ -45,7 +46,7 @@
       <dt>/</dt><dd>search</dd>
       <dt>g q · g c · g l · g e · g d · g h</dt><dd>queue · only-you · leads · evidence · done · health</dd>
     </dl>
-    <p class="muted">Press ? or Esc to close.</p>
+    <p class="muted">Press ? or Esc, or click outside, to close.</p>
   </div>
 </div>
 <div class="toast" hidden></div>

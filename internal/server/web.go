@@ -395,8 +395,16 @@ func (s *Server) act(w http.ResponseWriter, r *http.Request) {
 		a.Until = time.Date(t.Year(), t.Month(), t.Day(), 9, 0, 0, 0, t.Location())
 	case "week":
 		a.Until = time.Now().Add(7 * 24 * time.Hour)
-	default:
+	case "", "hour":
 		a.Until = time.Now().Add(time.Hour)
+	default:
+		// A specific local time, e.g. 2026-11-10T18:00.
+		t, err := time.ParseInLocation("2006-01-02T15:04", r.FormValue("until"), s.cfg.loc)
+		if err != nil || !t.After(time.Now()) {
+			http.Error(w, "until must be hour, tomorrow, week or a future YYYY-MM-DDTHH:MM", http.StatusBadRequest)
+			return
+		}
+		a.Until = t
 	}
 	err := s.Decide(id, a)
 	if r.Header.Get("X-Requested-With") == "fetch" {

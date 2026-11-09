@@ -8,6 +8,7 @@
   :root { --bg: #161513; --fg: #ece8e1; --muted: #a29b90; --line: #2f2c28; --card: #1e1c19; --sel: #2b2119; --badge: #2a2724; --warn-bg: #3a3016; }
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; } /* author display rules must never beat the hidden attribute */
 body { margin: 0; background: var(--bg); color: var(--fg); }
 a { color: inherit; }
 .top { display: flex; align-items: center; gap: 20px; padding: 10px 20px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); z-index: 2; }
@@ -69,7 +70,8 @@ th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line
 th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .3px; }
 tr.bad td { color: var(--bad); }
 .help { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: grid; place-items: center; z-index: 5; }
-.help-card { background: var(--card); border-radius: 12px; padding: 18px 24px; min-width: 300px; }
+.help-card { background: var(--card); border-radius: 12px; padding: 18px 24px; min-width: 300px; position: relative; }
+.help-close { position: absolute; top: 10px; right: 12px; border: none; background: none; font-size: 20px; color: var(--muted); }
 .help dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 18px; }
 .help dt { font-family: ui-monospace, Menlo, monospace; color: var(--accent); }
 .help dd { margin: 0; }
