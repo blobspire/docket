@@ -124,6 +124,10 @@ physical_keywords = ["robot", "arm"]
 	if err := e.s.Decide("dk-aaaaaaaa", Action{Kind: "approve"}); err == nil {
 		t.Fatal("approved a physical action remotely")
 	}
+	e.s.st.UpsertItem(store.Item{ID: "dk-ffffffff", Kind: "approval", Title: "Silence the disk alarm and fix the harmless warning", Machine: "box", SessionID: "s"})
+	if err := e.s.Decide("dk-ffffffff", Action{Kind: "approve"}); err != nil {
+		t.Fatalf("'alarm'/'harmless' were mistaken for 'arm': %v", err)
+	}
 	e.s.st.UpsertItem(store.Item{ID: "dk-bbbbbbbb", Kind: "ask", Title: "Skip the 34 cells?", Machine: "box", SessionID: "s", Options: []string{"skip", "keep"}})
 	if err := e.s.Decide("dk-bbbbbbbb", Action{Kind: "choose", Option: 0}); err != nil {
 		t.Fatalf("an ordinary decision on the same machine was refused: %v", err)

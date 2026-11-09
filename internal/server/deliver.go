@@ -115,9 +115,9 @@ func (s *Server) physical(it store.Item) bool {
 	if !ok {
 		return false
 	}
-	text := strings.ToLower(it.Title + " " + it.Body)
+	text := it.Title + " " + it.Body
 	for _, k := range m.Physical {
-		if k != "" && strings.Contains(text, strings.ToLower(k)) {
+		if k = strings.TrimSpace(k); k != "" && regexp.MustCompile(`(?i)(^|\W)`+regexp.QuoteMeta(k)+`($|\W)`).MatchString(text) {
 			return true
 		}
 	}
