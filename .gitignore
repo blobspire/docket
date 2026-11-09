@@ -1,0 +1,11 @@
+# build output
+/dist/
+/docket
+
+# local state and personal config never belong in the repo
+.docket/
+*.db
+*.db-*
+docket.toml
+!docs/examples/docket.example.toml
+.env

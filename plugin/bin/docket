@@ -1,0 +1,12 @@
+#!/bin/sh
+# Puts `docket` on the agent's PATH (Claude Code adds a plugin's bin/ to the
+# Bash tool's PATH) by running the installed docket binary.
+self=$(cd "$(dirname "$0")" && pwd)/docket
+for c in "$DOCKET_BIN" "$HOME/.local/bin/docket" /opt/homebrew/bin/docket /usr/local/bin/docket; do
+	if [ -n "$c" ] && [ -x "$c" ] && [ ! -d "$c" ] && [ "$c" != "$self" ]; then
+		exec "$c" "$@"
+	fi
+done
+echo "docket: the docket binary isn't installed on this machine (expected ~/.local/bin/docket)." >&2
+echo "Install it, or tell the user in chat what you needed to file." >&2
+exit 1

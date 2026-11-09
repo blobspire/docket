@@ -1,0 +1,23 @@
+#!/bin/sh
+# docket-hook: hands one Claude Code hook event to `docket hook <Event>`.
+#
+# It must never break or block the session, so it always exits 0. If the
+# docket binary isn't installed, it keeps the raw payload in the spool so the
+# event is not lost, and the server picks it up later.
+ev="${1:-unknown}"
+
+for c in "$DOCKET_BIN" "$HOME/.local/bin/docket" /opt/homebrew/bin/docket /usr/local/bin/docket; do
+	if [ -n "$c" ] && [ -x "$c" ] && [ ! -d "$c" ]; then
+		"$c" hook "$ev"
+		exit 0
+	fi
+done
+
+# Fallback: append {"v":0,"ts":...,"event":...,"raw":<payload>} as one line.
+d="${DOCKET_HOME:-$HOME/.docket}/spool"
+mkdir -p "$d" 2>/dev/null || exit 0
+p=$(cat | tr -d '\n\r')
+[ -n "$p" ] || p=null
+printf '{"v":0,"ts":"%s","event":"%s","raw":%s}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ev" "$p" \
+	>>"$d/seg-$(date -u +%Y%m%d%H).jsonl" 2>/dev/null
+exit 0

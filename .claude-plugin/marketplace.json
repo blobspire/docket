@@ -1,0 +1,14 @@
+{
+  "name": "docket",
+  "owner": {
+    "name": "Cole Wendrowski"
+  },
+  "description": "docket: one queue for everything your agents need from you.",
+  "plugins": [
+    {
+      "name": "docket",
+      "source": "./plugin",
+      "description": "Captures what your agents need from you for one prioritized queue."
+    }
+  ]
+}

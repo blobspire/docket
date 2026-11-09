@@ -1,0 +1,11 @@
+{
+  "name": "docket",
+  "displayName": "docket",
+  "version": "0.0.1",
+  "description": "Captures what your agents need from you (approvals they're holding, blockers, permission prompts, reviews, human-only tasks) for one prioritized queue.",
+  "author": { "name": "Cole Wendrowski" },
+  "repository": "https://github.com/blobspire/docket",
+  "homepage": "https://github.com/blobspire/docket",
+  "license": "MIT",
+  "keywords": ["agents", "queue", "notifications", "hooks", "approvals"]
+}
