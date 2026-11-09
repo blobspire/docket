@@ -71,6 +71,9 @@ func localRun(stdin io.Reader, args ...string) ([]byte, error) {
 			live = []sessions.Live{}
 		}
 		return json.Marshal(live)
+	case "rules":
+		body, _ := io.ReadAll(io.LimitReader(stdin, 256<<10))
+		return nil, writeRules(body)
 	case "quota":
 		q, ok := usage.Read()
 		if !ok {
@@ -120,3 +123,19 @@ func localRun(stdin io.Reader, args ...string) ([]byte, error) {
 	}
 	return nil, fmt.Errorf("unsupported local command %v", args)
 }
+
+// writeRules stores the approved preferences docket's CLAUDE.md block imports.
+func writeRules(body []byte) error {
+	if err := os.MkdirAll(config.Home(), 0o700); err != nil {
+		return err
+	}
+	p := filepath.Join(config.Home(), "rules.md")
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, body, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, p)
+}
+
+// WriteRules is writeRules for the CLI.
+func WriteRules(body []byte) error { return writeRules(body) }

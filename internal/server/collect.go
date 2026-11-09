@@ -261,6 +261,7 @@ type SyncReply struct {
 	Cursor     string             `json:"cursor"`
 	Deliveries []mailbox.Delivery `json:"deliveries"`
 	WantBlobs  []string           `json:"want_blobs"`
+	Rules      *string            `json:"rules,omitempty"` // new ~/.docket/rules.md, when it changed
 }
 
 // Receive ingests a push machine's export (read from r) and its session
@@ -301,6 +302,11 @@ func (s *Server) Receive(machine string, r io.Reader, sessionsJSON []byte) (Sync
 		}
 	}
 	reply.WantBlobs, _ = s.st.MissingBlobs(machine)
+	if v := s.st.Get("rules:version"); v != "" && s.st.Get("rules:sent:"+machine) != v {
+		md := s.RulesMarkdown()
+		reply.Rules = &md
+		s.st.Set("rules:sent:"+machine, v)
+	}
 	s.st.Bump()
 	return reply, nil
 }

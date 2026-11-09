@@ -83,6 +83,8 @@ func kindName(k string) string {
 		return "approval"
 	case "blocker":
 		return "waiting"
+	case "rule":
+		return "rule"
 	}
 	return k
 }
@@ -98,6 +100,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /evidence", s.pageEvidence)
 	mux.HandleFunc("GET /checklist", s.pageChecklist)
 	mux.HandleFunc("GET /leads", s.pageLeads)
+	mux.HandleFunc("GET /brain", s.pageBrain)
+	mux.HandleFunc("POST /brain/propose", s.proposeNow)
+	mux.HandleFunc("POST /rule/{id}/retire", s.retireRule)
 	mux.HandleFunc("POST /lead/{name}/wake", s.wakeLead)
 	mux.HandleFunc("GET /health", s.pageHealth)
 	mux.HandleFunc("GET /blob/{sha}", s.blob)
@@ -149,31 +154,33 @@ func (s *Server) guard(next http.Handler) http.Handler {
 }
 
 type page struct {
-	Title    string
-	Nav      string
-	Person   string
-	Brief    string
-	BriefDay string
-	Now      []Ranked
-	Maybe    []Ranked
-	Snoozed  []Ranked
-	Closed   []store.Item
-	Item     *store.Item
-	Session  *store.Session
-	Evidence []store.Evidence
-	Delivery []store.Delivery
-	Physical bool
-	Machines []machineRow
-	Sessions []store.Session
-	Error    string
-	Version  string
-	Query    string
-	Gallery  []store.EvidenceRow
-	Tasks    []store.Item
-	Leads    []leadRow
-	Jobs     []store.Job
-	Quotas   []store.Quota
-	Spend    []Spend
+	Title       string
+	Nav         string
+	Person      string
+	Brief       string
+	BriefDay    string
+	Now         []Ranked
+	Maybe       []Ranked
+	Snoozed     []Ranked
+	Closed      []store.Item
+	Item        *store.Item
+	Session     *store.Session
+	Evidence    []store.Evidence
+	Delivery    []store.Delivery
+	Physical    bool
+	Machines    []machineRow
+	Sessions    []store.Session
+	Error       string
+	Version     string
+	Query       string
+	Gallery     []store.EvidenceRow
+	Tasks       []store.Item
+	Leads       []leadRow
+	Jobs        []store.Job
+	Quotas      []store.Quota
+	Spend       []Spend
+	Rules       []store.Rule
+	Corrections []store.Decision
 }
 
 type leadRow struct {
@@ -302,6 +309,48 @@ func (s *Server) wakeLead(w http.ResponseWriter, r *http.Request) {
 		back += "?err=" + url.QueryEscape(err.Error())
 	}
 	http.Redirect(w, r, back, http.StatusSeeOther)
+}
+
+func (s *Server) pageBrain(w http.ResponseWriter, r *http.Request) {
+	rules, _ := s.st.Rules("approved")
+	proposed, _ := s.st.Items("open")
+	var rs []store.Item
+	for _, it := range proposed {
+		if it.Kind == "rule" {
+			rs = append(rs, it)
+		}
+	}
+	ds, _ := s.st.DecisionsSince(time.Now().AddDate(0, 0, -14).Unix(), 500)
+	var corr []store.Decision
+	for i := len(ds) - 1; i >= 0; i-- {
+		if ds[i].Action == "correction" {
+			corr = append(corr, ds[i])
+		}
+	}
+	msg := r.URL.Query().Get("err")
+	if m := r.URL.Query().Get("msg"); m != "" {
+		msg = m
+	}
+	s.render(w, "brain.html", page{Title: "Brain", Nav: "brain", Rules: rules, Closed: rs, Corrections: corr, Error: msg})
+}
+
+func (s *Server) proposeNow(w http.ResponseWriter, r *http.Request) {
+	n, err := s.ProposeRules(r.Context())
+	q := "?msg=" + url.QueryEscape(strconv.Itoa(n)+" rule(s) proposed")
+	if err != nil {
+		q = "?err=" + url.QueryEscape(err.Error())
+	} else if n == 0 {
+		q = "?msg=" + url.QueryEscape("Nothing new to propose yet.")
+	}
+	http.Redirect(w, r, "/brain"+q, http.StatusSeeOther)
+}
+
+func (s *Server) retireRule(w http.ResponseWriter, r *http.Request) {
+	q := ""
+	if err := s.RetireRule(r.PathValue("id")); err != nil {
+		q = "?err=" + url.QueryEscape(err.Error())
+	}
+	http.Redirect(w, r, "/brain"+q, http.StatusSeeOther)
 }
 
 func (s *Server) pageHealth(w http.ResponseWriter, r *http.Request) {

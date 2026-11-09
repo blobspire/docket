@@ -325,3 +325,38 @@ func Job(args []string, stdout io.Writer, getenv func(string) string) error {
 	}
 	return nil
 }
+
+// Add appends details or evidence to an item this agent filed earlier:
+//
+//	docket add dk-xxxxxxxx --why "the benchmark numbers" --evidence chart.png
+func Add(args []string, stdout io.Writer, getenv func(string) string) error {
+	pos, flags, err := parse(args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 || !strings.HasPrefix(pos[0], "dk-") {
+		return errors.New(`usage: docket add <dk-id> [--why "<more details>"] [--evidence <files>]`)
+	}
+	text := firstNonEmpty(flags["why"], flags["details"])
+	sp := spool.Spool{Dir: config.SpoolDir()}
+	var evs []record.Evidence
+	for _, p := range splitList(flags["evidence"]) {
+		e, err := storeEvidence(sp.Dir, p)
+		if err != nil {
+			return err
+		}
+		evs = append(evs, e)
+	}
+	if text == "" && len(evs) == 0 {
+		return errors.New("nothing to add: give --why and/or --evidence")
+	}
+	r := record.New("cli.add", getenv)
+	r.SessionID = sessionID(getenv)
+	r.Cwd, _ = os.Getwd()
+	r.Payload, _ = json.Marshal(map[string]any{"item_id": pos[0], "text": text, "evidence": evs})
+	if err := sp.Append(r); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "docket: added to %s.\n", pos[0])
+	return nil
+}

@@ -39,6 +39,7 @@ func Block(person string) string {
 - Work ready for their review: ` + "`docket review \"<what>\" --evidence <screenshot, video or report>`" + `
 - A problem you noticed and are not fixing now: ` + "`docket issue \"<problem>\"`" + `
 Do not use AskUserQuestion for these. Answers arrive as messages tagged ` + "`[docket dk-…]`" + `; when an item is resolved, run ` + "`docket done <id>`" + `. ` + "`docket help`" + ` has the details.
+Preferences ` + person + ` has approved for all agents: @~/.docket/rules.md
 ` + end
 }
 

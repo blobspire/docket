@@ -43,6 +43,16 @@ A job that misses two beats becomes a health alert, and its lead can be woken to
 - **`--recommend`:** your recommendation, whenever you have one.
 - **Evidence:** attach screenshots, videos, logs or reports with `--evidence`. A review with evidence gets answered much faster.
 
+## Adding to an item
+
+If you learn more after filing (results came in, you made the screenshots), add them instead of filing again:
+
+```sh
+docket add dk-xxxxxxxx --why "Benchmarks: p95 dropped from 180ms to 95ms" --evidence bench.png
+```
+
+docket's chief of staff may ask you for this: a message that says it is from the chief of staff is a request for more detail, not the human's answer. Keep working, add what it asks for, and wait for the real answer.
+
 ## When their answer arrives
 
 It shows up in your context as a message starting with `[docket dk-xxxxxxxx #nonce]`. Act on it.
@@ -54,4 +64,4 @@ It shows up in your context as a message starting with `[docket dk-xxxxxxxx #non
 
 - Don't use AskUserQuestion for these. It blocks the session, and the human may be away for hours.
 - Don't file routine progress updates; those belong in your normal output.
-- Don't re-file something already open. Use `--key`, or mention it once in your next message.
+- Don't re-file something already open. Use `--key`, or `docket add` to update it.

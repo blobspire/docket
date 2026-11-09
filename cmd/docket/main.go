@@ -47,6 +47,7 @@ Filing (for agents; never blocks, keep working afterwards):
   docket issue "<problem you noticed>" [--why "..."]
       A problem you are not fixing now.
   docket fyi "<something they should know>"
+  docket add <dk-id> [--why "<more details>"] [--evidence <files>]   add to an item you filed
   docket done <dk-id> [--why "<how it was resolved>"]
   --key <stable-id> on any of these updates one item instead of adding another.
 
@@ -123,6 +124,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (code int) {
 		err = cli.Done(rest, stdout, os.Getenv)
 	case cmd == "job":
 		err = cli.Job(rest, stdout, os.Getenv)
+	case cmd == "add":
+		err = cli.Add(rest, stdout, os.Getenv)
+	case cmd == "rules":
+		if len(rest) != 1 || rest[0] != "put" {
+			err = errors.New("usage: docket rules put  (reads ~/.docket/rules.md content on stdin)")
+		} else {
+			body, _ := io.ReadAll(io.LimitReader(stdin, 256<<10))
+			err = server.WriteRules(body)
+		}
 	case cmd == "spool":
 		err = spoolCmd(rest, stdout)
 	case cmd == "mailbox":
@@ -398,6 +408,9 @@ func initCmd(args []string, stdout io.Writer) error {
 				p = strings.TrimSpace(string(b))
 			}
 		}
+		if rp := filepath.Join(config.Home(), "rules.md"); !fileExists(rp) {
+			server.WriteRules([]byte("# Preferences approved in docket\n\n(none yet)\n"))
+		}
 		changed, err := claudemd.Install(p)
 		if err != nil {
 			return fmt.Errorf("CLAUDE.md: %w", err)
@@ -476,6 +489,9 @@ func syncCmd(args []string, stdout io.Writer) error {
 			if err := box.Put(d); err == nil {
 				delivered++
 			}
+		}
+		if reply.Rules != nil {
+			server.WriteRules([]byte(*reply.Rules))
 		}
 		for _, sha := range reply.WantBlobs {
 			if f, err := os.Open(filepath.Join(sp.Dir, "blobs", sha)); err == nil {
@@ -691,3 +707,5 @@ func serverCmd(args []string, stdin io.Reader, stdout io.Writer) error {
 	}
 	return fmt.Errorf("unknown server command %q", args[0])
 }
+
+func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }

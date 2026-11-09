@@ -17,6 +17,7 @@ func setup(t *testing.T) func(string) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("DOCKET_HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir()) // never read the real ~/.claude
 	env := map[string]string{"USER": "tester", "TMUX_PANE": "%3", "DOCKET_HOME": home}
 	return func(k string) string { return env[k] }
 }

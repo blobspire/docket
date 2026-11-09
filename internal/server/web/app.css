@@ -90,3 +90,5 @@ figcaption a { text-decoration: none; font-weight: 600; color: var(--fg); }
 .lead.off { opacity: .6; }
 .wake { display: flex; gap: 8px; margin-top: 8px; }
 .wake input { flex: 1; font: inherit; padding: 6px 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+.chief { background: var(--card); border: 1px dashed var(--line); border-radius: 8px; padding: 8px 12px; }
+.chief.small { font-size: 13px; color: var(--muted); padding: 4px 8px; margin-top: 6px; }

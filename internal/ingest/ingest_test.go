@@ -179,3 +179,14 @@ func TestNudgeMissBecomesMaybe(t *testing.T) {
 		t.Fatalf("items = %+v", items)
 	}
 }
+
+func TestCorrectionsAreLogged(t *testing.T) {
+	h := newHarness(t)
+	h.send(hookRec("UserPromptSubmit", "s1", map[string]any{"prompt": "no we definitely don't want to include the unfit episodes"}))
+	h.send(hookRec("UserPromptSubmit", "s1", map[string]any{"prompt": "great, ship it"}))
+	h.send(hookRec("UserPromptSubmit", "s1", map[string]any{"prompt": "[docket dk-12345678 #abc123] Cole answered: no"}))
+	ds, err := h.s.DecisionsSince(0, 10)
+	if err != nil || len(ds) != 1 || ds[0].Action != "correction" || ds[0].Context != "site" {
+		t.Fatalf("decisions = %+v %v", ds, err)
+	}
+}

@@ -15,6 +15,7 @@
     <a href="/checklist" {{if eq .Nav "checklist"}}class="on"{{end}}>Only you</a>
     <a href="/leads" {{if eq .Nav "leads"}}class="on"{{end}}>Leads</a>
     <a href="/evidence" {{if eq .Nav "evidence"}}class="on"{{end}}>Evidence</a>
+    <a href="/brain" {{if eq .Nav "brain"}}class="on"{{end}}>Brain</a>
     <a href="/search" {{if eq .Nav "search"}}class="on"{{end}}>Search</a>
     <a href="/done" {{if eq .Nav "done"}}class="on"{{end}}>Done</a>
     <a href="/health" {{if eq .Nav "health"}}class="on"{{end}}>Health</a>
@@ -55,7 +56,7 @@
 
 {{define "actions"}}
 {{$id := .ID}}
-{{if eq .Kind "approval"}}
+{{if or (eq .Kind "approval") (eq .Kind "rule")}}
   <button data-act="approve" data-key="y" class="primary">Approve</button>
   <button data-act="decline" data-key="n">Decline</button>
 {{else if eq .Kind "review"}}

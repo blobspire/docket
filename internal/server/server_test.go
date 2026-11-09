@@ -419,3 +419,78 @@ always_on = true
 		t.Fatalf("health page %d", rec.Code)
 	}
 }
+
+func TestBrainRulesAndPreReview(t *testing.T) {
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "claude")
+	// A stand-in for `claude -p`: answers the rules prompt with two rules and
+	// the review prompt with a low-confidence note.
+	os.WriteFile(fake, []byte(`#!/bin/sh
+for a in "$@"; do last="$a"; done
+case "$last" in
+  *"working preferences"*) echo '{"is_error":false,"total_cost_usd":0.01,"structured_output":{"rules":[{"text":"Never re-fine-tune a checkpoint that already exists","scope":"robotics","evidence":["why are we re-fine-tuning sept7?","no, reuse it"]},{"text":"weak rule","scope":"all","evidence":["only one"]}]}}' ;;
+  *) echo '{"is_error":false,"total_cost_usd":0.002,"structured_output":{"note":"Deciding whether to ship.","confidence":0.2,"missing":"the test results"}}' ;;
+esac
+`), 0o755)
+	e := newEnv(t, `person = "Cole"
+[chief]
+claude = "`+fake+`"
+[[machine]]
+name = "box"
+mode = "local"
+`)
+	st := e.s.st
+	for _, c := range []string{"why are we re-fine-tuning sept7?", "no, reuse it", "don't rebuild the dataset"} {
+		st.AddCorrection(time.Now().Unix(), c, "mcp_control")
+	}
+	n, err := e.s.ProposeRules(e.ctx)
+	if err != nil || n != 1 {
+		t.Fatalf("proposed %d, %v (the one-evidence rule must be dropped)", n, err)
+	}
+	items, _ := st.Items("open")
+	if len(items) != 1 || items[0].Kind != "rule" || items[0].Blocks != "robotics" {
+		t.Fatalf("items = %+v", items)
+	}
+	if err := e.s.Decide(items[0].ID, Action{Kind: "answer", Text: "Reuse existing checkpoints; never re-fine-tune one that exists"}); err != nil {
+		t.Fatal(err)
+	}
+	rules, _ := st.Rules("approved")
+	if len(rules) != 1 || !strings.HasPrefix(rules[0].Text, "Reuse existing checkpoints") {
+		t.Fatalf("rules = %+v", rules)
+	}
+	e.s.syncRules(e.ctx)
+	md, err := os.ReadFile(filepath.Join(os.Getenv("DOCKET_HOME"), "rules.md"))
+	if err != nil || !strings.Contains(string(md), "(robotics) Reuse existing checkpoints") {
+		t.Fatalf("rules.md = %q %v", md, err)
+	}
+	// Proposing again with nothing new must not duplicate the rule item.
+	if n, _ := e.s.ProposeRules(e.ctx); n != 0 {
+		t.Fatalf("re-proposed an approved rule (%d)", n)
+	}
+
+	// Pre-review: a review with no evidence is bounced once, and annotated.
+	st.PatchSession("s1", store.SessionPatch{Machine: store.Str("box"), State: store.Str("idle"), HasPlugin: store.Bool(true)})
+	st.UpsertItem(store.Item{ID: "dk-rrrrrrrr", Kind: "review", Title: "Ship the new hero?", Source: "cli", Machine: "box", SessionID: "s1"})
+	e.s.preReviewTick(e.ctx)
+	it, _, _ := st.GetItem("dk-rrrrrrrr")
+	if !strings.Contains(it.ChiefNote, "Deciding whether to ship") || !strings.Contains(it.ChiefNote, "the test results") {
+		t.Fatalf("chief note = %q", it.ChiefNote)
+	}
+	ds, _ := st.ItemDeliveries("dk-rrrrrrrr")
+	if len(ds) != 1 || !strings.Contains(ds[0].Text, "chief of staff") || !strings.Contains(ds[0].Text, "isn't Cole's answer") {
+		t.Fatalf("bounces = %+v", ds)
+	}
+	e.s.preReviewTick(e.ctx)
+	if ds, _ := st.ItemDeliveries("dk-rrrrrrrr"); len(ds) != 1 {
+		t.Fatalf("bounced twice: %d", len(ds))
+	}
+	it, _, _ = st.GetItem("dk-rrrrrrrr")
+	if it.Status != "open" || it.Answer != "" {
+		t.Fatalf("the chief changed the item's outcome: %+v", it)
+	}
+	rec := httptest.NewRecorder()
+	e.s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/brain", nil))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Reuse existing checkpoints") {
+		t.Fatalf("GET /brain = %d", rec.Code)
+	}
+}

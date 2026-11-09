@@ -59,6 +59,10 @@ func (s *Server) Decide(id string, a Action) error {
 		return err
 	}
 
+	if it.Kind == "rule" {
+		return s.decideRule(it, a)
+	}
+
 	// Answers that go back to the agent.
 	if it.SessionID == "" {
 		return errors.New("this item has no session to answer")

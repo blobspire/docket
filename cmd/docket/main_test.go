@@ -7,6 +7,7 @@ import (
 )
 
 func TestHookAlwaysExitsZero(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	// Point DOCKET_HOME at a file, so creating the spool directory fails.
 	f := t.TempDir() + "/not-a-dir"
 	if err := writeFile(f); err != nil {

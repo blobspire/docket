@@ -15,6 +15,7 @@
   {{if $.Physical}}<p class="warn">This involves a physical action. It can't be approved from the queue: do it in person, then mark it done.</p>{{end}}
 
   {{if .Recommend}}<p class="recommend"><strong>Agent recommends:</strong> {{.Recommend}}</p>{{end}}
+  {{if .ChiefNote}}<p class="chief"><strong>Chief of staff:</strong> {{.ChiefNote}}</p>{{end}}
   {{range paras .Body}}<p class="body">{{.}}</p>{{end}}
   {{if .Quote}}<blockquote>{{.Quote}}</blockquote>{{end}}
 
@@ -37,10 +38,10 @@
 
   {{if and (ne .Status "done") (ne .Status "dismissed")}}
   <div class="row-actions big">{{template "actions" .}}</div>
-  {{if .SessionID}}
+  {{if or .SessionID (eq .Kind "rule")}}
   <form class="answer-form" method="post" action="/item/{{.ID}}/act">
     <input type="hidden" name="action" value="answer">
-    <label for="answer-text">Answer the agent{{if .Options}} in your own words{{end}}</label>
+    <label for="answer-text">{{if eq .Kind "rule"}}Approve it in your own wording{{else}}Answer the agent{{if .Options}} in your own words{{end}}{{end}}</label>
     <textarea id="answer-text" name="text" rows="3" placeholder="Type or dictate. Your answer goes straight to the session that asked."></textarea>
     <button class="primary" type="submit">Send answer</button>
   </form>

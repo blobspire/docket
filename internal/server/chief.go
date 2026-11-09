@@ -125,6 +125,9 @@ func (s *Server) chiefTick(ctx context.Context) {
 	s.watchHealth(ctx)
 	s.pushes(ctx)
 	s.brief(ctx)
+	s.syncRules(ctx)
+	s.preReviewTick(ctx)
+	s.rulesTick(ctx)
 }
 
 func (s *Server) pushes(ctx context.Context) {

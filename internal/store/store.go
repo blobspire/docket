@@ -86,7 +86,8 @@ CREATE TABLE IF NOT EXISTS items (
   resolution TEXT NOT NULL DEFAULT '',
   answer TEXT NOT NULL DEFAULT '',
   answered_at INTEGER,
-  pushed_at INTEGER
+  pushed_at INTEGER,
+  chief_note TEXT NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX IF NOT EXISTS items_active_dedupe ON items(dedupe_key)
   WHERE dedupe_key IS NOT NULL AND status IN ('maybe','open','snoozed','answered');
@@ -172,6 +173,15 @@ CREATE TABLE IF NOT EXISTS usage (
   cache_read INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (machine, session_id, day)
 );
+CREATE TABLE IF NOT EXISTS rules (
+  id TEXT PRIMARY KEY,
+  text TEXT NOT NULL,
+  scope TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  evidence TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS kv (
   k TEXT PRIMARY KEY,
   v TEXT NOT NULL
@@ -216,6 +226,7 @@ var added = []struct{ table, column, ddl string }{
 	{"sessions", "kind", "TEXT NOT NULL DEFAULT ''"},
 	{"sessions", "waiting_since", "INTEGER NOT NULL DEFAULT 0"},
 	{"decisions", "context", "TEXT NOT NULL DEFAULT ''"},
+	{"items", "chief_note", "TEXT NOT NULL DEFAULT ''"},
 }
 
 func migrate(db *sql.DB) error {
@@ -629,15 +640,16 @@ type Item struct {
 	Answer       string
 	AnsweredAt   int64
 	PushedAt     int64
+	ChiefNote    string
 }
 
-const itemCols = `id, kind, status, title, body, options, recommend, blocking, blocks, physical, due, COALESCE(dedupe_key,''), source, machine, session_id, lead, cwd, quote, created_at, updated_at, last_seen_at, mention_count, COALESCE(snoozed_until,0), COALESCE(resolved_at,0), resolution, answer, COALESCE(answered_at,0), COALESCE(pushed_at,0)`
+const itemCols = `id, kind, status, title, body, options, recommend, blocking, blocks, physical, due, COALESCE(dedupe_key,''), source, machine, session_id, lead, cwd, quote, created_at, updated_at, last_seen_at, mention_count, COALESCE(snoozed_until,0), COALESCE(resolved_at,0), resolution, answer, COALESCE(answered_at,0), COALESCE(pushed_at,0), chief_note`
 
 func scanItem(sc interface{ Scan(...any) error }) (Item, error) {
 	var it Item
 	var opts string
 	var blocking, physical int
-	err := sc.Scan(&it.ID, &it.Kind, &it.Status, &it.Title, &it.Body, &opts, &it.Recommend, &blocking, &it.Blocks, &physical, &it.Due, &it.DedupeKey, &it.Source, &it.Machine, &it.SessionID, &it.Lead, &it.Cwd, &it.Quote, &it.CreatedAt, &it.UpdatedAt, &it.LastSeenAt, &it.MentionCount, &it.SnoozedUntil, &it.ResolvedAt, &it.Resolution, &it.Answer, &it.AnsweredAt, &it.PushedAt)
+	err := sc.Scan(&it.ID, &it.Kind, &it.Status, &it.Title, &it.Body, &opts, &it.Recommend, &blocking, &it.Blocks, &physical, &it.Due, &it.DedupeKey, &it.Source, &it.Machine, &it.SessionID, &it.Lead, &it.Cwd, &it.Quote, &it.CreatedAt, &it.UpdatedAt, &it.LastSeenAt, &it.MentionCount, &it.SnoozedUntil, &it.ResolvedAt, &it.Resolution, &it.Answer, &it.AnsweredAt, &it.PushedAt, &it.ChiefNote)
 	it.Blocking, it.Physical = blocking != 0, physical != 0
 	_ = json.Unmarshal([]byte(opts), &it.Options)
 	return it, err
@@ -1182,4 +1194,95 @@ func (s *Store) UsageSince(day string) ([]Usage, error) {
 		out = append(out, u)
 	}
 	return out, rows.Err()
+}
+
+// SetChiefNote stores the chief of staff's annotation on an item.
+func (s *Store) SetChiefNote(id, note string) error {
+	_, err := s.DB.Exec(`UPDATE items SET chief_note=?, updated_at=? WHERE id=?`, note, now(), id)
+	return err
+}
+
+// AppendToItem adds details or evidence an agent sent later.
+func (s *Store) AppendToItem(id, text string) error {
+	_, err := s.DB.Exec(`UPDATE items SET body=CASE WHEN body='' THEN ? ELSE body || char(10) || char(10) || ? END, updated_at=?, last_seen_at=? WHERE id=?`,
+		text, text, now(), now(), id)
+	return err
+}
+
+// ---- brain: corrections, decisions, rules ---------------------------------
+
+// AddCorrection logs a prompt in which the human corrected or redirected an agent.
+func (s *Store) AddCorrection(ts int64, text, context string) error {
+	_, err := s.DB.Exec(`INSERT INTO decisions(item_id, ts, action, answer, context) VALUES ('', ?, 'correction', ?, ?)`, ts, text, context)
+	return err
+}
+
+// Decision is one logged human decision or correction.
+type Decision struct {
+	ItemID, Action, Answer, Context, Title string
+	TS                                     int64
+}
+
+// DecisionsSince returns decisions and corrections since ts, oldest first.
+func (s *Store) DecisionsSince(ts int64, limit int) ([]Decision, error) {
+	rows, err := s.DB.Query(`SELECT d.item_id, d.action, d.answer, d.context, COALESCE(i.title,''), d.ts FROM decisions d
+		LEFT JOIN items i ON i.id = d.item_id WHERE d.ts >= ? AND d.action IN ('answer','approve','decline','choose','correction','dismiss')
+		ORDER BY d.ts LIMIT ?`, ts, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Decision
+	for rows.Next() {
+		var d Decision
+		if err := rows.Scan(&d.ItemID, &d.Action, &d.Answer, &d.Context, &d.Title, &d.TS); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+type Rule struct {
+	ID, Text, Scope, Status, Evidence string
+	CreatedAt, UpdatedAt              int64
+}
+
+func (s *Store) SetRule(r Rule) error {
+	t := now()
+	_, err := s.DB.Exec(`INSERT INTO rules(id, text, scope, status, evidence, created_at, updated_at) VALUES (?,?,?,?,?,?,?)
+		ON CONFLICT(id) DO UPDATE SET text=excluded.text, scope=excluded.scope, status=excluded.status, evidence=excluded.evidence, updated_at=excluded.updated_at`,
+		r.ID, r.Text, r.Scope, r.Status, r.Evidence, t, t)
+	return err
+}
+
+// Rules lists rules with the given status (all if empty), oldest first.
+func (s *Store) Rules(status string) ([]Rule, error) {
+	q := `SELECT id, text, scope, status, evidence, created_at, updated_at FROM rules`
+	var args []any
+	if status != "" {
+		q += ` WHERE status=?`
+		args = append(args, status)
+	}
+	rows, err := s.DB.Query(q+` ORDER BY created_at`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Rule
+	for rows.Next() {
+		var r Rule
+		if err := rows.Scan(&r.ID, &r.Text, &r.Scope, &r.Status, &r.Evidence, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// EverFiled reports whether any item, in any status, has had this dedupe key.
+func (s *Store) EverFiled(key string) bool {
+	var n int
+	s.DB.QueryRow(`SELECT COUNT(*) FROM items WHERE dedupe_key = ?`, key).Scan(&n)
+	return n > 0
 }

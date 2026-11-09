@@ -42,6 +42,10 @@ var criticalErrors = map[string]bool{
 	"billing_error": true, "cloud_credential_error": true,
 }
 
+// correctionRe spots prompts where the human corrects or redirects an agent:
+// raw material for the preference rules the brain proposes.
+var correctionRe = regexp.MustCompile(`(?i)^\s*(no[,.! ]|nope|don'?t|do not|stop|actually|instead|wrong|that'?s not|not what i|why did you|why are you|please don'?t|never |always |i said|i told you|we (already|don'?t)|you should(n'?t)?|remember (to|that))`)
+
 var nonceRe = regexp.MustCompile(`\[docket (dk-[0-9a-z]{8} )?#([0-9a-z]{6,16})\]`)
 
 // Process applies every unprocessed event, oldest first. It returns how many
@@ -159,6 +163,26 @@ func apply(s *store.Store, e store.RawEvent) error {
 	case "cli.file":
 		return fileItem(s, r, base)
 
+	case "cli.add":
+		var a struct {
+			ItemID   string            `json:"item_id"`
+			Text     string            `json:"text"`
+			Evidence []record.Evidence `json:"evidence"`
+		}
+		_ = json.Unmarshal(r.Payload, &a)
+		if _, ok, _ := s.GetItem(a.ItemID); !ok {
+			return nil
+		}
+		if a.Text != "" {
+			if err := s.AppendToItem(a.ItemID, clip(a.Text, 20000)); err != nil {
+				return err
+			}
+		}
+		for _, ev := range a.Evidence {
+			s.AddEvidence(store.Evidence{SHA256: ev.SHA256, ItemID: a.ItemID, Name: ev.Name, Mime: ev.Mime, Size: ev.Size})
+		}
+		return s.SetChiefNote(a.ItemID, "")
+
 	case "cli.done":
 		if r.Done == nil {
 			return nil
@@ -177,6 +201,11 @@ func apply(s *store.Store, e store.RawEvent) error {
 		}
 		if err := confirmReceipts(s, p.Prompt); err != nil {
 			return err
+		}
+		if pr := strings.TrimSpace(p.Prompt); pr != "" && !strings.HasPrefix(pr, "[docket") && correctionRe.MatchString(pr) {
+			if err := s.AddCorrection(at, clip(pr, 600), filepath.Base(cwd)); err != nil {
+				return err
+			}
 		}
 		_, err := s.ResolveBySession(sid, "the session continued", SrcNotification)
 		return err

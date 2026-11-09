@@ -28,6 +28,7 @@ type Config struct {
 	Ntfy        Ntfy      `toml:"ntfy"`
 	Machines    []Machine `toml:"machine"`
 	Leads       []Lead    `toml:"lead"`
+	Chief       Chief     `toml:"chief"`
 
 	loc *time.Location
 }

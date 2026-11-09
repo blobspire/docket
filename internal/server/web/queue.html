@@ -47,6 +47,7 @@
     {{if .Session.State}}<span class="state state-{{.Session.State}}">{{.Session.State}}{{with .Session.WaitingFor}}: {{.}}{{end}}</span>{{end}}
     {{if eq .Status "answered"}}<span class="state">answer sent, awaiting receipt</span>{{end}}
   </div>
+  {{with .ChiefNote}}<div class="chief small">{{.}}</div>{{end}}
   {{if ne .Status "answered"}}<div class="row-actions">{{template "actions" .Item}}</div>{{end}}
 </li>
 {{end}}
