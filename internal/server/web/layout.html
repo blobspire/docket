@@ -12,6 +12,9 @@
   <a class="brand" href="/">docket</a>
   <nav>
     <a href="/" {{if eq .Nav "queue"}}class="on"{{end}}>Queue</a>
+    <a href="/checklist" {{if eq .Nav "checklist"}}class="on"{{end}}>Only you</a>
+    <a href="/evidence" {{if eq .Nav "evidence"}}class="on"{{end}}>Evidence</a>
+    <a href="/search" {{if eq .Nav "search"}}class="on"{{end}}>Search</a>
     <a href="/done" {{if eq .Nav "done"}}class="on"{{end}}>Done</a>
     <a href="/health" {{if eq .Nav "health"}}class="on"{{end}}>Health</a>
   </nav>
@@ -37,7 +40,8 @@
       <dt>x</dt><dd>dismiss</dd>
       <dt>p</dt><dd>promote a "maybe"</dd>
       <dt>u</dt><dd>undo the last action</dd>
-      <dt>g q · g d · g h</dt><dd>queue · done · health</dd>
+      <dt>/</dt><dd>search</dd>
+      <dt>g q · g c · g e · g d · g h</dt><dd>queue · only-you list · evidence · done · health</dd>
     </dl>
     <p class="muted">Press ? or Esc to close.</p>
   </div>

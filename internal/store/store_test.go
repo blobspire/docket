@@ -142,3 +142,33 @@ func TestPatchSession(t *testing.T) {
 		t.Fatalf("session = %+v ok=%v err=%v", x, ok, err)
 	}
 }
+
+func TestSearch(t *testing.T) {
+	s := open(t)
+	s.UpsertItem(Item{ID: "a", Kind: "ask", Title: "Re-fine-tune sept7 checkpoint?", Body: "the old run diverged"})
+	s.UpsertItem(Item{ID: "b", Kind: "review", Title: "Basket knock-over demo", Body: "t3 demo video"})
+	s.SetAnswer("a", "No, reuse the existing sept7 weights", "answer")
+	got, err := s.Search("sept7", 10)
+	if err != nil || len(got) != 1 || got[0].ID != "a" {
+		t.Fatalf("search sept7: %+v %v", got, err)
+	}
+	got, _ = s.Search("reuse weights", 10) // matches the answer
+	if len(got) != 1 || got[0].ID != "a" {
+		t.Fatalf("search answer text: %+v", got)
+	}
+	got, _ = s.Search(`bask"et*) (`, 10) // hostile syntax must not error
+	if len(got) != 1 || got[0].ID != "b" {
+		t.Fatalf("sanitized search: %+v", got)
+	}
+}
+
+func TestHumanTasksDueFirst(t *testing.T) {
+	s := open(t)
+	s.UpsertItem(Item{ID: "late", Kind: "human_task", Title: "no date"})
+	s.UpsertItem(Item{ID: "soon", Kind: "human_task", Title: "due", Due: "2026-11-10"})
+	s.UpsertItem(Item{ID: "x", Kind: "ask", Title: "not a task"})
+	got, _ := s.HumanTasks()
+	if len(got) != 2 || got[0].ID != "soon" {
+		t.Fatalf("got %+v", got)
+	}
+}

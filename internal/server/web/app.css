@@ -80,3 +80,9 @@ tr.bad td { color: var(--bad); }
   .row-actions button { padding: 8px 12px; font-size: 14px; }
   .evidence { grid-template-columns: 1fr; }
 }
+.searchbar { display: flex; gap: 8px; margin-bottom: 14px; }
+.searchbar input { flex: 1; font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
+.filecard { border: 1px solid var(--line); border-radius: 8px; padding: 26px 12px; text-align: center; background: var(--card); }
+figcaption a { text-decoration: none; font-weight: 600; color: var(--fg); }
+.top nav { overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
+.top nav::-webkit-scrollbar { display: none; }

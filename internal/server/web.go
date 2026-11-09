@@ -79,6 +79,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /item/{id}", s.pageItem)
 	mux.HandleFunc("POST /item/{id}/act", s.act)
 	mux.HandleFunc("GET /done", s.pageDone)
+	mux.HandleFunc("GET /search", s.pageSearch)
+	mux.HandleFunc("GET /evidence", s.pageEvidence)
+	mux.HandleFunc("GET /checklist", s.pageChecklist)
 	mux.HandleFunc("GET /health", s.pageHealth)
 	mux.HandleFunc("GET /blob/{sha}", s.blob)
 	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
@@ -147,6 +150,9 @@ type page struct {
 	Sessions []store.Session
 	Error    string
 	Version  string
+	Query    string
+	Gallery  []store.EvidenceRow
+	Tasks    []store.Item
 }
 
 type machineRow struct {
@@ -193,6 +199,26 @@ func (s *Server) pageItem(w http.ResponseWriter, r *http.Request) {
 func (s *Server) pageDone(w http.ResponseWriter, r *http.Request) {
 	closed, _ := s.st.RecentlyClosed(time.Now().Add(-7*24*time.Hour).Unix(), 300)
 	s.render(w, "done.html", page{Title: "Done", Nav: "done", Closed: closed})
+}
+
+func (s *Server) pageSearch(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	var res []store.Item
+	if q != "" {
+		res, _ = s.st.Search(q, 200)
+	}
+	s.render(w, "search.html", page{Title: "Search", Nav: "search", Query: q, Closed: res})
+}
+
+func (s *Server) pageEvidence(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	rows, _ := s.st.AllEvidence(q, 300)
+	s.render(w, "evidence.html", page{Title: "Evidence", Nav: "evidence", Query: q, Gallery: rows})
+}
+
+func (s *Server) pageChecklist(w http.ResponseWriter, r *http.Request) {
+	tasks, _ := s.st.HumanTasks()
+	s.render(w, "checklist.html", page{Title: "Only you", Nav: "checklist", Tasks: tasks})
 }
 
 func (s *Server) pageHealth(w http.ResponseWriter, r *http.Request) {

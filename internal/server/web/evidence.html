@@ -1,0 +1,21 @@
+{{define "evidence.html"}}{{template "head" .}}
+<h1>Evidence</h1>
+<form class="searchbar" method="get" action="/evidence">
+  <input id="q" name="q" value="{{.Query}}" placeholder="Filter by file name or item title">
+  <button type="submit">Filter</button>
+</form>
+{{if not .Gallery}}<p class="empty">Screenshots, videos and reports that agents attach to reviews show up here.</p>{{end}}
+<section class="evidence">
+{{range .Gallery}}
+  <figure>
+    <a href="/item/{{.ItemID}}">
+    {{if not .Fetched}}<div class="muted">{{.Name}}: still being copied…</div>
+    {{else if isImage .Mime}}<img src="/blob/{{.SHA256}}?type={{.Mime}}" alt="{{.Name}}" loading="lazy">
+    {{else if isVideo .Mime}}<video preload="metadata" muted src="/blob/{{.SHA256}}?type={{.Mime}}"></video>
+    {{else}}<div class="filecard">{{.Name}}</div>{{end}}
+    </a>
+    <figcaption><a href="/item/{{.ItemID}}">{{.ItemTitle}}</a><br>{{.Name}} · {{.Machine}} · {{age .CreatedAt}} ago · {{.ItemStatus}}</figcaption>
+  </figure>
+{{end}}
+</section>
+{{template "foot" .}}{{end}}

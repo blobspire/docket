@@ -83,12 +83,13 @@
     const k = e.key;
     if (g) {
       g = false;
-      const to = { q: "/", d: "/done", h: "/health" }[k];
+      const to = { q: "/", c: "/checklist", e: "/evidence", d: "/done", h: "/health", s: "/search" }[k];
       if (to) location.href = to;
       return;
     }
     if (k === "g") { g = true; setTimeout(() => (g = false), 800); return; }
     if (k === "?") return toggleHelp();
+    if (k === "/") { e.preventDefault(); const q = $("#q"); return q ? q.focus() : (location.href = "/search"); }
     if (!detail) {
       if (k === "j" || k === "ArrowDown") { e.preventDefault(); return select(sel + 1); }
       if (k === "k" || k === "ArrowUp") { e.preventDefault(); return select(sel - 1); }

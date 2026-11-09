@@ -124,6 +124,17 @@ CREATE TABLE IF NOT EXISTS decisions (
   answer TEXT NOT NULL DEFAULT '',
   prev_status TEXT NOT NULL DEFAULT ''
 );
+CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(id UNINDEXED, title, body, quote, answer, resolution, tokenize='porter unicode61');
+CREATE TRIGGER IF NOT EXISTS items_fts_ai AFTER INSERT ON items BEGIN
+  INSERT INTO items_fts(id, title, body, quote, answer, resolution) VALUES (new.id, new.title, new.body, new.quote, new.answer, new.resolution);
+END;
+CREATE TRIGGER IF NOT EXISTS items_fts_au AFTER UPDATE OF title, body, quote, answer, resolution ON items BEGIN
+  DELETE FROM items_fts WHERE id = old.id;
+  INSERT INTO items_fts(id, title, body, quote, answer, resolution) VALUES (new.id, new.title, new.body, new.quote, new.answer, new.resolution);
+END;
+CREATE TRIGGER IF NOT EXISTS items_fts_ad AFTER DELETE ON items BEGIN
+  DELETE FROM items_fts WHERE id = old.id;
+END;
 CREATE TABLE IF NOT EXISTS kv (
   k TEXT PRIMARY KEY,
   v TEXT NOT NULL
@@ -148,7 +159,125 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("store: schema: %w", err)
 	}
+	// Databases created before search existed: index their items once.
+	var indexed, items int
+	db.QueryRow(`SELECT COUNT(*) FROM items_fts`).Scan(&indexed)
+	db.QueryRow(`SELECT COUNT(*) FROM items`).Scan(&items)
+	if indexed == 0 && items > 0 {
+		db.Exec(`INSERT INTO items_fts(id, title, body, quote, answer, resolution) SELECT id, title, body, quote, answer, resolution FROM items`)
+	}
 	return &Store{DB: db}, nil
+}
+
+// Search finds items (open or closed) matching every word of q, best first.
+func (s *Store) Search(q string, limit int) ([]Item, error) {
+	var terms []string
+	for _, w := range strings.Fields(q) {
+		w = strings.Map(func(r rune) rune {
+			if r == '"' || r == '*' || r == '(' || r == ')' || r == ':' || r == '^' {
+				return -1
+			}
+			return r
+		}, w)
+		if w != "" {
+			terms = append(terms, `"`+w+`"*`)
+		}
+	}
+	if len(terms) == 0 {
+		return nil, nil
+	}
+	rows, err := s.DB.Query(`SELECT `+prefixed("i.", itemCols)+` FROM items_fts f JOIN items i ON i.id = f.id WHERE items_fts MATCH ? ORDER BY bm25(items_fts, 0, 8, 2, 2, 4, 1) LIMIT ?`, strings.Join(terms, " "), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Item
+	for rows.Next() {
+		it, err := scanItem(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+// prefixed qualifies a column list (handling COALESCE(...) wrappers).
+func prefixed(p, cols string) string {
+	var out []string
+	for _, c := range strings.Split(cols, ", ") {
+		c = strings.TrimSpace(c)
+		if strings.HasPrefix(c, "COALESCE(") {
+			out = append(out, "COALESCE("+p+strings.TrimPrefix(c, "COALESCE("))
+		} else {
+			out = append(out, p+c)
+		}
+	}
+	return strings.Join(out, ", ")
+}
+
+// EvidenceRow is evidence with the item it belongs to.
+type EvidenceRow struct {
+	Evidence
+	ItemTitle  string
+	ItemStatus string
+	ItemKind   string
+	Machine    string
+	CreatedAt  int64
+}
+
+// AllEvidence lists evidence across items, newest first, optionally
+// filtered by words in the file name or item title.
+func (s *Store) AllEvidence(q string, limit int) ([]EvidenceRow, error) {
+	query := `SELECT e.sha256, e.item_id, e.name, e.mime, e.size, e.fetched, i.title, i.status, i.kind, i.machine, i.created_at
+		FROM evidence e JOIN items i ON i.id = e.item_id`
+	var args []any
+	for _, w := range strings.Fields(q) {
+		if len(args) == 0 {
+			query += ` WHERE`
+		} else {
+			query += ` AND`
+		}
+		query += ` (e.name LIKE ? OR i.title LIKE ?)`
+		args = append(args, "%"+w+"%", "%"+w+"%")
+	}
+	query += ` ORDER BY i.created_at DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.DB.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []EvidenceRow
+	for rows.Next() {
+		var r EvidenceRow
+		var f int
+		if err := rows.Scan(&r.SHA256, &r.ItemID, &r.Name, &r.Mime, &r.Size, &f, &r.ItemTitle, &r.ItemStatus, &r.ItemKind, &r.Machine, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		r.Fetched = f != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// HumanTasks lists open things only the human can do: due dates first.
+func (s *Store) HumanTasks() ([]Item, error) {
+	rows, err := s.DB.Query(`SELECT ` + itemCols + ` FROM items WHERE kind='human_task' AND status IN ('open','snoozed','answered')
+		ORDER BY CASE WHEN due='' THEN 1 ELSE 0 END, due, blocking DESC, created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Item
+	for rows.Next() {
+		it, err := scanItem(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) Close() error { return s.DB.Close() }

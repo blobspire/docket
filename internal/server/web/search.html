@@ -1,0 +1,21 @@
+{{define "search.html"}}{{template "head" .}}
+<h1>Search</h1>
+<form class="searchbar" method="get" action="/search">
+  <input id="q" name="q" value="{{.Query}}" placeholder="Search everything: questions, answers, reasons ('sept7', 'basket demo', 'why did we')" autofocus>
+  <button class="primary" type="submit">Search</button>
+</form>
+{{if .Query}}<p class="muted">{{len .Closed}} result{{if ne (len .Closed) 1}}s{{end}}</p>{{end}}
+<ol class="rows done">
+{{range .Closed}}
+<li class="row kind-{{.Kind}}" data-id="{{.ID}}" data-href="/item/{{.ID}}">
+  <div class="row-main"><span class="badge">{{kindName .Kind}}</span> <a class="title" href="/item/{{.ID}}">{{.Title}}</a></div>
+  <div class="row-meta">
+    {{with where .}}<span>{{.}}</span>{{end}}
+    <span>{{.Status}}</span><span>{{clock .CreatedAt}}</span>
+    {{with .Answer}}<span><strong>answer:</strong> {{.}}</span>{{end}}
+    {{with .Resolution}}<span>{{.}}</span>{{end}}
+  </div>
+</li>
+{{end}}
+</ol>
+{{template "foot" .}}{{end}}

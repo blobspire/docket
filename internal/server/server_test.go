@@ -206,7 +206,7 @@ func TestWebQueueAndCrossSiteGuard(t *testing.T) {
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Disk is 95% full") {
 		t.Fatalf("GET /item = %d", rec.Code)
 	}
-	for _, p := range []string{"/health", "/done", "/static/app.js", "/api/version"} {
+	for _, p := range []string{"/health", "/done", "/static/app.js", "/api/version", "/search?q=disk", "/evidence", "/checklist"} {
 		rec = httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest("GET", p, nil))
 		if rec.Code != 200 {
