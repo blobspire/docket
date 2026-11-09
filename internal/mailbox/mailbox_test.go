@@ -55,3 +55,14 @@ func TestOldestFirst(t *testing.T) {
 		t.Fatalf("got %+v", ds)
 	}
 }
+
+func TestResendAfterDeliveryIsIgnored(t *testing.T) {
+	b := Box{Dir: t.TempDir()}
+	d := Delivery{ID: "d1", SessionID: "s", Text: "x"}
+	b.Put(d)
+	b.Claim("s")
+	b.Put(d) // the server resends because the receipt hadn't arrived yet
+	if b.Pending("s") {
+		t.Fatal("a resend after delivery would deliver twice")
+	}
+}

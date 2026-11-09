@@ -120,7 +120,9 @@ func apply(s *store.Store, e store.RawEvent) error {
 			r.Machine = e.Machine
 		}
 	}
-	if r.Machine == "" {
+	// The machine is the one the server collected the record from (its name
+	// in the server config), not whatever the record calls itself.
+	if e.Machine != "" {
 		r.Machine = e.Machine
 	}
 	var p payload

@@ -1,0 +1,16 @@
+# systemd user unit for the docket server.
+#   cp deploy/systemd/docket.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now docket
+#   loginctl enable-linger "$USER"   # keep it running while logged out
+[Unit]
+Description=docket: one queue for everything your agents need from you
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/docket serve
+Restart=always
+RestartSec=5
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

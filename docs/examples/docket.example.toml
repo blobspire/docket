@@ -1,0 +1,35 @@
+# ~/.config/docket/docket.toml on the server (the always-on machine).
+# This file is personal: keep it out of version control.
+
+person = "Sam"                      # how answers and agents refer to you
+listen = "127.0.0.1:7788"           # serve it on your tailnet with `tailscale serve`
+public_url = "https://server.your-tailnet.ts.net"   # used for links in phone pushes
+timezone = "America/New_York"
+brief_at = "09:00"                  # morning brief
+# allow_logins = ["you@example.com"]  # optional: Tailscale-User-Login allowlist
+
+[ntfy]
+server = "https://ntfy.sh"
+topic = "pick-a-long-random-topic"
+# token = "tk_..."                  # or keep secrets in a file:
+# env_file = "~/.config/docket/ntfy.env"   # NTFY_SERVER / NTFY_TOPIC / NTFY_TOKEN
+quiet_start = "23:00"               # only system-down alerts push during quiet hours
+quiet_end = "07:00"
+
+# The server itself.
+[[machine]]
+name = "server"
+mode = "local"
+
+# A machine the server can SSH to but that can't reach the server.
+[[machine]]
+name = "lab"
+mode = "pull"
+ssh = "lab"                         # anything `ssh lab` reaches
+interval = "2m"
+physical_keywords = ["robot", "arm", "gripper", "e-stop"]   # never approvable remotely
+
+# A laptop that sleeps: it runs `docket sync --server server` itself.
+[[machine]]
+name = "laptop"
+mode = "push"

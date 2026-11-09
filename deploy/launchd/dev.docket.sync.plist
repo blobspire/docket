@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- launchd agent for a laptop: sync with the docket server every 30 s.
+     Replace SERVER and HOME below, then:
+       cp deploy/launchd/dev.docket.sync.plist ~/Library/LaunchAgents/
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.docket.sync.plist -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.docket.sync</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>HOME/.local/bin/docket</string>
+    <string>sync</string>
+    <string>--server</string>
+    <string>SERVER</string>
+    <string>--quiet</string>
+  </array>
+  <key>StartInterval</key><integer>30</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardErrorPath</key><string>HOME/.docket/sync.log</string>
+  <key>ProcessType</key><string>Background</string>
+</dict>
+</plist>

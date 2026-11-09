@@ -1,0 +1,36 @@
+{{define "health.html"}}{{template "head" .}}
+<h1>Health</h1>
+<section>
+  <h2>Machines <button type="button" class="quiet small" data-collect>Collect now</button></h2>
+  <table>
+    <thead><tr><th>Machine</th><th>Mode</th><th>Status</th><th>Last contact</th><th>Last error</th></tr></thead>
+    <tbody>
+    {{range .Machines}}
+    <tr class="{{if ne .Status "ok"}}bad{{end}}">
+      <td>{{.Name}}</td><td>{{.Mode}}</td><td>{{.Status}}</td>
+      <td>{{if .LastSeenAt}}{{age .LastSeenAt}} ago{{else}}never{{end}}</td>
+      <td class="muted">{{.LastError}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+<section>
+  <h2>Live sessions</h2>
+  <table>
+    <thead><tr><th>Session</th><th>Machine</th><th>Project</th><th>State</th><th>Hooks</th><th>Self-check</th><th>Last event</th></tr></thead>
+    <tbody>
+    {{range .Sessions}}
+    <tr>
+      <td>{{with .BridgeID}}<a href="{{rcURL .}}" target="_blank" rel="noopener">{{end}}{{if .Name}}{{.Name}}{{else}}{{printf "%.8s" .ID}}{{end}}{{if .BridgeID}}</a>{{end}}</td>
+      <td>{{.Machine}}</td><td>{{project .Cwd}}</td>
+      <td class="state-{{.State}}">{{.State}}{{with .WaitingFor}}: {{.}}{{end}}</td>
+      <td>{{if .HasPlugin}}yes{{else}}<span class="muted" title="started before the docket plugin; answers go by tmux">no</span>{{end}}</td>
+      <td>{{if .Nudges}}{{.NudgeHits}}/{{.Nudges}} filed{{else}}<span class="muted">-</span>{{end}}</td>
+      <td>{{if .LastEventAt}}{{age .LastEventAt}} ago{{end}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+{{template "foot" .}}{{end}}

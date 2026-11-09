@@ -1,0 +1,52 @@
+{{define "queue.html"}}{{template "head" .}}
+{{if .Brief}}
+<section class="brief">
+  <h2>Morning brief</h2>
+  <pre>{{.Brief}}</pre>
+</section>
+{{end}}
+
+<section>
+  <h1>{{if .Now}}{{len .Now}} need{{if eq (len .Now) 1}}s{{end}} you{{else}}Nothing needs you{{end}}</h1>
+  {{if not .Now}}<p class="empty">Your agents aren't waiting on anything. New items appear here on their own.</p>{{end}}
+  <ol class="rows">
+  {{range .Now}}{{template "row" .}}{{end}}
+  </ol>
+</section>
+
+{{if .Maybe}}
+<section>
+  <h2>Maybe <span class="muted">({{len .Maybe}}): things an agent said that might need you</span></h2>
+  <ol class="rows maybe">
+  {{range .Maybe}}{{template "row" .}}{{end}}
+  </ol>
+</section>
+{{end}}
+
+{{if .Snoozed}}
+<details class="snoozed">
+  <summary>Snoozed ({{len .Snoozed}})</summary>
+  <ol class="rows">
+  {{range .Snoozed}}{{template "row" .}}{{end}}
+  </ol>
+</details>
+{{end}}
+{{template "foot" .}}{{end}}
+
+{{define "row"}}
+<li class="row kind-{{.Kind}}{{if .Blocking}} blocking{{end}}" data-id="{{.ID}}" data-href="/item/{{.ID}}"{{with .Session.BridgeID}} data-session="{{rcURL .}}"{{end}}>
+  <div class="row-main">
+    <span class="badge">{{kindName .Kind}}</span>
+    <a class="title" href="/item/{{.ID}}">{{.Title}}</a>
+    {{if gt .MentionCount 1}}<span class="muted">×{{.MentionCount}}</span>{{end}}
+  </div>
+  <div class="row-meta">
+    {{with where .Item}}<span>{{.}}</span>{{end}}
+    <span>{{age .CreatedAt}} ago</span>
+    {{if .Due}}<span class="due">due {{.Due}}</span>{{end}}
+    {{if .Session.State}}<span class="state state-{{.Session.State}}">{{.Session.State}}{{with .Session.WaitingFor}}: {{.}}{{end}}</span>{{end}}
+    {{if eq .Status "answered"}}<span class="state">answer sent, awaiting receipt</span>{{end}}
+  </div>
+  {{if ne .Status "answered"}}<div class="row-actions">{{template "actions" .Item}}</div>{{end}}
+</li>
+{{end}}

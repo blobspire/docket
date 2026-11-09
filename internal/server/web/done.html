@@ -1,0 +1,17 @@
+{{define "done.html"}}{{template "head" .}}
+<h1>Done in the last 7 days</h1>
+{{if not .Closed}}<p class="empty">Nothing yet.</p>{{end}}
+<ol class="rows done">
+{{range .Closed}}
+<li class="row kind-{{.Kind}}" data-id="{{.ID}}" data-href="/item/{{.ID}}">
+  <div class="row-main"><span class="badge">{{kindName .Kind}}</span> <a class="title" href="/item/{{.ID}}">{{.Title}}</a></div>
+  <div class="row-meta">
+    {{with where .}}<span>{{.}}</span>{{end}}
+    <span>{{.Status}}{{with .Resolution}}: {{.}}{{end}}</span>
+    {{with .Answer}}<span>answered: {{.}}</span>{{end}}
+  </div>
+  <div class="row-actions"><button data-act="undo" data-key="u" class="quiet">Undo</button></div>
+</li>
+{{end}}
+</ol>
+{{template "foot" .}}{{end}}

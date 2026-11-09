@@ -44,6 +44,9 @@ func (b Box) Put(d Delivery) error {
 	if strings.TrimSpace(d.Text) == "" {
 		return errors.New("mailbox: empty delivery")
 	}
+	if _, err := os.Stat(filepath.Join(b.claimed(d.SessionID), d.ID+".json")); err == nil {
+		return nil // already delivered: a resend must not deliver twice
+	}
 	dir := b.inbox(d.SessionID)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err

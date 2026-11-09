@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   pending_permission TEXT,
   last_message TEXT,
   has_plugin INTEGER NOT NULL DEFAULT 0,
+  kind TEXT NOT NULL DEFAULT '',
   nudges INTEGER NOT NULL DEFAULT 0,
   nudge_hits INTEGER NOT NULL DEFAULT 0
 );
@@ -297,16 +298,17 @@ type Session struct {
 	PendingPermission string
 	LastMessage       string
 	HasPlugin         bool
+	Kind              string // interactive | bg | … (from the session registry)
 	Nudges            int
 	NudgeHits         int
 }
 
-const sessionCols = `id, COALESCE(machine,''), COALESCE(cwd,''), COALESCE(lead,''), COALESCE(name,''), COALESCE(tmux,''), COALESCE(bridge_id,''), COALESCE(pid,0), COALESCE(state,''), COALESCE(waiting_for,''), COALESCE(transcript_path,''), COALESCE(started_at,0), COALESCE(last_event_at,0), COALESCE(ended_at,0), COALESCE(pending_permission,''), COALESCE(last_message,''), has_plugin, nudges, nudge_hits`
+const sessionCols = `id, COALESCE(machine,''), COALESCE(cwd,''), COALESCE(lead,''), COALESCE(name,''), COALESCE(tmux,''), COALESCE(bridge_id,''), COALESCE(pid,0), COALESCE(state,''), COALESCE(waiting_for,''), COALESCE(transcript_path,''), COALESCE(started_at,0), COALESCE(last_event_at,0), COALESCE(ended_at,0), COALESCE(pending_permission,''), COALESCE(last_message,''), has_plugin, kind, nudges, nudge_hits`
 
 func scanSession(sc interface{ Scan(...any) error }) (Session, error) {
 	var x Session
 	var plugin int
-	err := sc.Scan(&x.ID, &x.Machine, &x.Cwd, &x.Lead, &x.Name, &x.Tmux, &x.BridgeID, &x.PID, &x.State, &x.WaitingFor, &x.TranscriptPath, &x.StartedAt, &x.LastEventAt, &x.EndedAt, &x.PendingPermission, &x.LastMessage, &plugin, &x.Nudges, &x.NudgeHits)
+	err := sc.Scan(&x.ID, &x.Machine, &x.Cwd, &x.Lead, &x.Name, &x.Tmux, &x.BridgeID, &x.PID, &x.State, &x.WaitingFor, &x.TranscriptPath, &x.StartedAt, &x.LastEventAt, &x.EndedAt, &x.PendingPermission, &x.LastMessage, &plugin, &x.Kind, &x.Nudges, &x.NudgeHits)
 	x.HasPlugin = plugin != 0
 	return x, err
 }
@@ -322,10 +324,10 @@ func (s *Store) GetSession(id string) (Session, bool, error) {
 
 // SessionPatch updates only the fields that are set.
 type SessionPatch struct {
-	Machine, Cwd, Lead, Name, Tmux, BridgeID, State, WaitingFor, TranscriptPath, PendingPermission, LastMessage *string
-	PID, StartedAt, LastEventAt, EndedAt                                                                       *int64
-	HasPlugin                                                                                                  *bool
-	AddNudge, AddNudgeHit                                                                                      bool
+	Machine, Cwd, Lead, Name, Tmux, BridgeID, State, WaitingFor, TranscriptPath, PendingPermission, LastMessage, Kind *string
+	PID, StartedAt, LastEventAt, EndedAt                                                                              *int64
+	HasPlugin                                                                                                         *bool
+	AddNudge, AddNudgeHit                                                                                             bool
 }
 
 func Str(s string) *string { return &s }
@@ -343,7 +345,7 @@ func (s *Store) PatchSession(id string, p SessionPatch) error {
 	var sets []string
 	var args []any
 	add := func(col string, v any) { sets = append(sets, col+"=?"); args = append(args, v) }
-	for col, v := range map[string]*string{"machine": p.Machine, "cwd": p.Cwd, "lead": p.Lead, "name": p.Name, "tmux": p.Tmux, "bridge_id": p.BridgeID, "state": p.State, "waiting_for": p.WaitingFor, "transcript_path": p.TranscriptPath, "pending_permission": p.PendingPermission, "last_message": p.LastMessage} {
+	for col, v := range map[string]*string{"machine": p.Machine, "cwd": p.Cwd, "lead": p.Lead, "name": p.Name, "tmux": p.Tmux, "bridge_id": p.BridgeID, "state": p.State, "waiting_for": p.WaitingFor, "transcript_path": p.TranscriptPath, "pending_permission": p.PendingPermission, "last_message": p.LastMessage, "kind": p.Kind} {
 		if v != nil {
 			add(col, *v)
 		}
@@ -741,8 +743,8 @@ func (s *Store) BlobFetched(sha string) error {
 
 type Delivery struct {
 	ID, ItemID, Machine, SessionID, Text, Nonce, Method, Status, Error string
-	CreatedAt, SentAt, ConfirmedAt                                    int64
-	Attempts                                                          int
+	CreatedAt, SentAt, ConfirmedAt                                     int64
+	Attempts                                                           int
 }
 
 const deliveryCols = `id, item_id, machine, session_id, text, nonce, method, status, error, created_at, COALESCE(sent_at,0), COALESCE(confirmed_at,0), attempts`

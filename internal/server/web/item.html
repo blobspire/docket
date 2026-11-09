@@ -1,0 +1,61 @@
+{{define "item.html"}}{{template "head" .}}
+{{with .Item}}
+<article class="item kind-{{.Kind}}" data-id="{{.ID}}" data-detail{{with $.Session.BridgeID}} data-session="{{rcURL .}}"{{end}}>
+  <p class="crumbs"><a href="/">← Queue</a> · <span class="badge">{{kindName .Kind}}</span> · {{.ID}} · {{.Status}}</p>
+  <h1>{{.Title}}</h1>
+  <p class="row-meta">
+    {{with where .}}<span>{{.}}</span>{{end}}
+    <span>filed {{clock .CreatedAt}} ({{age .CreatedAt}} ago)</span>
+    {{if gt .MentionCount 1}}<span>mentioned {{.MentionCount}} times</span>{{end}}
+    {{if .Due}}<span class="due">due {{.Due}}</span>{{end}}
+    {{if .Blocks}}<span>blocks: {{.Blocks}}</span>{{end}}
+  </p>
+
+  {{if $.Error}}<p class="error">{{$.Error}}</p>{{end}}
+  {{if $.Physical}}<p class="warn">This involves a physical action. It can't be approved from the queue: do it in person, then mark it done.</p>{{end}}
+
+  {{if .Recommend}}<p class="recommend"><strong>Agent recommends:</strong> {{.Recommend}}</p>{{end}}
+  {{range paras .Body}}<p class="body">{{.}}</p>{{end}}
+  {{if .Quote}}<blockquote>{{.Quote}}</blockquote>{{end}}
+
+  {{if $.Evidence}}
+  <section class="evidence">
+    {{range $.Evidence}}
+      <figure>
+      {{if not .Fetched}}<div class="muted">{{.Name}}: still being copied from its machine…</div>
+      {{else if isImage .Mime}}<a href="/blob/{{.SHA256}}?type={{.Mime}}" target="_blank"><img src="/blob/{{.SHA256}}?type={{.Mime}}" alt="{{.Name}}"></a>
+      {{else if isVideo .Mime}}<video controls preload="metadata" src="/blob/{{.SHA256}}?type={{.Mime}}"></video>
+      {{else}}<a href="/blob/{{.SHA256}}?type={{.Mime}}" target="_blank">{{.Name}}</a>{{end}}
+      <figcaption>{{.Name}}</figcaption>
+      </figure>
+    {{end}}
+  </section>
+  {{end}}
+
+  {{if .Answer}}<p class="answer"><strong>Your answer:</strong> {{.Answer}}</p>{{end}}
+  {{range $.Delivery}}<p class="muted">Delivery {{.Status}}{{with .Method}} via {{.}}{{end}}{{if .ConfirmedAt}}, received {{clock .ConfirmedAt}}{{end}}{{with .Error}}. Last try: {{.}}{{end}}</p>{{end}}
+
+  {{if and (ne .Status "done") (ne .Status "dismissed")}}
+  <div class="row-actions big">{{template "actions" .}}</div>
+  {{if .SessionID}}
+  <form class="answer-form" method="post" action="/item/{{.ID}}/act">
+    <input type="hidden" name="action" value="answer">
+    <label for="answer-text">Answer the agent{{if .Options}} in your own words{{end}}</label>
+    <textarea id="answer-text" name="text" rows="3" placeholder="Type or dictate. Your answer goes straight to the session that asked."></textarea>
+    <button class="primary" type="submit">Send answer</button>
+  </form>
+  {{end}}
+  {{end}}
+
+  {{with $.Session}}{{if .ID}}
+  <section class="session">
+    <h2>Session</h2>
+    <p>{{if .Name}}<strong>{{.Name}}</strong> · {{end}}{{.Machine}} · {{project .Cwd}} · {{.State}}{{with .WaitingFor}} ({{.}}){{end}}</p>
+    {{with .BridgeID}}<p><a class="primary-link" href="{{rcURL .}}" target="_blank" rel="noopener">Open the session in Claude ↗</a></p>{{end}}
+    {{if .Tmux}}<p class="muted">tmux pane {{.Tmux}} on {{.Machine}}</p>{{end}}
+    {{with .LastMessage}}<details><summary>Its last message</summary><pre class="last">{{.}}</pre></details>{{end}}
+  </section>
+  {{end}}{{end}}
+</article>
+{{end}}
+{{template "foot" .}}{{end}}

@@ -1,0 +1,67 @@
+{{define "head"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · docket</title>
+<link rel="stylesheet" href="/static/app.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2' y='2' width='12' height='12' rx='3' fill='%23d97757'/%3E%3C/svg%3E">
+</head>
+<body data-version="{{.Version}}">
+<header class="top">
+  <a class="brand" href="/">docket</a>
+  <nav>
+    <a href="/" {{if eq .Nav "queue"}}class="on"{{end}}>Queue</a>
+    <a href="/done" {{if eq .Nav "done"}}class="on"{{end}}>Done</a>
+    <a href="/health" {{if eq .Nav "health"}}class="on"{{end}}>Health</a>
+  </nav>
+  <button class="keys" type="button" data-help aria-label="Keyboard shortcuts">?</button>
+</header>
+<main>
+{{end}}
+
+{{define "foot"}}
+</main>
+<div class="help" hidden>
+  <div class="help-card">
+    <h2>Keyboard</h2>
+    <dl>
+      <dt>j / k</dt><dd>next / previous</dd>
+      <dt>enter</dt><dd>open</dd>
+      <dt>y / n</dt><dd>approve / decline</dd>
+      <dt>1–9</dt><dd>pick an option</dd>
+      <dt>a</dt><dd>answer</dd>
+      <dt>o</dt><dd>open the agent's session</dd>
+      <dt>d</dt><dd>done</dd>
+      <dt>s / S</dt><dd>snooze 1 hour / until tomorrow</dd>
+      <dt>x</dt><dd>dismiss</dd>
+      <dt>p</dt><dd>promote a "maybe"</dd>
+      <dt>u</dt><dd>undo the last action</dd>
+      <dt>g q · g d · g h</dt><dd>queue · done · health</dd>
+    </dl>
+    <p class="muted">Press ? or Esc to close.</p>
+  </div>
+</div>
+<div class="toast" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
+{{end}}
+
+{{define "actions"}}
+{{$id := .ID}}
+{{if eq .Kind "approval"}}
+  <button data-act="approve" data-key="y" class="primary">Approve</button>
+  <button data-act="decline" data-key="n">Decline</button>
+{{else if eq .Kind "review"}}
+  <button data-act="approve" data-key="y" class="primary">Looks good</button>
+{{else if .Options}}
+  {{range $i, $o := .Options}}<button data-act="choose" data-option="{{$i}}" data-key="{{add $i 1}}">{{add $i 1}}. {{$o}}</button>{{end}}
+{{end}}
+{{if or (eq .Kind "human_task") (eq .Kind "health") (eq .Kind "issue") (eq .Kind "fyi") (eq .Kind "blocker")}}
+  <button data-act="done" data-key="d" {{if or (eq .Kind "human_task") (eq .Kind "health")}}class="primary"{{end}}>Done</button>
+{{end}}
+{{if eq .Status "maybe"}}<button data-act="promote" data-key="p">Promote</button>{{end}}
+<button data-act="snooze" data-key="s" class="quiet">Snooze</button>
+<button data-act="dismiss" data-key="x" class="quiet">Dismiss</button>
+{{end}}

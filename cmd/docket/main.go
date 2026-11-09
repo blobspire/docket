@@ -3,18 +3,32 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/blobspire/docket/internal/backfill"
+	"github.com/blobspire/docket/internal/claudemd"
 	"github.com/blobspire/docket/internal/cli"
 	"github.com/blobspire/docket/internal/config"
 	"github.com/blobspire/docket/internal/hook"
+	"github.com/blobspire/docket/internal/mailbox"
+	"github.com/blobspire/docket/internal/record"
+	"github.com/blobspire/docket/internal/server"
+	"github.com/blobspire/docket/internal/sessions"
 	"github.com/blobspire/docket/internal/spool"
+	"github.com/blobspire/docket/internal/ulid"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -24,23 +38,36 @@ const usage = `docket: one queue for everything your agents need from you.
 
 Filing (for agents; never blocks, keep working afterwards):
   docket ask "<question>" [--options "a|b"] [--recommend a] [--why "..."] [--blocking] [--due YYYY-MM-DD|today|tomorrow] [--physical]
-      You are holding an action for Cole's approval, or need his decision.
-  docket task "<what only Cole can do>" [--blocks "<work it blocks>"] [--due ...]
+      You are holding an action for the human's approval, or need their decision.
+  docket task "<what only they can do>" [--blocks "<work it blocks>"] [--due ...]
       Logins, credentials, hardware, money, anything physical.
   docket review "<what to review>" --evidence <file>[,<file>...] [--why "..."]
-      Work ready for his review: screenshots, videos, reports, diffs.
+      Work ready for review: screenshots, videos, reports, diffs.
   docket issue "<problem you noticed>" [--why "..."]
       A problem you are not fixing now.
-  docket fyi "<something he should know>"
+  docket fyi "<something they should know>"
   docket done <dk-id> [--why "<how it was resolved>"]
-  Common flags: --key <stable-id> (re-filing the same key updates one item instead of adding another).
+  --key <stable-id> on any of these updates one item instead of adding another.
 
-Machine setup:
-  docket init --agent [--machine <name>]   create ~/.docket and name this machine
-  docket spool tail [-n N]                 show recent records
-  docket spool export [--cursor C] [--max BYTES]   (used by the server over SSH)
-  docket spool ack <cursor>                        (used by the server over SSH)
-  docket hook <Event>                      (used by the Claude Code plugin)
+Setting up a machine:
+  docket init --agent [--machine <name>] [--person <name>] [--no-claude-md]
+  docket uninstall                          remove docket's block from ~/.claude/CLAUDE.md
+  docket sync --server <ssh-host>           for laptops: push events to the server, fetch answers
+  docket backfill grep [--since 30d]        file "maybe" items for asks already in transcripts
+  docket import md <file> [--section "<heading>"] [--lead <name>]   import open tasks from markdown
+
+Server:
+  docket serve                              run the queue (config: ~/.config/docket/docket.toml)
+  docket server receive --machine <name>    (used by docket sync over SSH)
+  docket server put-blob <sha256>           (used by docket sync over SSH)
+  docket server backfill-prompt [--dry-run] ask live sessions to file what they're waiting on
+
+Used by the server and the plugin:
+  docket spool tail|export|ack|blob|path
+  docket mailbox put
+  docket sessions --json
+  docket session send --pane <%id> | resume --id <id> --cwd <dir> --name <name>
+  docket hook <Event>
   docket version
 `
 
@@ -57,12 +84,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (code int) {
 
 	if cmd == "hook" {
 		// Hooks must never break or block the agent's session: swallow every
-		// error and panic and exit 0. (Exit 2 would block some events.)
+		// error and panic. Only the background waiter may exit 2, to wake an
+		// idle session with an answer.
 		defer func() {
 			if r := recover(); r != nil {
 				fmt.Fprintf(stderr, "docket hook: internal error: %v\n", r)
+				code = 0
 			}
-			code = 0
 		}()
 		event := ""
 		if len(rest) > 0 {
@@ -73,7 +101,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (code int) {
 			fmt.Fprintf(stderr, "docket hook: %v\n", err)
 		}
 		if event == "Wait" && hc == 2 {
-			return 2 // wakes the idle session with the answer on stderr
+			return 2
 		}
 		return 0
 	}
@@ -86,8 +114,26 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (code int) {
 		err = cli.Done(rest, stdout, os.Getenv)
 	case cmd == "spool":
 		err = spoolCmd(rest, stdout)
+	case cmd == "mailbox":
+		err = mailboxCmd(rest, stdin)
+	case cmd == "sessions":
+		err = sessionsCmd(stdout)
+	case cmd == "session":
+		err = sessionCmd(rest, stdin)
 	case cmd == "init":
 		err = initCmd(rest, stdout)
+	case cmd == "uninstall":
+		err = uninstallCmd(stdout)
+	case cmd == "sync":
+		err = syncCmd(rest, stdout)
+	case cmd == "backfill":
+		err = backfillCmd(rest, stdout)
+	case cmd == "import":
+		err = importCmd(rest, stdout)
+	case cmd == "serve":
+		err = serveCmd()
+	case cmd == "server":
+		err = serverCmd(rest, stdin, stdout)
 	case cmd == "version", cmd == "--version", cmd == "-V":
 		fmt.Fprintf(stdout, "docket %s\n", version)
 	case cmd == "help", cmd == "--help", cmd == "-h":
@@ -102,9 +148,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (code int) {
 	return 0
 }
 
+// ---- spool / mailbox / sessions (agent machines) ---------------------------
+
 func spoolCmd(args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: docket spool tail|export|ack|path")
+		return errors.New("usage: docket spool tail|export|ack|blob|path")
 	}
 	sp := spool.Spool{Dir: config.SpoolDir()}
 	fs := flag.NewFlagSet("spool "+args[0], flag.ContinueOnError)
@@ -152,19 +200,85 @@ func spoolCmd(args []string, stdout io.Writer) error {
 			return err
 		}
 		return sp.Ack(c, *retention)
+	case "blob":
+		if len(args) != 2 || len(args[1]) != 64 || strings.Trim(args[1], "0123456789abcdef") != "" {
+			return errors.New("usage: docket spool blob <sha256>")
+		}
+		f, err := os.Open(filepath.Join(sp.Dir, "blobs", args[1]))
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = io.Copy(stdout, f)
+		return err
 	}
 	return fmt.Errorf("unknown spool command %q", args[0])
 }
+
+func mailboxCmd(args []string, stdin io.Reader) error {
+	if len(args) != 1 || args[0] != "put" {
+		return errors.New("usage: docket mailbox put  (reads one delivery as JSON on stdin)")
+	}
+	var d mailbox.Delivery
+	if err := json.NewDecoder(io.LimitReader(stdin, 1<<20)).Decode(&d); err != nil {
+		return fmt.Errorf("mailbox put: %w", err)
+	}
+	return mailbox.Box{Dir: config.MailboxDir()}.Put(d)
+}
+
+func sessionsCmd(stdout io.Writer) error {
+	live, err := sessions.List()
+	if err != nil {
+		return err
+	}
+	if live == nil {
+		live = []sessions.Live{}
+	}
+	return json.NewEncoder(stdout).Encode(live)
+}
+
+func sessionCmd(args []string, stdin io.Reader) error {
+	if len(args) == 0 {
+		return errors.New("usage: docket session send|resume ...")
+	}
+	text, err := io.ReadAll(io.LimitReader(stdin, 256<<10))
+	if err != nil {
+		return err
+	}
+	fs := flag.NewFlagSet("session "+args[0], flag.ContinueOnError)
+	switch args[0] {
+	case "send":
+		pane := fs.String("pane", "", "tmux pane id, e.g. %3")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		return sessions.SendTmux(*pane, string(text))
+	case "resume":
+		id := fs.String("id", "", "Claude Code session id")
+		cwd := fs.String("cwd", "", "folder the session ran in")
+		name := fs.String("name", "", "name for the resumed session")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		home, _ := os.UserHomeDir()
+		return sessions.Resume(*id, *cwd, *name, string(text), home)
+	}
+	return fmt.Errorf("unknown session command %q", args[0])
+}
+
+// ---- machine setup ---------------------------------------------------------
 
 func initCmd(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	agent := fs.Bool("agent", false, "set up this machine to capture agent events")
 	machine := fs.String("machine", "", "this machine's name in docket (default: short hostname)")
+	person := fs.String("person", "", "how agents should refer to you (default: the user)")
+	noBlock := fs.Bool("no-claude-md", false, "don't add docket's block to ~/.claude/CLAUDE.md")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if !*agent {
-		return errors.New("usage: docket init --agent [--machine <name>]   (server setup comes in a later version)")
+		return errors.New("usage: docket init --agent [--machine <name>] [--person <name>]   (server: write ~/.config/docket/docket.toml, then `docket serve`)")
 	}
 	for _, d := range []string{config.SpoolDir(), config.MailboxDir()} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
@@ -179,6 +293,279 @@ func initCmd(args []string, stdout io.Writer) error {
 			return err
 		}
 	}
-	fmt.Fprintf(stdout, "docket: %s is ready as machine %q.\nNext: install the Claude Code plugin:\n  claude plugin marketplace add blobspire/docket\n  claude plugin install docket@docket\n", config.Home(), config.Machine())
+	if p := strings.TrimSpace(*person); p != "" {
+		if err := os.WriteFile(filepath.Join(config.Home(), "person"), []byte(p+"\n"), 0o600); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(stdout, "docket: %s is ready as machine %q.\n", config.Home(), config.Machine())
+	if !*noBlock {
+		p := strings.TrimSpace(*person)
+		if p == "" {
+			if b, err := os.ReadFile(filepath.Join(config.Home(), "person")); err == nil {
+				p = strings.TrimSpace(string(b))
+			}
+		}
+		changed, err := claudemd.Install(p)
+		if err != nil {
+			return fmt.Errorf("CLAUDE.md: %w", err)
+		}
+		if changed {
+			fmt.Fprintf(stdout, "docket: added the docket block to %s (a backup is next to it).\n", claudemd.Path())
+		}
+	}
+	fmt.Fprint(stdout, "If you haven't yet, install the Claude Code plugin:\n  claude plugin marketplace add blobspire/docket\n  claude plugin install docket@docket\n")
 	return nil
+}
+
+func uninstallCmd(stdout io.Writer) error {
+	changed, err := claudemd.Uninstall()
+	if err != nil {
+		return err
+	}
+	if changed {
+		fmt.Fprintf(stdout, "docket: removed the docket block from %s.\n", claudemd.Path())
+	}
+	fmt.Fprint(stdout, "To remove the plugin too: claude plugin uninstall docket@docket\n")
+	return nil
+}
+
+// syncCmd is for machines the server can't reach (laptops): push the spool
+// to the server over SSH and bring back answers for local sessions.
+func syncCmd(args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("sync", flag.ContinueOnError)
+	host := fs.String("server", "", "ssh host of the docket server")
+	remoteBin := fs.String("docket", "~/.local/bin/docket", "docket path on the server")
+	quiet := fs.Bool("quiet", false, "print nothing on success")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *host == "" {
+		return errors.New("usage: docket sync --server <ssh-host>")
+	}
+	sp := spool.Spool{Dir: config.SpoolDir()}
+	box := mailbox.Box{Dir: config.MailboxDir()}
+	machine := config.Machine()
+	live, _ := sessions.List()
+	sessJSON, _ := json.Marshal(map[string]any{"_sessions": live})
+	sent, delivered := 0, 0
+	for page := 0; page < 50; page++ {
+		var buf bytes.Buffer
+		buf.Write(sessJSON)
+		buf.WriteByte('\n')
+		tr, err := sp.Export(&buf, sp.Acked(), 4<<20)
+		if err != nil {
+			return err
+		}
+		out, err := sshRun(*host, *remoteBin+" server receive --machine "+shellQuote(machine), &buf)
+		if err != nil {
+			return err
+		}
+		var reply server.SyncReply
+		if err := json.Unmarshal(out, &reply); err != nil {
+			return fmt.Errorf("server reply: %w", err)
+		}
+		c, err := spool.ParseCursor(reply.Cursor)
+		if err == nil && reply.Cursor != "" {
+			sp.Ack(c, 72*time.Hour)
+		}
+		for _, d := range reply.Deliveries {
+			if err := box.Put(d); err == nil {
+				delivered++
+			}
+		}
+		for _, sha := range reply.WantBlobs {
+			if f, err := os.Open(filepath.Join(sp.Dir, "blobs", sha)); err == nil {
+				sshRun(*host, *remoteBin+" server put-blob "+sha, f)
+				f.Close()
+			}
+		}
+		sent++
+		if !tr.More {
+			break
+		}
+		sessJSON = []byte(`{"_sessions":null}`)
+	}
+	box.GC(7 * 24 * time.Hour)
+	if !*quiet {
+		fmt.Fprintf(stdout, "docket: synced %s with %s (%d answer(s) received).\n", machine, *host, delivered)
+	}
+	return nil
+}
+
+func sshRun(host, command string, stdin io.Reader) ([]byte, error) {
+	c := exec.Command("ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, command)
+	c.Stdin = stdin
+	var out, errb bytes.Buffer
+	c.Stdout, c.Stderr = &out, &errb
+	if err := c.Run(); err != nil {
+		return nil, fmt.Errorf("ssh %s: %v: %s", host, err, strings.TrimSpace(errb.String()))
+	}
+	return out.Bytes(), nil
+}
+
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
+func backfillCmd(args []string, stdout io.Writer) error {
+	if len(args) == 0 || args[0] != "grep" {
+		return errors.New("usage: docket backfill grep [--since 30d] [--last 30]")
+	}
+	fs := flag.NewFlagSet("backfill grep", flag.ContinueOnError)
+	since := fs.String("since", "30d", "look at transcripts modified within this long")
+	last := fs.Int("last", 30, "assistant messages to read from the end of each session")
+	dry := fs.Bool("dry-run", false, "print candidates without filing them")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	d, err := parseDays(*since)
+	if err != nil {
+		return err
+	}
+	root := os.Getenv("CLAUDE_CONFIG_DIR")
+	if root == "" {
+		home, _ := os.UserHomeDir()
+		root = filepath.Join(home, ".claude")
+	}
+	cands, err := backfill.Scan(filepath.Join(root, "projects"), time.Now().Add(-d), *last)
+	if err != nil {
+		return err
+	}
+	sp := spool.Spool{Dir: config.SpoolDir()}
+	for _, c := range cands {
+		if *dry {
+			fmt.Fprintf(stdout, "%s  %-40s  %s\n", c.At, filepath.Base(c.Cwd), c.Sentence)
+			continue
+		}
+		r := record.New("backfill.candidate", os.Getenv)
+		r.SessionID, r.Cwd = c.SessionID, c.Cwd
+		r.Payload, _ = json.Marshal(map[string]string{"sentence": c.Sentence, "pattern": c.Pattern, "at": c.At})
+		if err := sp.Append(r); err != nil {
+			return err
+		}
+	}
+	if !*dry {
+		fmt.Fprintf(stdout, "docket: filed %d possible ask(s) from transcripts as \"maybe\" items.\n", len(cands))
+	}
+	return nil
+}
+
+func parseDays(s string) (time.Duration, error) {
+	if strings.HasSuffix(s, "d") {
+		var n int
+		if _, err := fmt.Sscanf(s, "%dd", &n); err == nil && n > 0 {
+			return time.Duration(n) * 24 * time.Hour, nil
+		}
+	}
+	return time.ParseDuration(s)
+}
+
+func importCmd(args []string, stdout io.Writer) error {
+	if len(args) < 2 || args[0] != "md" {
+		return errors.New(`usage: docket import md <file> [--section "<heading>"] [--lead <name>] [--kind human_task]`)
+	}
+	file := args[1]
+	fs := flag.NewFlagSet("import md", flag.ContinueOnError)
+	section := fs.String("section", "", "also import plain bullets under headings containing this text")
+	lead := fs.String("lead", "", "lead these items belong to")
+	kind := fs.String("kind", "human_task", "item kind")
+	if err := fs.Parse(args[2:]); err != nil {
+		return err
+	}
+	tasks, err := backfill.ImportMarkdown(file, *section)
+	if err != nil {
+		return err
+	}
+	abs, _ := filepath.Abs(file)
+	sp := spool.Spool{Dir: config.SpoolDir()}
+	for _, t := range tasks {
+		r := record.New("cli.file", func(k string) string {
+			if k == "DOCKET_LEAD" && *lead != "" {
+				return *lead
+			}
+			return os.Getenv(k)
+		})
+		r.Cwd = filepath.Dir(abs)
+		r.Item = &record.Item{ID: ulid.ItemID(), Kind: *kind, Title: t.Text, Body: fmt.Sprintf("Imported from %s line %d.", filepath.Base(file), t.Line),
+			Key: "import:" + filepath.Base(file) + ":" + strings.ToLower(t.Text)}
+		if err := sp.Append(r); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(stdout, "docket: imported %d open task(s) from %s.\n", len(tasks), file)
+	return nil
+}
+
+// ---- server ---------------------------------------------------------------
+
+func loadServer() (*server.Server, error) {
+	cfg, err := server.LoadConfig(server.ConfigPath())
+	if err != nil {
+		return nil, err
+	}
+	return server.Open(cfg)
+}
+
+func serveCmd() error {
+	s, err := loadServer()
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return s.Run(ctx)
+}
+
+func serverCmd(args []string, stdin io.Reader, stdout io.Writer) error {
+	if len(args) == 0 {
+		return errors.New("usage: docket server receive|put-blob")
+	}
+	s, err := loadServer()
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	switch args[0] {
+	case "receive":
+		fs := flag.NewFlagSet("server receive", flag.ContinueOnError)
+		machine := fs.String("machine", "", "the pushing machine's name")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		all, err := io.ReadAll(io.LimitReader(stdin, 64<<20))
+		if err != nil {
+			return err
+		}
+		var sessJSON []byte
+		if i := bytes.IndexByte(all, '\n'); i > 0 && bytes.HasPrefix(all, []byte(`{"_sessions"`)) {
+			var env struct {
+				Sessions json.RawMessage `json:"_sessions"`
+			}
+			if json.Unmarshal(all[:i], &env) == nil && string(env.Sessions) != "null" {
+				sessJSON = env.Sessions
+			}
+			all = all[i+1:]
+		}
+		reply, err := s.Receive(*machine, bytes.NewReader(all), sessJSON)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(stdout).Encode(reply)
+	case "backfill-prompt":
+		fs := flag.NewFlagSet("server backfill-prompt", flag.ContinueOnError)
+		dry := fs.Bool("dry-run", false, "list the sessions without prompting them")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		for _, line := range s.BackfillPrompt(context.Background(), *dry) {
+			fmt.Fprintln(stdout, line)
+		}
+		return nil
+	case "put-blob":
+		if len(args) != 2 {
+			return errors.New("usage: docket server put-blob <sha256>")
+		}
+		return s.PutBlob(args[1], stdin)
+	}
+	return fmt.Errorf("unknown server command %q", args[0])
 }
