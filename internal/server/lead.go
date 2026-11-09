@@ -113,14 +113,14 @@ func (s *Server) watchJobs(ctx context.Context) {
 				Title: fmt.Sprintf("Job %q looks stalled (no heartbeat for %s)", j.Name, age(now, j.LastBeatAt)),
 				Body:  "It was expected to beat every " + (time.Duration(j.Every) * time.Second).String() + ". Last note: " + j.Note})
 			s.st.Bump()
-			if hasLead && l.WakesOn("job_stale") {
-				s.Wake(ctx, l, fmt.Sprintf("Job %q has not sent a heartbeat for %s (expected every %s). Check whether it is still running and fix or report it.", j.Name, age(now, j.LastBeatAt), time.Duration(j.Every)*time.Second))
+			if !hasLead || l.WakesOn("job_stale") {
+				s.wakeFor(ctx, j, l, hasLead, fmt.Sprintf("Job %q has not sent a heartbeat for %s (expected every %s). Check whether it is still running and fix or report it.", j.Name, age(now, j.LastBeatAt), time.Duration(j.Every)*time.Second))
 			}
 		case (j.Status == "done" || j.Status == "failed") && j.Notified == "":
 			s.st.SetJobState(j.Scope, j.Name, j.Status, "ended")
 			s.resolveKey(key, "the job ended")
-			if hasLead && l.WakesOn("job_done") {
-				s.Wake(ctx, l, fmt.Sprintf("Job %q finished: %s.%s", j.Name, j.Status, comment(j.Note)))
+			if !hasLead || l.WakesOn("job_done") {
+				s.wakeFor(ctx, j, l, hasLead, fmt.Sprintf("Job %q finished: %s.%s", j.Name, j.Status, comment(j.Note)))
 			}
 		case j.Status == "running" && j.Notified == "stale":
 			s.st.SetJobState(j.Scope, j.Name, "running", "")
@@ -135,6 +135,40 @@ func (s *Server) leadPriority(name string) int {
 		return l.Priority
 	}
 	return 0
+}
+
+// leadOf names the lead an item belongs to: the one it was filed under, or
+// the lead that owns its session.
+func (s *Server) leadOf(it store.Item, sess store.Session) string {
+	if it.Lead != "" {
+		return it.Lead
+	}
+	if sess.ID == "" {
+		sess = store.Session{Machine: it.Machine, Cwd: it.Cwd}
+	}
+	for _, l := range s.cfg.Leads {
+		if l.Machine == firstNonEmptyStr(sess.Machine, it.Machine) && l.owns(sess) {
+			return l.Name
+		}
+	}
+	return ""
+}
+
+// wakeFor tells the session that registered a job, or else its lead.
+func (s *Server) wakeFor(ctx context.Context, j store.Job, l Lead, hasLead bool, text string) {
+	if j.SessionID != "" {
+		if sess, ok, _ := s.st.GetSession(j.SessionID); ok && sess.State != "ended" {
+			nonce := randomNonce()
+			s.st.AddDelivery(store.Delivery{ID: ulid.New(time.Now()), Machine: sess.Machine, SessionID: sess.ID, Nonce: nonce, Text: fmt.Sprintf("[docket #%s] %s", nonce, text)})
+			s.kickDeliver()
+			return
+		}
+	}
+	if hasLead {
+		if err := s.Wake(ctx, l, text); err != nil {
+			s.log.Printf("lead %s: %v", l.Name, err)
+		}
+	}
 }
 
 // owns reports whether a session belongs to this lead: it was started as the
