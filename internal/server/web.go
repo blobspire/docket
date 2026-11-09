@@ -33,8 +33,23 @@ var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 	"kindName": kindName,
 	"lower":    strings.ToLower,
 	"add":      func(a, b int) int { return a + b },
-	"isImage":  func(m string) bool { return strings.HasPrefix(m, "image/") },
-	"isVideo":  func(m string) bool { return strings.HasPrefix(m, "video/") },
+	"pct":      func(f float64) string { return strconv.FormatFloat(f, 'f', 0, 64) + "%" },
+	"tokens": func(n int64) string {
+		switch {
+		case n >= 1_000_000_000:
+			return strconv.FormatFloat(float64(n)/1e9, 'f', 1, 64) + "B"
+		case n >= 1_000_000:
+			return strconv.FormatFloat(float64(n)/1e6, 'f', 1, 64) + "M"
+		case n >= 1000:
+			return strconv.FormatFloat(float64(n)/1e3, 'f', 0, 64) + "k"
+		}
+		return strconv.FormatInt(n, 10)
+	},
+	"winName": func(w string) string {
+		return map[string]string{"five_hour": "5-hour", "seven_day": "weekly"}[w]
+	},
+	"isImage": func(m string) bool { return strings.HasPrefix(m, "image/") },
+	"isVideo": func(m string) bool { return strings.HasPrefix(m, "video/") },
 	"rcURL": func(bridge string) string {
 		if bridge == "" {
 			return ""
@@ -157,6 +172,8 @@ type page struct {
 	Tasks    []store.Item
 	Leads    []leadRow
 	Jobs     []store.Job
+	Quotas   []store.Quota
+	Spend    []Spend
 }
 
 type leadRow struct {
@@ -309,7 +326,8 @@ func (s *Server) pageHealth(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	sess, _ := s.st.Sessions(false, 200)
-	s.render(w, "health.html", page{Title: "Health", Nav: "health", Machines: rows, Sessions: sess})
+	quotas, _ := s.st.Quotas()
+	s.render(w, "health.html", page{Title: "Health", Nav: "health", Machines: rows, Sessions: sess, Quotas: quotas, Spend: s.LeadSpend(7)})
 }
 
 func (s *Server) act(w http.ResponseWriter, r *http.Request) {

@@ -71,6 +71,7 @@ type Lead struct {
 	WakeOn     []string `toml:"wake_on"`     // job_done, job_stale
 	Enabled    *bool    `toml:"enabled"`     // false: listed, but docket never starts or wakes it
 	MatchDir   bool     `toml:"match_dir"`   // also treat any session working in dir as this lead
+	AlwaysOn   bool     `toml:"always_on"`   // alert when its session isn't running
 }
 
 func (l Lead) On() bool { return l.Enabled == nil || *l.Enabled }

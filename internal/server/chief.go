@@ -119,6 +119,7 @@ func (s *Server) chiefTick(ctx context.Context) {
 		s.st.Bump()
 	}
 	s.watchMachines()
+	s.watchHealth(ctx)
 	s.pushes(ctx)
 	s.brief(ctx)
 }

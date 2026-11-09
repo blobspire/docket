@@ -371,3 +371,51 @@ func TestLeadOwnership(t *testing.T) {
 		}
 	}
 }
+
+func TestHealthWatchers(t *testing.T) {
+	e := newEnv(t, `[[machine]]
+name = "box"
+mode = "local"
+[[lead]]
+name = "orch"
+machine = "box"
+dir = "/tmp"
+always_on = true
+`)
+	st := e.s.st
+	now := time.Now().Unix()
+	st.SetQuota(store.Quota{Machine: "box", Account: "Personal", Window: "seven_day", UsedPct: 91, CapturedAt: now})
+	st.PatchSession("dlg", store.SessionPatch{Machine: store.Str("box"), State: store.Str("waiting"), WaitingFor: store.Str("dialog open"), WaitingSince: store.Int(now - 600), Name: store.Str("world-models-29")})
+	e.s.watchHealth(e.ctx)
+	items, _ := st.Items("open")
+	var titles []string
+	for _, it := range items {
+		titles = append(titles, it.Title)
+	}
+	joined := strings.Join(titles, " | ")
+	for _, want := range []string{"weekly limit at 91%", "world-models-29 is waiting on you (dialog open)", "Lead orch isn't running"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing %q in %q", want, joined)
+		}
+	}
+	// Recover: below the clear threshold, dialog answered, lead running.
+	st.SetQuota(store.Quota{Machine: "box", Account: "Personal", Window: "seven_day", UsedPct: 40, CapturedAt: now + 1})
+	st.PatchSession("dlg", store.SessionPatch{State: store.Str("busy"), WaitingSince: store.Int(0)})
+	st.PatchSession("orch-1", store.SessionPatch{Machine: store.Str("box"), Lead: store.Str("orch"), State: store.Str("idle")})
+	e.s.watchHealth(e.ctx)
+	if items, _ := st.Items("open"); len(items) != 0 {
+		t.Fatalf("still open after recovery: %+v", items)
+	}
+
+	st.SetUsage(store.Usage{Machine: "box", SessionID: "orch-1", Day: time.Now().UTC().Format("2006-01-02"), Cwd: "/tmp", Output: 1000, CacheRead: 100000})
+	st.SetUsage(store.Usage{Machine: "box", SessionID: "x", Day: time.Now().UTC().Format("2006-01-02"), Cwd: "/w/site", Output: 100})
+	sp := e.s.LeadSpend(7)
+	if len(sp) != 2 || sp[0].Name != "orch" || sp[0].Share < 90 {
+		t.Fatalf("spend = %+v", sp)
+	}
+	rec := httptest.NewRecorder()
+	e.s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/health", nil))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Who is spending") {
+		t.Fatalf("health page %d", rec.Code)
+	}
+}

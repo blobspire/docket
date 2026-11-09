@@ -16,6 +16,33 @@
   </table>
 </section>
 <section>
+  <h2>Claude usage limits</h2>
+  {{if not .Quotas}}<p class="empty">No usage data yet. It comes from Claude Code's status line (<code>docket statusline</code>).</p>{{else}}
+  <table>
+    <thead><tr><th>Account</th><th>Machine</th><th>Window</th><th>Used</th><th>Resets</th><th>As of</th></tr></thead>
+    <tbody>
+    {{range .Quotas}}
+    <tr class="{{if ge .UsedPct 85.0}}bad{{end}}"><td>{{.Account}}</td><td>{{.Machine}}</td><td>{{winName .Window}}</td><td>{{pct .UsedPct}}</td><td>{{clock .ResetsAt}}</td><td>{{age .CapturedAt}} ago</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</section>
+<section>
+  <h2>Who is spending (last 7 days)</h2>
+  {{if not .Spend}}<p class="empty">No token usage collected yet.</p>{{else}}
+  <table>
+    <thead><tr><th>Lead / project</th><th>Share</th><th>Output</th><th>Input + cache writes</th><th>Cache reads</th></tr></thead>
+    <tbody>
+    {{range .Spend}}
+    <tr><td>{{.Name}}</td><td>{{pct .Share}}</td><td>{{tokens .Output}}</td><td>{{tokens .InputWrite}}</td><td>{{tokens .CacheRead}}</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+  <p class="muted">Share weighs tokens roughly by price: output ×5, input and cache writes ×1, cache reads ×0.1.</p>
+  {{end}}
+</section>
+<section>
   <h2>Live sessions</h2>
   <table>
     <thead><tr><th>Session</th><th>Machine</th><th>Project</th><th>State</th><th>Hooks</th><th>Self-check</th><th>Last event</th></tr></thead>

@@ -223,7 +223,7 @@ func (s *Server) resume(ctx context.Context, m Machine, sess store.Session, d st
 	}
 	name := sess.Name
 	if name == "" {
-		name = "docket-" + d.SessionID[:8]
+		name = "docket-" + short(d.SessionID)
 	}
 	if _, err := s.remote(ctx, m, strings.NewReader(d.Text), "session", "resume", "--id", d.SessionID, "--cwd", sess.Cwd, "--name", name); err != nil {
 		s.st.DeliveryFailed(d.ID, err.Error())

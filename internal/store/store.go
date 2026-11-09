@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   last_message TEXT,
   has_plugin INTEGER NOT NULL DEFAULT 0,
   kind TEXT NOT NULL DEFAULT '',
+  waiting_since INTEGER NOT NULL DEFAULT 0,
   nudges INTEGER NOT NULL DEFAULT 0,
   nudge_hits INTEGER NOT NULL DEFAULT 0
 );
@@ -149,6 +150,26 @@ CREATE TABLE IF NOT EXISTS jobs (
   ended_at INTEGER,
   notified TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (scope, name)
+);
+CREATE TABLE IF NOT EXISTS quota (
+  machine TEXT NOT NULL,
+  account TEXT NOT NULL DEFAULT '',
+  win TEXT NOT NULL,
+  used_pct REAL NOT NULL,
+  resets_at INTEGER NOT NULL DEFAULT 0,
+  captured_at INTEGER NOT NULL,
+  PRIMARY KEY (machine, win)
+);
+CREATE TABLE IF NOT EXISTS usage (
+  machine TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  day TEXT NOT NULL,
+  cwd TEXT NOT NULL DEFAULT '',
+  input INTEGER NOT NULL DEFAULT 0,
+  output INTEGER NOT NULL DEFAULT 0,
+  cache_write INTEGER NOT NULL DEFAULT 0,
+  cache_read INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (machine, session_id, day)
 );
 CREATE TABLE IF NOT EXISTS kv (
   k TEXT PRIMARY KEY,
@@ -443,16 +464,17 @@ type Session struct {
 	LastMessage       string
 	HasPlugin         bool
 	Kind              string // interactive | bg | … (from the session registry)
+	WaitingSince      int64
 	Nudges            int
 	NudgeHits         int
 }
 
-const sessionCols = `id, COALESCE(machine,''), COALESCE(cwd,''), COALESCE(lead,''), COALESCE(name,''), COALESCE(tmux,''), COALESCE(bridge_id,''), COALESCE(pid,0), COALESCE(state,''), COALESCE(waiting_for,''), COALESCE(transcript_path,''), COALESCE(started_at,0), COALESCE(last_event_at,0), COALESCE(ended_at,0), COALESCE(pending_permission,''), COALESCE(last_message,''), has_plugin, kind, nudges, nudge_hits`
+const sessionCols = `id, COALESCE(machine,''), COALESCE(cwd,''), COALESCE(lead,''), COALESCE(name,''), COALESCE(tmux,''), COALESCE(bridge_id,''), COALESCE(pid,0), COALESCE(state,''), COALESCE(waiting_for,''), COALESCE(transcript_path,''), COALESCE(started_at,0), COALESCE(last_event_at,0), COALESCE(ended_at,0), COALESCE(pending_permission,''), COALESCE(last_message,''), has_plugin, kind, waiting_since, nudges, nudge_hits`
 
 func scanSession(sc interface{ Scan(...any) error }) (Session, error) {
 	var x Session
 	var plugin int
-	err := sc.Scan(&x.ID, &x.Machine, &x.Cwd, &x.Lead, &x.Name, &x.Tmux, &x.BridgeID, &x.PID, &x.State, &x.WaitingFor, &x.TranscriptPath, &x.StartedAt, &x.LastEventAt, &x.EndedAt, &x.PendingPermission, &x.LastMessage, &plugin, &x.Kind, &x.Nudges, &x.NudgeHits)
+	err := sc.Scan(&x.ID, &x.Machine, &x.Cwd, &x.Lead, &x.Name, &x.Tmux, &x.BridgeID, &x.PID, &x.State, &x.WaitingFor, &x.TranscriptPath, &x.StartedAt, &x.LastEventAt, &x.EndedAt, &x.PendingPermission, &x.LastMessage, &plugin, &x.Kind, &x.WaitingSince, &x.Nudges, &x.NudgeHits)
 	x.HasPlugin = plugin != 0
 	return x, err
 }
@@ -469,7 +491,7 @@ func (s *Store) GetSession(id string) (Session, bool, error) {
 // SessionPatch updates only the fields that are set.
 type SessionPatch struct {
 	Machine, Cwd, Lead, Name, Tmux, BridgeID, State, WaitingFor, TranscriptPath, PendingPermission, LastMessage, Kind *string
-	PID, StartedAt, LastEventAt, EndedAt                                                                              *int64
+	PID, StartedAt, LastEventAt, EndedAt, WaitingSince                                                                *int64
 	HasPlugin                                                                                                         *bool
 	AddNudge, AddNudgeHit                                                                                             bool
 }
@@ -494,7 +516,7 @@ func (s *Store) PatchSession(id string, p SessionPatch) error {
 			add(col, *v)
 		}
 	}
-	for col, v := range map[string]*int64{"pid": p.PID, "started_at": p.StartedAt, "last_event_at": p.LastEventAt, "ended_at": p.EndedAt} {
+	for col, v := range map[string]*int64{"pid": p.PID, "started_at": p.StartedAt, "last_event_at": p.LastEventAt, "ended_at": p.EndedAt, "waiting_since": p.WaitingSince} {
 		if v != nil {
 			add(col, *v)
 		}
@@ -1059,4 +1081,68 @@ func (s *Store) Jobs(limit int) ([]Job, error) {
 func (s *Store) SetJobState(scope, name, status, notified string) error {
 	_, err := s.DB.Exec(`UPDATE jobs SET status=?, notified=? WHERE scope=? AND name=?`, status, notified, scope, name)
 	return err
+}
+
+// ---- quota and usage --------------------------------------------------------
+
+type Quota struct {
+	Machine, Account, Window string
+	UsedPct                  float64
+	ResetsAt, CapturedAt     int64
+}
+
+func (s *Store) SetQuota(q Quota) error {
+	_, err := s.DB.Exec(`INSERT INTO quota(machine, account, win, used_pct, resets_at, captured_at) VALUES (?,?,?,?,?,?)
+		ON CONFLICT(machine, win) DO UPDATE SET account=excluded.account, used_pct=excluded.used_pct, resets_at=excluded.resets_at, captured_at=excluded.captured_at
+		WHERE excluded.captured_at >= quota.captured_at`, q.Machine, q.Account, q.Window, q.UsedPct, q.ResetsAt, q.CapturedAt)
+	return err
+}
+
+func (s *Store) Quotas() ([]Quota, error) {
+	rows, err := s.DB.Query(`SELECT machine, account, win, used_pct, resets_at, captured_at FROM quota ORDER BY account, machine, win`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Quota
+	for rows.Next() {
+		var q Quota
+		if err := rows.Scan(&q.Machine, &q.Account, &q.Window, &q.UsedPct, &q.ResetsAt, &q.CapturedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, q)
+	}
+	return out, rows.Err()
+}
+
+type Usage struct {
+	Machine, SessionID, Day, Cwd         string
+	Input, Output, CacheWrite, CacheRead int64
+}
+
+// SetUsage stores a session's token totals for one day (replacing earlier
+// totals for that day: the machine reports cumulative per-day numbers).
+func (s *Store) SetUsage(u Usage) error {
+	_, err := s.DB.Exec(`INSERT INTO usage(machine, session_id, day, cwd, input, output, cache_write, cache_read) VALUES (?,?,?,?,?,?,?,?)
+		ON CONFLICT(machine, session_id, day) DO UPDATE SET cwd=excluded.cwd, input=excluded.input, output=excluded.output,
+		cache_write=excluded.cache_write, cache_read=excluded.cache_read`, u.Machine, u.SessionID, u.Day, u.Cwd, u.Input, u.Output, u.CacheWrite, u.CacheRead)
+	return err
+}
+
+// UsageSince sums usage per (machine, session) from day onwards.
+func (s *Store) UsageSince(day string) ([]Usage, error) {
+	rows, err := s.DB.Query(`SELECT machine, session_id, MAX(cwd), SUM(input), SUM(output), SUM(cache_write), SUM(cache_read) FROM usage WHERE day >= ? GROUP BY machine, session_id`, day)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Usage
+	for rows.Next() {
+		var u Usage
+		if err := rows.Scan(&u.Machine, &u.SessionID, &u.Cwd, &u.Input, &u.Output, &u.CacheWrite, &u.CacheRead); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
 }

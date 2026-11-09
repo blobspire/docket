@@ -29,6 +29,7 @@ import (
 	"github.com/blobspire/docket/internal/sessions"
 	"github.com/blobspire/docket/internal/spool"
 	"github.com/blobspire/docket/internal/ulid"
+	tokens "github.com/blobspire/docket/internal/usage"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -71,7 +72,8 @@ Server:
 Used by the server and the plugin:
   docket spool tail|export|ack|blob|path
   docket mailbox put
-  docket sessions --json
+  docket sessions --json | quota | usage [--json] [--since 7d]
+  docket statusline [-- <your statusline command>]   record quota as Claude Code renders its status line
   docket session send --pane <%id> | resume --id <id> --cwd <dir> --name <name>
   docket session start --name <n> --cwd <dir> [--lead <l>] [--resume <id>] [-- <claude flags>]
   docket hook <Event>
@@ -127,6 +129,17 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (code int) {
 		err = mailboxCmd(rest, stdin)
 	case cmd == "sessions":
 		err = sessionsCmd(stdout)
+	case cmd == "statusline":
+		err = statuslineCmd(rest, stdin, stdout)
+	case cmd == "quota":
+		q, ok := tokens.Read()
+		if !ok {
+			fmt.Fprintln(stdout, "null")
+		} else {
+			err = json.NewEncoder(stdout).Encode(q)
+		}
+	case cmd == "usage":
+		err = usageCmd(rest, stdout)
 	case cmd == "session":
 		err = sessionCmd(rest, stdin)
 	case cmd == "init":
@@ -285,6 +298,66 @@ func sessionCmd(args []string, stdin io.Reader) error {
 	return fmt.Errorf("unknown session command %q", args[0])
 }
 
+// statuslineCmd records Claude Code's rate limits as it renders the status
+// line, then prints the output of the chained status line command, if any:
+//
+//	"statusLine": {"type": "command", "command": "docket statusline -- python3 ~/my_statusline.py"}
+func statuslineCmd(args []string, stdin io.Reader, stdout io.Writer) error {
+	in, _ := io.ReadAll(io.LimitReader(stdin, 1<<20))
+	tokens.Record(in)
+	if len(args) > 0 && args[0] == "--" {
+		args = args[1:]
+	}
+	if len(args) == 0 {
+		return nil
+	}
+	c := exec.Command(args[0], args[1:]...)
+	c.Stdin = bytes.NewReader(in)
+	c.Stdout = stdout
+	c.Stderr = io.Discard
+	c.Run()
+	return nil
+}
+
+func usageCmd(args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("usage", flag.ContinueOnError)
+	since := fs.String("since", "7d", "how far back")
+	asJSON := fs.Bool("json", false, "machine-readable output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	d, err := parseDays(*since)
+	if err != nil {
+		return err
+	}
+	days, err := tokens.Scan(time.Now().Add(-d))
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		if days == nil {
+			days = []tokens.Day{}
+		}
+		return json.NewEncoder(stdout).Encode(days)
+	}
+	per := map[string]*tokens.Day{}
+	for _, x := range days {
+		k := filepath.Base(x.Cwd)
+		if per[k] == nil {
+			per[k] = &tokens.Day{Cwd: k}
+		}
+		per[k].Input += x.Input
+		per[k].Output += x.Output
+		per[k].CacheWrite += x.CacheWrite
+		per[k].CacheRead += x.CacheRead
+	}
+	fmt.Fprintf(stdout, "%-36s %12s %12s %14s\n", "project", "output", "input+write", "cache read")
+	for k, v := range per {
+		fmt.Fprintf(stdout, "%-36s %12d %12d %14d\n", k, v.Output, v.Input+v.CacheWrite, v.CacheRead)
+	}
+	return nil
+}
+
 // ---- machine setup ---------------------------------------------------------
 
 func initCmd(args []string, stdout io.Writer) error {
@@ -366,7 +439,18 @@ func syncCmd(args []string, stdout io.Writer) error {
 	box := mailbox.Box{Dir: config.MailboxDir()}
 	machine := config.Machine()
 	live, _ := sessions.List()
-	sessJSON, _ := json.Marshal(map[string]any{"_sessions": live})
+	env := map[string]any{"_sessions": live}
+	if q, ok := tokens.Read(); ok {
+		env["_quota"] = q
+	}
+	stamp := filepath.Join(config.Home(), "usage-sent")
+	if info, err := os.Stat(stamp); err != nil || time.Since(info.ModTime()) > 15*time.Minute {
+		if days, err := tokens.Scan(time.Now().Add(-8 * 24 * time.Hour)); err == nil {
+			env["_usage"] = days
+			defer os.WriteFile(stamp, []byte(time.Now().Format(time.RFC3339)), 0o600)
+		}
+	}
+	sessJSON, _ := json.Marshal(env)
 	sent, delivered := 0, 0
 	for page := 0; page < 50; page++ {
 		var buf bytes.Buffer
@@ -561,16 +645,23 @@ func serverCmd(args []string, stdin io.Reader, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		var sessJSON []byte
-		if i := bytes.IndexByte(all, '\n'); i > 0 && bytes.HasPrefix(all, []byte(`{"_sessions"`)) {
+		var sessJSON, quotaJSON, usageJSON []byte
+		if i := bytes.IndexByte(all, '\n'); i > 0 && bytes.HasPrefix(all, []byte(`{"_`)) {
 			var env struct {
 				Sessions json.RawMessage `json:"_sessions"`
+				Quota    json.RawMessage `json:"_quota"`
+				Usage    json.RawMessage `json:"_usage"`
 			}
-			if json.Unmarshal(all[:i], &env) == nil && string(env.Sessions) != "null" {
-				sessJSON = env.Sessions
+			if json.Unmarshal(all[:i], &env) == nil {
+				if string(env.Sessions) != "null" {
+					sessJSON = env.Sessions
+				}
+				quotaJSON, usageJSON = env.Quota, env.Usage
 			}
 			all = all[i+1:]
 		}
+		s.ApplyQuota(*machine, quotaJSON)
+		s.ApplyUsage(*machine, usageJSON)
 		reply, err := s.Receive(*machine, bytes.NewReader(all), sessJSON)
 		if err != nil {
 			return err

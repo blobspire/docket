@@ -14,6 +14,7 @@ import (
 	"github.com/blobspire/docket/internal/mailbox"
 	"github.com/blobspire/docket/internal/sessions"
 	"github.com/blobspire/docket/internal/spool"
+	"github.com/blobspire/docket/internal/usage"
 )
 
 // localRun answers the same commands a remote machine's `docket` would, in
@@ -70,6 +71,21 @@ func localRun(stdin io.Reader, args ...string) ([]byte, error) {
 			live = []sessions.Live{}
 		}
 		return json.Marshal(live)
+	case "quota":
+		q, ok := usage.Read()
+		if !ok {
+			return []byte("null"), nil
+		}
+		return json.Marshal(q)
+	case "usage":
+		days, err := usage.Scan(time.Now().Add(-8 * 24 * time.Hour))
+		if err != nil {
+			return nil, err
+		}
+		if days == nil {
+			days = []usage.Day{}
+		}
+		return json.Marshal(days)
 	case "mailbox":
 		var d mailbox.Delivery
 		if err := json.NewDecoder(stdin).Decode(&d); err != nil {

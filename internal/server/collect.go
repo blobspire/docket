@@ -153,6 +153,7 @@ func (s *Server) pull(ctx context.Context, m Machine) error {
 		s.log.Printf("%s: sessions: %v", m.Name, err)
 	}
 	s.fetchBlobs(ctx, m)
+	s.collectHealth(ctx, m)
 	return nil
 }
 
@@ -171,6 +172,13 @@ func (s *Server) applySessions(machine string, data []byte) {
 		}
 		patch := store.SessionPatch{Machine: store.Str(machine), Cwd: store.Str(l.Cwd), Name: store.Str(l.Name), State: store.Str(state),
 			PID: store.Int(int64(l.PID)), Kind: store.Str(l.Kind), WaitingFor: store.Str(l.Waiting)}
+		prev, _, _ := s.st.GetSession(l.ID)
+		switch {
+		case state == "waiting" && prev.WaitingSince == 0:
+			patch.WaitingSince = store.Int(time.Now().Unix())
+		case state != "waiting" && prev.WaitingSince != 0:
+			patch.WaitingSince = store.Int(0)
+		}
 		if l.Tmux != "" {
 			patch.Tmux = store.Str(sessions.PaneOf(l.Tmux))
 		}
