@@ -47,14 +47,15 @@ Some observations that shaped the design:
    - `StopFailure` for API and login errors, and `SessionEnd`.
 3. **Self-check.** A regex over the agent's final message looks for ask-like phrases. If one matches and nothing was filed that turn, the Stop hook nudges the agent once. Hit rates are tracked.
 4. **Backfill.** Live sessions are asked once to file what they're waiting on, plus a local, free grep for candidates.
+5. **The session registry.** Claude Code's `~/.claude/sessions/*.json` shows every live session's state, so sessions started before the plugin still surface when they sit on a dialog.
 
 ## Delivery
 
 | Session state | Path |
 |---|---|
 | Busy | Mailbox, injected at the next tool call (`PostToolUse` additionalContext) or at turn end (Stop continuation) |
-| Idle, in tmux | Bracketed paste, only when no client is attached and the input line is empty, confirmed by a nonce receipt |
-| Idle, not in tmux | Async Stop-hook waiter (spike), falling back to a one-tap "open session" push |
+| Idle, any live session | An async Stop-hook waiter (`asyncRewake`) sleeps until an answer lands, then wakes the session |
+| Idle, started before the plugin, in tmux | Bracketed paste, guarded as above |
 | Dead | Auto-resume with the answer |
 | Machine offline | Delivered as soon as it is reachable |
 
@@ -68,7 +69,16 @@ Some observations that shaped the design:
   - Optional small model jobs pre-review items against approved preference rules and propose new rules. They annotate and bounce items; they never answer for the human.
 - **Safety:** items that involve physical actions (for example robot motion) can't be approved remotely.
 
+## What was learned building it
+
+`docs/spikes.md` records the experiments behind the design. The short version:
+- an async Stop hook can wake an idle session;
+- Claude Code's session registry gives state, tmux pane and Remote Control link for every live session;
+- a `permission_prompt` notification doesn't name the command, but `PermissionRequest` does.
+
 ## Milestones
+
+All of these have shipped in their first form:
 
 - **M0, capture:** spool, hooks, plugin, CLI filing, spikes.
 - **M1, the queue:** server, collector, deterministic items, CLAUDE.md block and skill, self-check, backfill, web queue, push.

@@ -376,11 +376,19 @@ func initCmd(args []string, stdout io.Writer) error {
 	machine := fs.String("machine", "", "this machine's name in docket (default: short hostname)")
 	person := fs.String("person", "", "how agents should refer to you (default: the user)")
 	noBlock := fs.Bool("no-claude-md", false, "don't add docket's block to ~/.claude/CLAUDE.md")
+	asServer := fs.Bool("server", false, "write a starter server config for this machine")
+	publicURL := fs.String("public-url", "", "server: the queue's URL, for links in pushes")
+	ntfyTopic := fs.String("ntfy-topic", "", "server: ntfy topic for phone pushes")
+	tz := fs.String("timezone", "", "server: time zone, e.g. America/New_York")
+	service := fs.Bool("install-service", false, "server (Linux): install and start the systemd user service")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if *asServer {
+		return initServer(*machine, *person, *publicURL, *ntfyTopic, *tz, *service, stdout)
+	}
 	if !*agent {
-		return errors.New("usage: docket init --agent [--machine <name>] [--person <name>]   (server: write ~/.config/docket/docket.toml, then `docket serve`)")
+		return errors.New("usage: docket init --agent [--machine <name>] [--person <name>]   or   docket init --server [--person <name>] [--public-url <url>] [--ntfy-topic <topic>] [--install-service]")
 	}
 	for _, d := range []string{config.SpoolDir(), config.MailboxDir()} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
@@ -709,3 +717,72 @@ func serverCmd(args []string, stdin io.Reader, stdout io.Writer) error {
 }
 
 func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
+
+const serverTemplate = `# docket server config. Personal: keep it out of version control.
+# Reference: https://github.com/blobspire/docket/blob/main/docs/examples/docket.example.toml
+person = %q
+listen = "127.0.0.1:7788"
+public_url = %q
+timezone = %q
+brief_at = "09:00"
+
+[ntfy]
+server = "https://ntfy.sh"
+topic = %q
+quiet_start = "23:00"
+quiet_end = "07:00"
+
+# This machine. Add one [[machine]] per computer with agents:
+#   mode = "pull" (the server SSHes in; set ssh = "<host>") or
+#   mode = "push" (a laptop that runs ` + "`docket sync --server <this host>`" + `).
+[[machine]]
+name = %q
+mode = "local"
+`
+
+func initServer(machine, person, publicURL, topic, tz string, service bool, stdout io.Writer) error {
+	path := server.ConfigPath()
+	if fileExists(path) {
+		fmt.Fprintf(stdout, "docket: %s already exists; leaving it alone.\n", path)
+	} else {
+		if machine == "" {
+			machine = config.Machine()
+		}
+		if person == "" {
+			person = "the user"
+		}
+		if topic == "" {
+			topic = "docket-" + strings.ToLower(ulid.New(time.Now())[10:26])
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(path, []byte(fmt.Sprintf(serverTemplate, person, publicURL, tz, topic, machine)), 0o600); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "docket: wrote %s (machine %q, ntfy topic %q: subscribe to it in the ntfy app).\n", path, machine, topic)
+	}
+	if _, err := server.LoadConfig(path); err != nil {
+		return err
+	}
+	if service {
+		home, _ := os.UserHomeDir()
+		unit := filepath.Join(home, ".config", "systemd", "user", "docket.service")
+		if err := os.MkdirAll(filepath.Dir(unit), 0o700); err != nil {
+			return err
+		}
+		self, _ := os.Executable()
+		body := "[Unit]\nDescription=docket: one queue for everything your agents need from you\nAfter=network-online.target\n\n[Service]\nExecStart=" + self + " serve\nRestart=always\nRestartSec=5\nEnvironment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin\n\n[Install]\nWantedBy=default.target\n"
+		if err := os.WriteFile(unit, []byte(body), 0o644); err != nil {
+			return err
+		}
+		for _, args := range [][]string{{"--user", "daemon-reload"}, {"--user", "enable", "--now", "docket"}} {
+			if out, err := exec.Command("systemctl", args...).CombinedOutput(); err != nil {
+				return fmt.Errorf("systemctl %s: %v %s", strings.Join(args, " "), err, out)
+			}
+		}
+		fmt.Fprintln(stdout, "docket: the docket service is running. Keep it running while logged out: loginctl enable-linger \"$USER\"")
+	}
+	fmt.Fprint(stdout, "Next:\n  sudo tailscale serve --bg --https=443 http://127.0.0.1:7788   # private HTTPS on your tailnet\n  docket server test-push\n")
+	return nil
+}

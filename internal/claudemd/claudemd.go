@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -133,11 +134,21 @@ func span(doc string) (int, int, bool) {
 	return i, j, true
 }
 
+// backup saves the file before docket changes it, keeping the newest 3.
 func backup(path string, data []byte) error {
 	if len(data) == 0 {
 		return nil
 	}
-	return os.WriteFile(fmt.Sprintf("%s.docket-backup-%s", path, time.Now().Format("20060102-150405")), data, 0o600)
+	if err := os.WriteFile(fmt.Sprintf("%s.docket-backup-%s", path, time.Now().Format("20060102-150405")), data, 0o600); err != nil {
+		return err
+	}
+	old, _ := filepath.Glob(path + ".docket-backup-*")
+	sort.Strings(old)
+	for len(old) > 3 {
+		os.Remove(old[0])
+		old = old[1:]
+	}
+	return nil
 }
 
 func writeAtomic(path, content string) error {
