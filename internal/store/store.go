@@ -123,7 +123,8 @@ CREATE TABLE IF NOT EXISTS decisions (
   ts INTEGER NOT NULL,
   action TEXT NOT NULL,
   answer TEXT NOT NULL DEFAULT '',
-  prev_status TEXT NOT NULL DEFAULT ''
+  prev_status TEXT NOT NULL DEFAULT '',
+  context TEXT NOT NULL DEFAULT ''
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(id UNINDEXED, title, body, quote, answer, resolution, tokenize='porter unicode61');
 CREATE TRIGGER IF NOT EXISTS items_fts_ai AFTER INSERT ON items BEGIN
@@ -195,6 +196,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("store: schema: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store: migrate: %w", err)
+	}
 	// Databases created before search existed: index their items once.
 	var indexed, items int
 	db.QueryRow(`SELECT COUNT(*) FROM items_fts`).Scan(&indexed)
@@ -203,6 +208,38 @@ func Open(path string) (*Store, error) {
 		db.Exec(`INSERT INTO items_fts(id, title, body, quote, answer, resolution) SELECT id, title, body, quote, answer, resolution FROM items`)
 	}
 	return &Store{DB: db}, nil
+}
+
+// columns added after a table was first created; migrate adds any that an
+// older database lacks.
+var added = []struct{ table, column, ddl string }{
+	{"sessions", "kind", "TEXT NOT NULL DEFAULT ''"},
+	{"sessions", "waiting_since", "INTEGER NOT NULL DEFAULT 0"},
+	{"decisions", "context", "TEXT NOT NULL DEFAULT ''"},
+}
+
+func migrate(db *sql.DB) error {
+	for _, a := range added {
+		rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, a.table)
+		if err != nil {
+			return err
+		}
+		have := false
+		for rows.Next() {
+			var n string
+			rows.Scan(&n)
+			if n == a.column {
+				have = true
+			}
+		}
+		rows.Close()
+		if !have {
+			if _, err := db.Exec(`ALTER TABLE ` + a.table + ` ADD COLUMN ` + a.column + ` ` + a.ddl); err != nil {
+				return fmt.Errorf("add %s.%s: %w", a.table, a.column, err)
+			}
+		}
+	}
+	return nil
 }
 
 // Search finds items (open or closed) matching every word of q, best first.

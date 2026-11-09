@@ -68,7 +68,10 @@ func (s *Server) Queue() (now, maybe, snoozed []Ranked, err error) {
 	}
 	today := s.cfg.Now().Format("2006-01-02")
 	for _, it := range items {
-		sess, _, _ := s.st.GetSession(it.SessionID)
+		sess, _, gerr := s.st.GetSession(it.SessionID)
+		if gerr != nil {
+			s.log.Printf("queue: session %s: %v", short(it.SessionID), gerr)
+		}
 		it.Lead = s.leadOf(it, sess)
 		r := Ranked{Item: it, Session: sess, Score: Score(it, sess, today, s.leadPriority(it.Lead))}
 		switch it.Status {

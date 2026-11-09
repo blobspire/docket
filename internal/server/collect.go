@@ -188,10 +188,15 @@ func (s *Server) applySessions(machine string, data []byte) {
 		if prev, ok, _ := s.st.GetSession(l.ID); !ok || prev.LastEventAt == 0 {
 			patch.LastEventAt = store.Int(time.Now().Unix())
 		}
-		s.st.PatchSession(l.ID, patch)
+		if err := s.st.PatchSession(l.ID, patch); err != nil {
+			s.log.Printf("%s: session %s: %v", machine, short(l.ID), err)
+		}
 	}
 	// Sessions of this machine that the registry no longer lists have exited.
-	known, _ := s.st.Sessions(false, 500)
+	known, err := s.st.Sessions(false, 500)
+	if err != nil {
+		s.log.Printf("%s: sessions: %v", machine, err)
+	}
 	for _, k := range known {
 		if k.Machine == machine && !seen[k.ID] && time.Since(time.Unix(k.LastEventAt, 0)) > 2*time.Minute {
 			s.st.PatchSession(k.ID, store.SessionPatch{State: store.Str("ended"), EndedAt: store.Int(time.Now().Unix())})

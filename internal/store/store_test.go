@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -170,5 +171,34 @@ func TestHumanTasksDueFirst(t *testing.T) {
 	got, _ := s.HumanTasks()
 	if len(got) != 2 || got[0].ID != "soon" {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestMigrateAddsColumnsToOldDatabases(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	old, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The sessions table as the first deployed version created it.
+	old.Exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, machine TEXT, cwd TEXT, lead TEXT, name TEXT, tmux TEXT, bridge_id TEXT,
+		pid INTEGER, state TEXT, waiting_for TEXT, transcript_path TEXT, started_at INTEGER, last_event_at INTEGER, ended_at INTEGER,
+		pending_permission TEXT, last_message TEXT, has_plugin INTEGER NOT NULL DEFAULT 0, nudges INTEGER NOT NULL DEFAULT 0,
+		nudge_hits INTEGER NOT NULL DEFAULT 0)`)
+	old.Exec(`CREATE TABLE decisions (id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, ts INTEGER NOT NULL,
+		action TEXT NOT NULL, answer TEXT NOT NULL DEFAULT '', prev_status TEXT NOT NULL DEFAULT '')`)
+	old.Exec(`INSERT INTO sessions(id, machine) VALUES ('s1', 'lab')`)
+	old.Close()
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.PatchSession("s1", SessionPatch{WaitingSince: Int(5), Kind: Str("interactive")}); err != nil {
+		t.Fatal(err)
+	}
+	x, ok, err := s.GetSession("s1")
+	if err != nil || !ok || x.WaitingSince != 5 || x.Kind != "interactive" || x.Machine != "lab" {
+		t.Fatalf("got %+v %v %v", x, ok, err)
 	}
 }
