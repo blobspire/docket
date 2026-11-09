@@ -49,6 +49,11 @@ Filing (for agents; never blocks, keep working afterwards):
   docket done <dk-id> [--why "<how it was resolved>"]
   --key <stable-id> on any of these updates one item instead of adding another.
 
+Long-running jobs (so a stall gets noticed):
+  docket job register <name> --every 10m [--why "..."]
+  docket job beat <name> [--why "progress"]
+  docket job done <name> [--failed] [--why "..."]
+
 Setting up a machine:
   docket init --agent [--machine <name>] [--person <name>] [--no-claude-md]
   docket uninstall                          remove docket's block from ~/.claude/CLAUDE.md
@@ -68,6 +73,7 @@ Used by the server and the plugin:
   docket mailbox put
   docket sessions --json
   docket session send --pane <%id> | resume --id <id> --cwd <dir> --name <name>
+  docket session start --name <n> --cwd <dir> [--lead <l>] [--resume <id>] [-- <claude flags>]
   docket hook <Event>
   docket version
 `
@@ -113,6 +119,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (code int) {
 		err = cli.File(cmd, rest, stdout, os.Getenv)
 	case cmd == "done":
 		err = cli.Done(rest, stdout, os.Getenv)
+	case cmd == "job":
+		err = cli.Job(rest, stdout, os.Getenv)
 	case cmd == "spool":
 		err = spoolCmd(rest, stdout)
 	case cmd == "mailbox":
@@ -254,6 +262,16 @@ func sessionCmd(args []string, stdin io.Reader) error {
 			return err
 		}
 		return sessions.SendTmux(*pane, string(text))
+	case "start":
+		name := fs.String("name", "", "tmux session name")
+		cwd := fs.String("cwd", "", "folder to start in")
+		lead := fs.String("lead", "", "lead name (exported as DOCKET_LEAD)")
+		resume := fs.String("resume", "", "resume this Claude Code session id")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		home, _ := os.UserHomeDir()
+		return sessions.Start(sessions.StartOpts{Name: *name, Cwd: *cwd, Lead: *lead, ResumeID: *resume, Args: fs.Args(), Prompt: string(text), Home: home})
 	case "resume":
 		id := fs.String("id", "", "Claude Code session id")
 		cwd := fs.String("cwd", "", "folder the session ran in")

@@ -5,6 +5,7 @@ package cli
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -246,4 +247,81 @@ func firstNonEmpty(vals ...string) string {
 // SessionStart hook) or Claude Code's own CLAUDE_CODE_SESSION_ID.
 func sessionID(getenv func(string) string) string {
 	return firstNonEmpty(getenv("DOCKET_SESSION"), getenv("CLAUDE_CODE_SESSION_ID"))
+}
+
+// Job records a long-running job's lifecycle so docket can tell whether it is
+// really still running:
+//
+//	docket job register <name> --every 10m [--why "..."]
+//	docket job beat <name> [--why "progress note"]
+//	docket job done <name> [--failed] [--why "..."]
+func Job(args []string, stdout io.Writer, getenv func(string) string) error {
+	if len(args) < 2 {
+		return errors.New(`usage: docket job register|beat|done <name> [--every 10m] [--failed] [--why "..."]`)
+	}
+	verb, rest := args[0], args[1:]
+	var name, every, note string
+	failed := false
+	for i := 0; i < len(rest); i++ {
+		a := rest[i]
+		switch {
+		case a == "--failed":
+			failed = true
+		case a == "--every" || a == "--why" || a == "--details":
+			if i+1 >= len(rest) {
+				return fmt.Errorf("%s needs a value", a)
+			}
+			i++
+			if a == "--every" {
+				every = rest[i]
+			} else {
+				note = rest[i]
+			}
+		case strings.HasPrefix(a, "--every="):
+			every = strings.TrimPrefix(a, "--every=")
+		case strings.HasPrefix(a, "--why="):
+			note = strings.TrimPrefix(a, "--why=")
+		case strings.HasPrefix(a, "--"):
+			return fmt.Errorf("unknown flag %s", a)
+		default:
+			if name != "" {
+				return errors.New("one job name please (quote names with spaces)")
+			}
+			name = a
+		}
+	}
+	if name == "" {
+		return errors.New("missing job name")
+	}
+	payload := map[string]any{"name": name}
+	if note != "" {
+		payload["note"] = note
+	}
+	switch verb {
+	case "register":
+		d, err := time.ParseDuration(every)
+		if err != nil || d < time.Minute {
+			return errors.New("register needs --every <how often you'll beat>, at least 1m (e.g. --every 10m)")
+		}
+		payload["every"] = int64(d.Seconds())
+	case "beat":
+	case "done":
+		payload["failed"] = failed
+	default:
+		return fmt.Errorf("unknown job command %q", verb)
+	}
+	r := record.New("job."+verb, getenv)
+	r.SessionID = sessionID(getenv)
+	r.Cwd, _ = os.Getwd()
+	r.Payload, _ = json.Marshal(payload)
+	if err := (spool.Spool{Dir: config.SpoolDir()}).Append(r); err != nil {
+		return err
+	}
+	switch verb {
+	case "register":
+		fmt.Fprintf(stdout, "docket: tracking job %q; beat at least every %s (docket job beat %s) and finish with docket job done %s.\n", name, every, name, name)
+	case "done":
+		fmt.Fprintf(stdout, "docket: job %q finished.\n", name)
+	}
+	return nil
 }

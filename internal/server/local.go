@@ -79,8 +79,20 @@ func localRun(stdin io.Reader, args ...string) ([]byte, error) {
 	case "session":
 		text, _ := io.ReadAll(io.LimitReader(stdin, 256<<10))
 		flags := map[string]string{}
-		for i := 2; i+1 < len(args); i += 2 {
-			flags[args[i]] = args[i+1]
+		var extra []string
+		for i := 2; i < len(args); i++ {
+			if args[i] == "--" {
+				extra = args[i+1:]
+				break
+			}
+			if i+1 < len(args) {
+				flags[args[i]] = args[i+1]
+				i++
+			}
+		}
+		if len(args) > 1 && args[1] == "start" {
+			home, _ := os.UserHomeDir()
+			return nil, sessions.Start(sessions.StartOpts{Name: flags["--name"], Cwd: flags["--cwd"], Lead: flags["--lead"], ResumeID: flags["--resume"], Args: extra, Prompt: string(text), Home: home})
 		}
 		if len(args) > 1 && args[1] == "send" {
 			return nil, sessions.SendTmux(flags["--pane"], string(text))

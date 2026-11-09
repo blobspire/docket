@@ -13,6 +13,7 @@
   <nav>
     <a href="/" {{if eq .Nav "queue"}}class="on"{{end}}>Queue</a>
     <a href="/checklist" {{if eq .Nav "checklist"}}class="on"{{end}}>Only you</a>
+    <a href="/leads" {{if eq .Nav "leads"}}class="on"{{end}}>Leads</a>
     <a href="/evidence" {{if eq .Nav "evidence"}}class="on"{{end}}>Evidence</a>
     <a href="/search" {{if eq .Nav "search"}}class="on"{{end}}>Search</a>
     <a href="/done" {{if eq .Nav "done"}}class="on"{{end}}>Done</a>
@@ -41,7 +42,7 @@
       <dt>p</dt><dd>promote a "maybe"</dd>
       <dt>u</dt><dd>undo the last action</dd>
       <dt>/</dt><dd>search</dd>
-      <dt>g q · g c · g e · g d · g h</dt><dd>queue · only-you list · evidence · done · health</dd>
+      <dt>g q · g c · g l · g e · g d · g h</dt><dd>queue · only-you · leads · evidence · done · health</dd>
     </dl>
     <p class="muted">Press ? or Esc to close.</p>
   </div>

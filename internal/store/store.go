@@ -135,6 +135,21 @@ END;
 CREATE TRIGGER IF NOT EXISTS items_fts_ad AFTER DELETE ON items BEGIN
   DELETE FROM items_fts WHERE id = old.id;
 END;
+CREATE TABLE IF NOT EXISTS jobs (
+  scope TEXT NOT NULL,
+  name TEXT NOT NULL,
+  machine TEXT NOT NULL DEFAULT '',
+  session_id TEXT NOT NULL DEFAULT '',
+  lead TEXT NOT NULL DEFAULT '',
+  every INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  started_at INTEGER NOT NULL,
+  last_beat_at INTEGER NOT NULL,
+  ended_at INTEGER,
+  notified TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (scope, name)
+);
 CREATE TABLE IF NOT EXISTS kv (
   k TEXT PRIMARY KEY,
   v TEXT NOT NULL
@@ -971,4 +986,77 @@ func (s *Store) Set(k, v string) error {
 // Version is a counter bumped on every change the UI should show.
 func (s *Store) Bump() {
 	s.DB.Exec(`INSERT INTO kv(k, v) VALUES ('version', '1') ON CONFLICT(k) DO UPDATE SET v=CAST(CAST(v AS INTEGER)+1 AS TEXT)`)
+}
+
+// ---- jobs -----------------------------------------------------------------
+
+// Job is a long-running piece of work a lead registered so docket can tell
+// whether it is really still running.
+type Job struct {
+	Scope, Name, Machine, SessionID, Lead, Status, Note, Notified string
+	Every                                                         int64 // expected seconds between beats
+	StartedAt, LastBeatAt, EndedAt                                int64
+}
+
+const jobCols = `scope, name, machine, session_id, lead, status, note, notified, every, started_at, last_beat_at, COALESCE(ended_at,0)`
+
+func scanJob(sc interface{ Scan(...any) error }) (Job, error) {
+	var j Job
+	err := sc.Scan(&j.Scope, &j.Name, &j.Machine, &j.SessionID, &j.Lead, &j.Status, &j.Note, &j.Notified, &j.Every, &j.StartedAt, &j.LastBeatAt, &j.EndedAt)
+	return j, err
+}
+
+// JobRegister starts (or restarts) tracking a job.
+func (s *Store) JobRegister(j Job, at int64) error {
+	_, err := s.DB.Exec(`INSERT INTO jobs(scope, name, machine, session_id, lead, every, status, note, started_at, last_beat_at)
+		VALUES (?,?,?,?,?,?,'running',?,?,?)
+		ON CONFLICT(scope, name) DO UPDATE SET machine=excluded.machine, session_id=excluded.session_id, lead=excluded.lead,
+		every=excluded.every, status='running', note=excluded.note, started_at=excluded.started_at, last_beat_at=excluded.last_beat_at,
+		ended_at=NULL, notified=''`, j.Scope, j.Name, j.Machine, j.SessionID, j.Lead, j.Every, j.Note, at, at)
+	return err
+}
+
+// JobBeat records that a job is alive.
+func (s *Store) JobBeat(scope, name, note string, at int64) error {
+	// A stale job that beats again goes back to running; its "stale" marker
+	// stays until the watcher has closed the stall alert.
+	_, err := s.DB.Exec(`UPDATE jobs SET last_beat_at=?, note=CASE WHEN ?<>'' THEN ? ELSE note END,
+		status=CASE WHEN status='stale' THEN 'running' ELSE status END
+		WHERE scope=? AND name=?`, at, note, note, scope, name)
+	return err
+}
+
+// JobDone records that a job ended.
+func (s *Store) JobDone(scope, name, note string, failed bool, at int64) error {
+	status := "done"
+	if failed {
+		status = "failed"
+	}
+	_, err := s.DB.Exec(`UPDATE jobs SET status=?, ended_at=?, note=CASE WHEN ?<>'' THEN ? ELSE note END, notified='' WHERE scope=? AND name=?`,
+		status, at, note, note, scope, name)
+	return err
+}
+
+// Jobs lists jobs, running first, newest first.
+func (s *Store) Jobs(limit int) ([]Job, error) {
+	rows, err := s.DB.Query(`SELECT `+jobCols+` FROM jobs ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'stale' THEN 1 ELSE 2 END, last_beat_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Job
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
+// SetJobState records a new status and which notification was sent.
+func (s *Store) SetJobState(scope, name, status, notified string) error {
+	_, err := s.DB.Exec(`UPDATE jobs SET status=?, notified=? WHERE scope=? AND name=?`, status, notified, scope, name)
+	return err
 }

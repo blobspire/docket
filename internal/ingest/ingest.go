@@ -42,7 +42,7 @@ var criticalErrors = map[string]bool{
 	"billing_error": true, "cloud_credential_error": true,
 }
 
-var nonceRe = regexp.MustCompile(`\[docket (dk-[0-9a-z]{8}) #([0-9a-z]{6,16})\]`)
+var nonceRe = regexp.MustCompile(`\[docket (dk-[0-9a-z]{8} )?#([0-9a-z]{6,16})\]`)
 
 // Process applies every unprocessed event, oldest first. It returns how many
 // events it handled.
@@ -269,6 +269,27 @@ func apply(s *store.Store, e store.RawEvent) error {
 			return err
 		}
 		return nil
+
+	case "job.register", "job.beat", "job.done":
+		var j struct {
+			Name   string `json:"name"`
+			Every  int64  `json:"every"`
+			Note   string `json:"note"`
+			Failed bool   `json:"failed"`
+		}
+		_ = json.Unmarshal(r.Payload, &j)
+		if j.Name == "" {
+			return nil
+		}
+		scope := firstNonEmpty(r.Lead, r.Machine)
+		switch r.Event {
+		case "job.register":
+			return s.JobRegister(store.Job{Scope: scope, Name: j.Name, Machine: r.Machine, SessionID: sid, Lead: r.Lead, Every: j.Every, Note: j.Note}, at)
+		case "job.beat":
+			return s.JobBeat(scope, j.Name, j.Note, at)
+		default:
+			return s.JobDone(scope, j.Name, j.Note, j.Failed, at)
+		}
 
 	case "backfill.candidate":
 		var c candidate

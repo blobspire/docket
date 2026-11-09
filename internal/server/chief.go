@@ -27,8 +27,8 @@ var kindBase = map[string]float64{
 }
 
 // Score orders the queue: what blocks work first, then what has waited longest.
-func Score(it store.Item, sess store.Session, today string) float64 {
-	sc := kindBase[it.Kind]
+func Score(it store.Item, sess store.Session, today string, leadPriority int) float64 {
+	sc := kindBase[it.Kind] + 10*float64(leadPriority)
 	if it.Kind == "health" && it.Blocking {
 		sc += 30
 	}
@@ -69,7 +69,7 @@ func (s *Server) Queue() (now, maybe, snoozed []Ranked, err error) {
 	today := s.cfg.Now().Format("2006-01-02")
 	for _, it := range items {
 		sess, _, _ := s.st.GetSession(it.SessionID)
-		r := Ranked{Item: it, Session: sess, Score: Score(it, sess, today)}
+		r := Ranked{Item: it, Session: sess, Score: Score(it, sess, today, s.leadPriority(it.Lead))}
 		switch it.Status {
 		case "maybe":
 			maybe = append(maybe, r)

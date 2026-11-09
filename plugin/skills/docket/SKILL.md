@@ -24,6 +24,18 @@ Useful flags:
 - `--physical`: the step involves physical action (robots, hardware). It can never be approved remotely; they'll do it in person.
 - `--key <stable-id>`: re-filing with the same key updates one item instead of adding a duplicate. Use it for things you re-check on a schedule.
 
+## Long-running jobs
+
+If you start something that runs for a long time (training, a backfill, a cluster job, a recording), register it so a stall gets noticed even while you're idle:
+
+```sh
+docket job register nightly-backtest --every 10m --why "3h run on the cluster"
+docket job beat nightly-backtest --why "epoch 4/12"     # from the job's loop, or each time you check on it
+docket job done nightly-backtest [--failed] --why "sharpe 1.4"
+```
+
+A job that misses two beats becomes a health alert, and its lead can be woken to look.
+
 ## Write items that can be decided without opening your session
 
 - **Title:** the decision or action itself, phrased as a question or an imperative. Not "Update".

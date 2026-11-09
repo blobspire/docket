@@ -1,7 +1,7 @@
 {
   "name": "docket",
   "displayName": "docket",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Captures what your agents need from you (approvals they're holding, blockers, permission prompts, reviews, human-only tasks) for one prioritized queue.",
   "author": {
     "name": "Cole Wendrowski"

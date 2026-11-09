@@ -27,6 +27,7 @@ type Config struct {
 	BriefPush   *bool     `toml:"brief_push"`
 	Ntfy        Ntfy      `toml:"ntfy"`
 	Machines    []Machine `toml:"machine"`
+	Leads       []Lead    `toml:"lead"`
 
 	loc *time.Location
 }
@@ -55,6 +56,42 @@ type Machine struct {
 	Sleepy        bool     `toml:"sleepy"`
 	RemoteApprove *bool    `toml:"remote_approve"`
 	Physical      []string `toml:"physical_keywords"`
+}
+
+// Lead is one long-running agent responsible for an area of work.
+type Lead struct {
+	Name       string   `toml:"name"`
+	Machine    string   `toml:"machine"`
+	Dir        string   `toml:"dir"`
+	Session    string   `toml:"session"`     // tmux session name (default: lead-<name>)
+	Priority   int      `toml:"priority"`    // higher ranks its items higher (0-5)
+	ClaudeArgs []string `toml:"claude_args"` // extra flags when docket starts it
+	Schedule   []string `toml:"schedule"`    // "hourly", "hourly@47", "daily@09:00", "every 30m"
+	WakePrompt string   `toml:"wake_prompt"` // what a scheduled wake says
+	WakeOn     []string `toml:"wake_on"`     // job_done, job_stale
+	Enabled    *bool    `toml:"enabled"`     // false: listed, but docket never starts or wakes it
+	MatchDir   bool     `toml:"match_dir"`   // also treat any session working in dir as this lead
+}
+
+func (l Lead) On() bool { return l.Enabled == nil || *l.Enabled }
+
+func (l Lead) WakesOn(event string) bool {
+	for _, e := range l.WakeOn {
+		if e == event {
+			return true
+		}
+	}
+	return false
+}
+
+// Lead looks up a lead by name.
+func (c *Config) Lead(name string) (Lead, bool) {
+	for _, l := range c.Leads {
+		if l.Name == name {
+			return l, true
+		}
+	}
+	return Lead{}, false
 }
 
 // Duration decodes TOML strings like "90s".
@@ -140,6 +177,31 @@ func LoadConfig(path string) (*Config, error) {
 		}
 		if m.Interval.Duration == 0 {
 			m.Interval.Duration = time.Minute
+		}
+	}
+	seenLead := map[string]bool{}
+	for i := range c.Leads {
+		l := &c.Leads[i]
+		if l.Name == "" || seenLead[l.Name] {
+			return nil, fmt.Errorf("config: every [[lead]] needs a unique name")
+		}
+		seenLead[l.Name] = true
+		if _, ok := c.Machine(l.Machine); !ok {
+			return nil, fmt.Errorf("config: lead %s: unknown machine %q", l.Name, l.Machine)
+		}
+		if l.Dir == "" {
+			return nil, fmt.Errorf("config: lead %s needs dir", l.Name)
+		}
+		if l.Session == "" {
+			l.Session = "lead-" + l.Name
+		}
+		for _, sch := range l.Schedule {
+			if _, err := parseSchedule(sch); err != nil {
+				return nil, fmt.Errorf("config: lead %s: %w", l.Name, err)
+			}
+		}
+		if l.WakePrompt == "" {
+			l.WakePrompt = "Scheduled check-in from docket: review your area, continue the next step of your plan, and file anything you need from " + c.Person + " with docket."
 		}
 	}
 	return &c, nil

@@ -82,6 +82,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /search", s.pageSearch)
 	mux.HandleFunc("GET /evidence", s.pageEvidence)
 	mux.HandleFunc("GET /checklist", s.pageChecklist)
+	mux.HandleFunc("GET /leads", s.pageLeads)
+	mux.HandleFunc("POST /lead/{name}/wake", s.wakeLead)
 	mux.HandleFunc("GET /health", s.pageHealth)
 	mux.HandleFunc("GET /blob/{sha}", s.blob)
 	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
@@ -153,6 +155,17 @@ type page struct {
 	Query    string
 	Gallery  []store.EvidenceRow
 	Tasks    []store.Item
+	Leads    []leadRow
+	Jobs     []store.Job
+}
+
+type leadRow struct {
+	Lead
+	Session  store.Session
+	HasSess  bool
+	Open     int
+	LastWake int64
+	NextWake string
 }
 
 type machineRow struct {
@@ -219,6 +232,59 @@ func (s *Server) pageEvidence(w http.ResponseWriter, r *http.Request) {
 func (s *Server) pageChecklist(w http.ResponseWriter, r *http.Request) {
 	tasks, _ := s.st.HumanTasks()
 	s.render(w, "checklist.html", page{Title: "Only you", Nav: "checklist", Tasks: tasks})
+}
+
+func (s *Server) pageLeads(w http.ResponseWriter, r *http.Request) {
+	open, _ := s.st.Items("open", "answered", "snoozed")
+	counts := map[string]int{}
+	for _, it := range open {
+		counts[it.Lead]++
+	}
+	now := s.cfg.Now()
+	var rows []leadRow
+	for _, l := range s.cfg.Leads {
+		row := leadRow{Lead: l, Open: counts[l.Name]}
+		row.Session, row.HasSess = s.leadSession(l)
+		row.LastWake, _ = strconv.ParseInt(s.st.Get("lead:"+l.Name+":last_wake"), 10, 64)
+		var next time.Time
+		for _, spec := range l.Schedule {
+			if sc, err := parseSchedule(spec); err == nil {
+				base := now
+				if row.LastWake > 0 {
+					base = time.Unix(row.LastWake, 0).In(now.Location())
+				}
+				if n := sc.next(base); next.IsZero() || n.Before(next) {
+					next = n
+				}
+			}
+		}
+		if !next.IsZero() && l.On() {
+			row.NextWake = next.Format("Mon 15:04")
+		}
+		rows = append(rows, row)
+	}
+	jobs, _ := s.st.Jobs(100)
+	s.render(w, "leads.html", page{Title: "Leads", Nav: "leads", Leads: rows, Jobs: jobs, Error: r.URL.Query().Get("err")})
+}
+
+func (s *Server) wakeLead(w http.ResponseWriter, r *http.Request) {
+	l, ok := s.cfg.Lead(r.PathValue("name"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	r.ParseForm()
+	text := strings.TrimSpace(r.FormValue("text"))
+	if text == "" {
+		text = l.WakePrompt
+	} else {
+		text = s.cfg.Person + " says (from the docket queue): " + text
+	}
+	back := "/leads"
+	if err := s.Wake(r.Context(), l, text); err != nil {
+		back += "?err=" + url.QueryEscape(err.Error())
+	}
+	http.Redirect(w, r, back, http.StatusSeeOther)
 }
 
 func (s *Server) pageHealth(w http.ResponseWriter, r *http.Request) {

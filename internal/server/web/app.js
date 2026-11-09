@@ -83,7 +83,7 @@
     const k = e.key;
     if (g) {
       g = false;
-      const to = { q: "/", c: "/checklist", e: "/evidence", d: "/done", h: "/health", s: "/search" }[k];
+      const to = { q: "/", c: "/checklist", l: "/leads", e: "/evidence", d: "/done", h: "/health", s: "/search" }[k];
       if (to) location.href = to;
       return;
     }

@@ -282,3 +282,92 @@ mode = "push"
 		t.Fatal("accepted an unconfigured machine")
 	}
 }
+
+func TestLeadsAndJobs(t *testing.T) {
+	e := newEnv(t, `person = "Cole"
+[[machine]]
+name = "box"
+mode = "local"
+
+[[lead]]
+name = "trading"
+machine = "box"
+dir = "/tmp"
+wake_on = ["job_stale", "job_done"]
+
+[[lead]]
+name = "off"
+machine = "box"
+dir = "/tmp"
+enabled = false
+`)
+	st := e.s.st
+	st.PatchSession("old", store.SessionPatch{Machine: store.Str("box"), Lead: store.Str("trading"), State: store.Str("ended"), LastEventAt: store.Int(100)})
+	st.PatchSession("live", store.SessionPatch{Machine: store.Str("box"), Lead: store.Str("trading"), State: store.Str("idle"), LastEventAt: store.Int(50), HasPlugin: store.Bool(true)})
+	l, _ := e.s.cfg.Lead("trading")
+	if sess, ok := e.s.leadSession(l); !ok || sess.ID != "live" {
+		t.Fatalf("leadSession = %+v %v (should prefer the live session)", sess, ok)
+	}
+
+	// A job that stopped beating: health item + the lead is woken.
+	past := time.Now().Add(-time.Hour).Unix()
+	st.JobRegister(store.Job{Scope: "trading", Name: "backtest", Machine: "box", Lead: "trading", Every: 60}, past)
+	e.s.watchJobs(e.ctx)
+	items, _ := st.Items("open")
+	if len(items) != 1 || items[0].Kind != "health" || !strings.Contains(items[0].Title, "backtest") {
+		t.Fatalf("items = %+v", items)
+	}
+	ds, _ := st.Deliveries("pending")
+	if len(ds) != 1 || ds[0].SessionID != "live" || !strings.Contains(ds[0].Text, "has not sent a heartbeat") {
+		t.Fatalf("wake deliveries = %+v", ds)
+	}
+	// It beats again: the health item closes.
+	st.JobBeat("trading", "backtest", "epoch 3", time.Now().Unix())
+	e.s.watchJobs(e.ctx)
+	if items, _ := st.Items("open"); len(items) != 0 {
+		t.Fatalf("stale item not closed: %+v", items)
+	}
+	// It finishes: the lead hears about it once.
+	st.JobDone("trading", "backtest", "sharpe 1.4", false, time.Now().Unix())
+	e.s.watchJobs(e.ctx)
+	e.s.watchJobs(e.ctx)
+	ds, _ = st.Deliveries("pending")
+	if len(ds) != 2 || !strings.Contains(ds[1].Text, `Job "backtest" finished: done. sharpe 1.4`) {
+		t.Fatalf("done deliveries = %+v", ds)
+	}
+
+	off, _ := e.s.cfg.Lead("off")
+	if err := e.s.Wake(e.ctx, off, "hi"); err == nil {
+		t.Fatal("woke a disabled lead")
+	}
+	h := e.s.Handler()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/leads", nil))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "trading") || !strings.Contains(rec.Body.String(), "backtest") {
+		t.Fatalf("GET /leads = %d", rec.Code)
+	}
+}
+
+func TestLeadOwnership(t *testing.T) {
+	l := Lead{Name: "cwant", Session: "cwant-orchestrator", Dir: "~/code/git/cwant"}
+	md := Lead{Name: "site", Session: "site", Dir: "~/code/git/site", MatchDir: true}
+	cases := []struct {
+		lead Lead
+		s    store.Session
+		want bool
+	}{
+		{l, store.Session{Name: "cwant-orchestrator-aurora"}, true},
+		{l, store.Session{Name: "cwant-orchestrator"}, true},
+		{l, store.Session{Name: "cwant-orchestratorX"}, false},
+		{l, store.Session{Lead: "other", Name: "cwant-orchestrator"}, false},
+		{l, store.Session{Cwd: "/home/c/code/git/cwant"}, false}, // no match_dir
+		{md, store.Session{Cwd: "/Users/c/code/git/site"}, true},
+		{md, store.Session{Cwd: "/Users/c/code/git/site/src"}, true},
+		{md, store.Session{Cwd: "/Users/c/code/git/site-old"}, false},
+	}
+	for i, c := range cases {
+		if got := c.lead.owns(c.s); got != c.want {
+			t.Errorf("case %d: owns(%+v) = %v", i, c.s, got)
+		}
+	}
+}

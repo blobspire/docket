@@ -1,0 +1,36 @@
+{{define "leads.html"}}{{template "head" .}}
+<h1>Leads</h1>
+{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+{{if not .Leads}}<p class="empty">No leads yet. Add <code>[[lead]]</code> sections to the server config: one long-running agent per area of work.</p>{{end}}
+{{range .Leads}}
+<section class="lead{{if not .On}} off{{end}}">
+  <h2>{{.Name}} <span class="muted">· {{.Machine}} · {{project .Dir}}{{if not .On}} · disabled{{end}}</span></h2>
+  <p class="row-meta">
+    {{if .HasSess}}<span class="state-{{.Session.State}}">session {{.Session.State}}{{with .Session.WaitingFor}}: {{.}}{{end}}</span>
+      {{with .Session.BridgeID}}<a href="{{rcURL .}}" target="_blank" rel="noopener">open ↗</a>{{end}}
+    {{else}}<span>no session yet</span>{{end}}
+    <span>{{.Open}} open item{{if ne .Open 1}}s{{end}}</span>
+    {{if .Schedule}}<span>schedule: {{range $i, $s := .Schedule}}{{if $i}}, {{end}}{{$s}}{{end}}</span>{{else}}<span>event-driven</span>{{end}}
+    {{if .LastWake}}<span>last wake {{age .LastWake}} ago</span>{{end}}
+    {{with .NextWake}}<span>next {{.}}</span>{{end}}
+  </p>
+  {{if .On}}
+  <form class="wake" method="post" action="/lead/{{.Name}}/wake">
+    <input name="text" placeholder="Message {{.Name}} (empty: its usual check-in)">
+    <button type="submit">Wake</button>
+  </form>
+  {{end}}
+</section>
+{{end}}
+
+<h2>Jobs</h2>
+{{if not .Jobs}}<p class="empty">Leads register long-running work with <code>docket job register</code>; stalls show up here and in the queue.</p>{{end}}
+<table>
+  <thead><tr><th>Job</th><th>Owner</th><th>Status</th><th>Last beat</th><th>Note</th></tr></thead>
+  <tbody>
+  {{range .Jobs}}
+  <tr class="{{if eq .Status "stale"}}bad{{end}}"><td>{{.Name}}</td><td>{{.Scope}}</td><td>{{.Status}}</td><td>{{age .LastBeatAt}} ago</td><td class="muted">{{.Note}}</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{template "foot" .}}{{end}}

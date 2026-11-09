@@ -86,3 +86,7 @@ tr.bad td { color: var(--bad); }
 figcaption a { text-decoration: none; font-weight: 600; color: var(--fg); }
 .top nav { overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
 .top nav::-webkit-scrollbar { display: none; }
+.lead { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 2px 14px 12px; margin-bottom: 10px; }
+.lead.off { opacity: .6; }
+.wake { display: flex; gap: 8px; margin-top: 8px; }
+.wake input { flex: 1; font: inherit; padding: 6px 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }

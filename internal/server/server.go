@@ -114,6 +114,7 @@ func (s *Server) Run(ctx context.Context) error {
 	})
 	loop("deliver", 5*time.Second, s.deliverKick, s.deliverAll)
 	loop("chief", 30*time.Second, nil, s.chiefTick)
+	loop("leads", 30*time.Second, nil, s.leadTick)
 
 	srv := &http.Server{Addr: s.cfg.Listen, Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)
