@@ -431,7 +431,13 @@ func backfillCmd(args []string, stdout io.Writer) error {
 		return err
 	}
 	sp := spool.Spool{Dir: config.SpoolDir()}
+	self := os.Getenv("CLAUDE_CODE_SESSION_ID") // don't backfill the session running this
+	n := 0
 	for _, c := range cands {
+		if c.SessionID != "" && c.SessionID == self {
+			continue
+		}
+		n++
 		if *dry {
 			fmt.Fprintf(stdout, "%s  %-40s  %s\n", c.At, filepath.Base(c.Cwd), c.Sentence)
 			continue
@@ -444,7 +450,7 @@ func backfillCmd(args []string, stdout io.Writer) error {
 		}
 	}
 	if !*dry {
-		fmt.Fprintf(stdout, "docket: filed %d possible ask(s) from transcripts as \"maybe\" items.\n", len(cands))
+		fmt.Fprintf(stdout, "docket: filed %d possible ask(s) from transcripts as \"maybe\" items.\n", n)
 	}
 	return nil
 }
