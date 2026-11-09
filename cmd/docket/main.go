@@ -61,6 +61,7 @@ Server:
   docket server receive --machine <name>    (used by docket sync over SSH)
   docket server put-blob <sha256>           (used by docket sync over SSH)
   docket server backfill-prompt [--dry-run] ask live sessions to file what they're waiting on
+  docket server test-push                   send a test notification to your phone
 
 Used by the server and the plugin:
   docket spool tail|export|ack|blob|path
@@ -566,6 +567,12 @@ func serverCmd(args []string, stdin io.Reader, stdout io.Writer) error {
 		for _, line := range s.BackfillPrompt(context.Background(), *dry) {
 			fmt.Fprintln(stdout, line)
 		}
+		return nil
+	case "test-push":
+		if err := s.TestPush(context.Background()); err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, "docket: test push sent.")
 		return nil
 	case "put-blob":
 		if len(args) != 2 {

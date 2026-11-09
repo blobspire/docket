@@ -2,7 +2,7 @@
 
 **One queue for everything your agents need from you.**
 
-> Status: **pre-alpha**, built in the open. Right now docket captures events on each machine (milestone M0). The queue, phone alerts and answer delivery are next. Don't depend on it yet.
+> Status: **pre-alpha**, built in the open and used daily by its author. Capture, the queue, phone pushes and answer delivery work (milestones M0–M1). Leads, the chief of staff's health checks and preference learning are in progress. Expect rough edges.
 
 If you run several coding agents across projects and machines, the things only you can do get buried:
 - an approval an agent is holding
@@ -35,19 +35,30 @@ docket gathers those into **one prioritized queue** with the evidence attached (
 
 The full design and roadmap are in [docs/design.md](docs/design.md).
 
-## Try the capture layer (M0)
+## Set it up
+
+On **every machine with agents**:
 
 ```sh
 git clone https://github.com/blobspire/docket && cd docket
-make install                       # builds ~/.local/bin/docket (needs Go 1.27+)
-docket init --agent --machine laptop
+make install                                   # ~/.local/bin/docket (Go 1.27+; or copy a `make dist` binary)
+docket init --agent --machine laptop --person Sam   # also adds docket's block to ~/.claude/CLAUDE.md
 claude plugin marketplace add blobspire/docket
 claude plugin install docket@docket
-# use Claude Code as usual, then:
-docket spool tail -n 5
 ```
 
-Nothing leaves the machine yet: events go to `~/.docket/spool/`.
+On the **always-on server** (one of those machines):
+
+```sh
+mkdir -p ~/.config/docket && cp docs/examples/docket.example.toml ~/.config/docket/docket.toml   # edit it
+cp deploy/systemd/docket.service ~/.config/systemd/user/ && systemctl --user enable --now docket
+sudo tailscale serve --bg --https=443 http://127.0.0.1:7788     # private HTTPS on your tailnet
+docket server test-push
+```
+
+Laptops that sleep run `docket sync --server <server>` (see `deploy/launchd/`). Machines the server can SSH into need nothing else.
+
+To start with what's already waiting: `docket backfill grep --since 30d` on each machine, and `docket import md <file> --section "<heading>"` for task lists kept in markdown.
 
 ## License
 
