@@ -18,6 +18,7 @@ import (
 	"github.com/blobspire/docket/internal/config"
 	"github.com/blobspire/docket/internal/record"
 	"github.com/blobspire/docket/internal/spool"
+	"github.com/blobspire/docket/internal/turnstate"
 	"github.com/blobspire/docket/internal/ulid"
 )
 
@@ -97,6 +98,9 @@ func File(cmd string, args []string, stdout io.Writer, getenv func(string) strin
 	r.Item = it
 	if err := sp.Append(r); err != nil {
 		return fmt.Errorf("could not record the item: %w", err)
+	}
+	if st, ok := turnstate.For(r.SessionID); ok {
+		st.MarkFiled() // so the end-of-turn self-check knows this turn filed
 	}
 	fmt.Fprintf(stdout, "docket: filed %s (%s). Cole will see it in his queue; keep working. His answer arrives as a message tagged [docket %s].\n", it.ID, kind, it.ID)
 	return nil

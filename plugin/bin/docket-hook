@@ -8,10 +8,17 @@ ev="${1:-unknown}"
 
 for c in "$DOCKET_BIN" "$HOME/.local/bin/docket" /opt/homebrew/bin/docket /usr/local/bin/docket; do
 	if [ -n "$c" ] && [ -x "$c" ] && [ ! -d "$c" ]; then
+		# The background waiter wakes an idle session by exiting 2, so its exit
+		# code must pass through; every other event is forced to exit 0.
+		[ "$ev" = Wait ] && exec "$c" hook Wait
 		"$c" hook "$ev"
 		exit 0
 	fi
 done
+
+# Without the binary there is nothing to deliver, and per-tool-call events
+# would only add noise.
+case "$ev" in Wait | PostToolUse) exit 0 ;; esac
 
 # Fallback: append {"v":0,"ts":...,"event":...,"raw":<payload>} as one line.
 d="${DOCKET_HOME:-$HOME/.docket}/spool"

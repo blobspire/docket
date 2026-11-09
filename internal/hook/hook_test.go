@@ -42,7 +42,7 @@ func TestRecordsStopWithMessage(t *testing.T) {
 	getenv := setup(t)
 	payload := `{"session_id":"abc-123","transcript_path":"/t.jsonl","cwd":"/w","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"I need your approval to push."}`
 	var out bytes.Buffer
-	if err := Run("Stop", strings.NewReader(payload), &out, getenv); err != nil {
+	if _, err := Run("Stop", strings.NewReader(payload), &out, &bytes.Buffer{}, getenv); err != nil {
 		t.Fatal(err)
 	}
 	if out.Len() != 0 {
@@ -63,7 +63,7 @@ func TestRecordsStopWithMessage(t *testing.T) {
 
 func TestGarbageInputStillRecorded(t *testing.T) {
 	getenv := setup(t)
-	if err := Run("Notification", strings.NewReader("not json at all"), &bytes.Buffer{}, getenv); err != nil {
+	if _, err := Run("Notification", strings.NewReader("not json at all"), &bytes.Buffer{}, &bytes.Buffer{}, getenv); err != nil {
 		t.Fatal(err)
 	}
 	rs := records(t)
@@ -76,7 +76,7 @@ func TestHugeStringsAreCapped(t *testing.T) {
 	getenv := setup(t)
 	huge := strings.Repeat("é", record.MaxString) // multi-byte, twice the cap in bytes
 	payload, _ := json.Marshal(map[string]string{"session_id": "s", "last_assistant_message": huge})
-	if err := Run("Stop", bytes.NewReader(payload), &bytes.Buffer{}, getenv); err != nil {
+	if _, err := Run("Stop", bytes.NewReader(payload), &bytes.Buffer{}, &bytes.Buffer{}, getenv); err != nil {
 		t.Fatal(err)
 	}
 	r := records(t)[0]
@@ -98,7 +98,7 @@ func TestInternalSessionsAreIgnored(t *testing.T) {
 		}
 		return getenv(k)
 	}
-	Run("Stop", strings.NewReader(`{"session_id":"x"}`), &bytes.Buffer{}, internal)
+	Run("Stop", strings.NewReader(`{"session_id":"x"}`), &bytes.Buffer{}, &bytes.Buffer{}, internal)
 	if rs := records(t); len(rs) != 0 {
 		t.Fatalf("recorded %d internal events", len(rs))
 	}
@@ -113,14 +113,14 @@ func TestSessionStartBindsSessionID(t *testing.T) {
 		}
 		return getenv(k)
 	}
-	Run("SessionStart", strings.NewReader(`{"session_id":"0b1c-22","hook_event_name":"SessionStart","source":"startup"}`), &bytes.Buffer{}, withEnvFile)
+	Run("SessionStart", strings.NewReader(`{"session_id":"0b1c-22","hook_event_name":"SessionStart","source":"startup"}`), &bytes.Buffer{}, &bytes.Buffer{}, withEnvFile)
 	b, _ := os.ReadFile(envFile)
 	if string(b) != "export DOCKET_SESSION=0b1c-22\n" {
 		t.Fatalf("env file = %q", b)
 	}
 	// A hostile session id must never reach the shell.
 	os.Remove(envFile)
-	Run("SessionStart", strings.NewReader(`{"session_id":"x; rm -rf ~","hook_event_name":"SessionStart"}`), &bytes.Buffer{}, withEnvFile)
+	Run("SessionStart", strings.NewReader(`{"session_id":"x; rm -rf ~","hook_event_name":"SessionStart"}`), &bytes.Buffer{}, &bytes.Buffer{}, withEnvFile)
 	if _, err := os.Stat(envFile); err == nil {
 		t.Fatal("wrote an env file for an unsafe session id")
 	}
@@ -130,7 +130,7 @@ func TestSecretsNeverCaptured(t *testing.T) {
 	getenv := setup(t)
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-secret-value")
 	t.Setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
-	Run("Stop", strings.NewReader(`{}`), &bytes.Buffer{}, func(k string) string {
+	Run("Stop", strings.NewReader(`{}`), &bytes.Buffer{}, &bytes.Buffer{}, func(k string) string {
 		if v := getenv(k); v != "" {
 			return v
 		}

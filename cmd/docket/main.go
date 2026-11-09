@@ -68,8 +68,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (code int) {
 		if len(rest) > 0 {
 			event = rest[0]
 		}
-		if err := hook.Run(event, stdin, stdout, os.Getenv); err != nil {
+		hc, err := hook.Run(event, stdin, stdout, stderr, os.Getenv)
+		if err != nil {
 			fmt.Fprintf(stderr, "docket hook: %v\n", err)
+		}
+		if event == "Wait" && hc == 2 {
+			return 2 // wakes the idle session with the answer on stderr
 		}
 		return 0
 	}

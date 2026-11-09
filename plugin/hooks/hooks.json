@@ -33,6 +33,17 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/docket-hook PostToolUse",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "Notification": [
       {
         "hooks": [
@@ -62,6 +73,13 @@
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/docket-hook Stop",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/docket-hook Wait",
+            "async": true,
+            "asyncRewake": true,
+            "timeout": 43200
           }
         ]
       }

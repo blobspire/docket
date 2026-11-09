@@ -56,6 +56,12 @@ else
 	fail "hook shim forwarding (exit=$code)"
 fi
 
+# 4b. The waiter's exit code (2 = wake the session) passes through.
+printf '#!/bin/sh\ncat >/dev/null\nexit 2\n' >"$tmp/fake3"
+chmod +x "$tmp/fake3"
+echo '{}' | DOCKET_BIN="$tmp/fake3" HOME="$tmp/home" sh "$hookshim" Wait
+[ $? -eq 2 ] && pass "waiter exit code passes through" || fail "waiter exit code masked"
+
 # 5. The CLI shim passes arguments through and reports a missing binary.
 printf '#!/bin/sh\necho "args:$*"\n' >"$tmp/fake2"
 chmod +x "$tmp/fake2"
