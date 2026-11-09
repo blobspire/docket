@@ -92,7 +92,7 @@ func File(cmd string, args []string, stdout io.Writer, getenv func(string) strin
 		}
 	}
 	r := record.New("cli.file", getenv)
-	r.SessionID = getenv("DOCKET_SESSION")
+	r.SessionID = sessionID(getenv)
 	r.Cwd, _ = os.Getwd()
 	r.Item = it
 	if err := sp.Append(r); err != nil {
@@ -112,7 +112,7 @@ func Done(args []string, stdout io.Writer, getenv func(string) string) error {
 		return errors.New(`usage: docket done <dk-id> [--why "<how it was resolved>"]`)
 	}
 	r := record.New("cli.done", getenv)
-	r.SessionID = getenv("DOCKET_SESSION")
+	r.SessionID = sessionID(getenv)
 	r.Cwd, _ = os.Getwd()
 	r.Done = &record.Done{ItemID: pos[0], Note: firstNonEmpty(flags["why"], flags["details"])}
 	if err := (spool.Spool{Dir: config.SpoolDir()}).Append(r); err != nil {
@@ -236,4 +236,10 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// sessionID is the filing session: DOCKET_SESSION (set by docket's
+// SessionStart hook) or Claude Code's own CLAUDE_CODE_SESSION_ID.
+func sessionID(getenv func(string) string) string {
+	return firstNonEmpty(getenv("DOCKET_SESSION"), getenv("CLAUDE_CODE_SESSION_ID"))
 }
