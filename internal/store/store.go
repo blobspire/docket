@@ -641,6 +641,11 @@ type Item struct {
 	AnsweredAt   int64
 	PushedAt     int64
 	ChiefNote    string
+
+	// Ongoing marks an upsert that re-checks a standing condition (a session
+	// still waiting, a machine still down). It refreshes the item without
+	// counting another mention. Not stored.
+	Ongoing bool
 }
 
 const itemCols = `id, kind, status, title, body, options, recommend, blocking, blocks, physical, due, COALESCE(dedupe_key,''), source, machine, session_id, lead, cwd, quote, created_at, updated_at, last_seen_at, mention_count, COALESCE(snoozed_until,0), COALESCE(resolved_at,0), resolution, answer, COALESCE(answered_at,0), COALESCE(pushed_at,0), chief_note`
@@ -678,11 +683,11 @@ func (s *Store) UpsertItem(it Item) (string, bool, error) {
 		err := s.DB.QueryRow(`SELECT id FROM items WHERE dedupe_key=? AND status IN ('maybe','open','snoozed','answered')`, it.DedupeKey).Scan(&id)
 		if err == nil {
 			// Same thing again: count the mention and refresh the wording.
-			_, err = s.DB.Exec(`UPDATE items SET mention_count=mention_count+1, last_seen_at=?, updated_at=?,
+			_, err = s.DB.Exec(`UPDATE items SET mention_count=CASE WHEN ? THEN 1 ELSE mention_count+1 END, last_seen_at=?, updated_at=?,
 				title=CASE WHEN ?<>'' THEN ? ELSE title END,
 				body=CASE WHEN ?<>'' THEN ? ELSE body END,
 				status=CASE WHEN status='maybe' AND ?='open' THEN 'open' ELSE status END
-				WHERE id=?`, t, t, it.Title, it.Title, it.Body, it.Body, it.Status, id)
+				WHERE id=?`, boolInt(it.Ongoing), t, t, it.Title, it.Title, it.Body, it.Body, it.Status, id)
 			return id, false, err
 		}
 		if !errors.Is(err, sql.ErrNoRows) {

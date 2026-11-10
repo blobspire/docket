@@ -38,3 +38,23 @@ func TestSchedules(t *testing.T) {
 		}
 	}
 }
+
+func TestRecommendedOption(t *testing.T) {
+	cases := []struct {
+		opt, rec string
+		want     bool
+	}{
+		{"a: also run the base checkpoint on B200", "a", true},
+		{"deploy", "deploy", true},
+		{"Deploy now", "deploy now", true},
+		{"b: no extra run", "a", false},
+		{"abort", "a", false},
+		{"wait", "", false},
+		{"2) keep going", "2", true},
+	}
+	for _, c := range cases {
+		if got := recommended(c.opt, c.rec); got != c.want {
+			t.Errorf("recommended(%q, %q) = %v", c.opt, c.rec, got)
+		}
+	}
+}

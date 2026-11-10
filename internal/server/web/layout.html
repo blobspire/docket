@@ -63,7 +63,7 @@
 {{else if eq .Kind "review"}}
   <button data-act="approve" data-key="y" class="primary">Looks good</button>
 {{else if .Options}}
-  {{range $i, $o := .Options}}<button data-act="choose" data-option="{{$i}}" data-key="{{add $i 1}}">{{add $i 1}}. {{$o}}</button>{{end}}
+  {{$rec := .Recommend}}{{range $i, $o := .Options}}<button data-act="choose" data-option="{{$i}}" data-key="{{add $i 1}}"{{if recommended $o $rec}} class="primary" title="The agent recommends this"{{end}}>{{add $i 1}}. {{$o}}{{if recommended $o $rec}} <span class="rec-tag">recommended</span>{{end}}</button>{{end}}
 {{end}}
 {{if or (eq .Kind "human_task") (eq .Kind "health") (eq .Kind "issue") (eq .Kind "fyi") (eq .Kind "blocker")}}
   <button data-act="done" data-key="d" {{if or (eq .Kind "human_task") (eq .Kind "health")}}class="primary"{{end}}>Done</button>

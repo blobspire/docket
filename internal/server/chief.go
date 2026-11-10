@@ -239,7 +239,7 @@ func (s *Server) watchMachines() {
 		key := "watchdog:machine:" + m.Name
 		if m.FailingSince > 0 && time.Since(time.Unix(m.FailingSince, 0)) > unreachableAfter {
 			s.st.UpsertItem(store.Item{
-				ID: ulid.ItemID(), Kind: "health", Blocking: true, Source: ingest.SrcWatchdog, Machine: m.Name, DedupeKey: key,
+				ID: ulid.ItemID(), Ongoing: true, Kind: "health", Blocking: true, Source: ingest.SrcWatchdog, Machine: m.Name, DedupeKey: key,
 				Title: fmt.Sprintf("%s has been unreachable since %s", m.Name, time.Unix(m.FailingSince, 0).In(s.cfg.loc).Format("Mon 15:04")),
 				Body:  "docket can't collect from it or deliver answers to it. Last error: " + m.LastError,
 			})

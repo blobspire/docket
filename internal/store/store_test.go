@@ -64,6 +64,18 @@ func TestDedupeCountsMentionsWhileActive(t *testing.T) {
 	}
 }
 
+func TestOngoingRecheckIsNotAMention(t *testing.T) {
+	s := open(t)
+	id, _, _ := s.UpsertItem(Item{ID: "dk-1", Kind: "blocker", Title: "waiting", DedupeKey: "waiting:s1", Ongoing: true})
+	for i := 0; i < 5; i++ {
+		s.UpsertItem(Item{ID: "dk-x", Kind: "blocker", Title: "still waiting", DedupeKey: "waiting:s1", Ongoing: true})
+	}
+	it, _, _ := s.GetItem(id)
+	if it.MentionCount != 1 || it.Title != "still waiting" {
+		t.Fatalf("item = %+v", it)
+	}
+}
+
 func TestReingestedItemIsNotDuplicated(t *testing.T) {
 	s := open(t)
 	s.UpsertItem(Item{ID: "dk-9", Kind: "ask", Title: "q"})

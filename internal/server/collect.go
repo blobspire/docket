@@ -173,9 +173,16 @@ func (s *Server) applySessions(machine string, data []byte) {
 		patch := store.SessionPatch{Machine: store.Str(machine), Cwd: store.Str(l.Cwd), Name: store.Str(l.Name), State: store.Str(state),
 			PID: store.Int(int64(l.PID)), Kind: store.Str(l.Kind), WaitingFor: store.Str(l.Waiting)}
 		prev, _, _ := s.st.GetSession(l.ID)
+		// Claude Code stamps the registry file when the status changes, so
+		// its updated time is when the wait began, even if docket only
+		// noticed later.
+		since := time.Now().Unix()
+		if u := l.Updated / 1000; u > 0 && u < since && since-u < 30*86400 {
+			since = u
+		}
 		switch {
-		case state == "waiting" && prev.WaitingSince == 0:
-			patch.WaitingSince = store.Int(time.Now().Unix())
+		case state == "waiting" && (prev.WaitingSince == 0 || since < prev.WaitingSince):
+			patch.WaitingSince = store.Int(since)
 		case state != "waiting" && prev.WaitingSince != 0:
 			patch.WaitingSince = store.Int(0)
 		}

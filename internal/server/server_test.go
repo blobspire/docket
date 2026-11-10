@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -387,7 +388,15 @@ always_on = true
 	st.SetQuota(store.Quota{Machine: "box", Account: "Personal", Window: "seven_day", UsedPct: 91, CapturedAt: now})
 	st.PatchSession("dlg", store.SessionPatch{Machine: store.Str("box"), State: store.Str("waiting"), WaitingFor: store.Str("dialog open"), WaitingSince: store.Int(now - 600), Name: store.Str("world-models-29")})
 	e.s.watchHealth(e.ctx)
+	// Re-checks don't pile up mentions.
+	e.s.watchHealth(e.ctx)
+	e.s.watchHealth(e.ctx)
 	items, _ := st.Items("open")
+	for _, it := range items {
+		if it.MentionCount != 1 {
+			t.Errorf("%q has %d mentions after re-checks", it.Title, it.MentionCount)
+		}
+	}
 	var titles []string
 	for _, it := range items {
 		titles = append(titles, it.Title)
@@ -492,5 +501,23 @@ mode = "local"
 	e.s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/brain", nil))
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Reuse existing checkpoints") {
 		t.Fatalf("GET /brain = %d", rec.Code)
+	}
+}
+
+func TestWaitStartsWhenTheRegistrySaysSo(t *testing.T) {
+	e := newEnv(t, "")
+	now := time.Now()
+	began := now.Add(-50 * time.Hour)
+	reg := fmt.Sprintf(`[{"pid":1,"session_id":"w1","status":"waiting","waiting_for":"dialog open","name":"wm","updated_at":%d}]`, began.UnixMilli())
+	e.s.applySessions("box", []byte(reg))
+	sess, _, _ := e.s.st.GetSession("w1")
+	if sess.WaitingSince != began.Unix() {
+		t.Fatalf("waiting since %d, want %d", sess.WaitingSince, began.Unix())
+	}
+	// Already tracked from a later first sighting: corrected to the earlier time.
+	e.s.st.PatchSession("w1", store.SessionPatch{WaitingSince: store.Int(now.Add(-time.Hour).Unix())})
+	e.s.applySessions("box", []byte(reg))
+	if sess, _, _ = e.s.st.GetSession("w1"); sess.WaitingSince != began.Unix() {
+		t.Fatalf("not corrected: %d", sess.WaitingSince)
 	}
 }

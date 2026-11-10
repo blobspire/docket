@@ -144,6 +144,25 @@ func TestLoginFailureIsCriticalHealth(t *testing.T) {
 	}
 }
 
+func TestFailureClosesWhenATurnFinishes(t *testing.T) {
+	h := newHarness(t)
+	h.send(hookRec("StopFailure", "s1", map[string]any{"error": "rate_limit", "last_assistant_message": "You've hit your 5-hour limit"}))
+	h.send(hookRec("StopFailure", "s1", map[string]any{"error": "rate_limit", "last_assistant_message": "You've hit your 5-hour limit"}))
+	if items := h.active(); len(items) != 1 || items[0].Kind != "health" {
+		t.Fatalf("items = %+v", items)
+	}
+	// Another session's turn doesn't clear it.
+	h.send(hookRec("Stop", "s2", map[string]any{"last_assistant_message": "Done."}))
+	if n := len(h.active()); n != 1 {
+		t.Fatalf("another session's Stop closed the failure")
+	}
+	// The limit reset and this session finished a turn.
+	h.send(hookRec("Stop", "s1", map[string]any{"last_assistant_message": "Picked up where I left off."}))
+	if n := len(h.active()); n != 0 {
+		t.Fatalf("failure still open after the session finished a turn")
+	}
+}
+
 func TestReceiptConfirmsDelivery(t *testing.T) {
 	h := newHarness(t)
 	h.s.UpsertItem(store.Item{ID: "dk-12345678", Kind: "ask", Title: "q", SessionID: "s1"})

@@ -254,7 +254,9 @@ func apply(s *store.Store, e store.RawEvent) error {
 		if err := confirmReceipts(s, p.LastMessage); err != nil {
 			return err
 		}
-		_, err := s.ResolveBySession(sid, "the session continued", SrcNotification)
+		// A turn that finished means any earlier failure (a usage limit, an
+		// expired login) has cleared for this session.
+		_, err := s.ResolveBySession(sid, "the session continued", SrcNotification, SrcFailure)
 		return err
 
 	case "SessionEnd":

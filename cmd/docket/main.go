@@ -281,8 +281,16 @@ func sessionCmd(args []string, stdin io.Reader) error {
 	switch args[0] {
 	case "send":
 		pane := fs.String("pane", "", "tmux pane id, e.g. %3")
+		check := fs.Bool("check", false, "only report whether a paste would go ahead; type nothing")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
+		}
+		if *check {
+			if err := sessions.CheckTmux(*pane); err != nil {
+				return err
+			}
+			fmt.Println("ok: safe to type into", *pane)
+			return nil
 		}
 		return sessions.SendTmux(*pane, string(text))
 	case "start":

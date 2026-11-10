@@ -29,11 +29,12 @@ var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 		}
 		return ""
 	},
-	"project":  project,
-	"kindName": kindName,
-	"lower":    strings.ToLower,
-	"add":      func(a, b int) int { return a + b },
-	"pct":      func(f float64) string { return strconv.FormatFloat(f, 'f', 0, 64) + "%" },
+	"recommended": recommended,
+	"project":     project,
+	"kindName":    kindName,
+	"lower":       strings.ToLower,
+	"add":         func(a, b int) int { return a + b },
+	"pct":         func(f float64) string { return strconv.FormatFloat(f, 'f', 0, 64) + "%" },
 	"tokens": func(n int64) string {
 		switch {
 		case n >= 1_000_000_000:
@@ -451,4 +452,25 @@ func (s *Server) blob(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	info, _ := f.Stat()
 	http.ServeContent(w, r, "", info.ModTime(), f)
+}
+
+// recommended reports whether an option is the one the agent recommended:
+// the same text, or the option starts with the recommended label ("a" for
+// "a: run it again").
+func recommended(option, rec string) bool {
+	o, r := strings.ToLower(strings.TrimSpace(option)), strings.ToLower(strings.TrimSpace(rec))
+	if r == "" {
+		return false
+	}
+	if o == r {
+		return true
+	}
+	if !strings.HasPrefix(o, r) {
+		return false
+	}
+	switch o[len(r)] {
+	case ':', ')', '.', ' ', '-', ',':
+		return true
+	}
+	return false
 }
