@@ -48,7 +48,14 @@ func (s *Server) Decide(id string, a Action) error {
 	switch it.Status {
 	case "done", "dismissed", "expired":
 		if a.Kind == "reopen" {
-			return s.st.SetStatus(id, "open", "", "reopen")
+			// The human closed it here: reopening is undoing that close, with
+			// everything it set off (a queued "marked done", a noise mark and
+			// its note, an expiry). Otherwise an agent or docket closed it.
+			switch s.st.LastDecision(id) {
+			case "done", "dismiss", "noise", "expire":
+				return s.Decide(id, Action{Kind: "undo"})
+			}
+			return s.st.Reopen(id)
 		}
 		if a.Kind != "undo" && a.Kind != "reclassify" {
 			return errors.New("this item is already closed; undo it from the Done page to act on it again")
@@ -89,8 +96,14 @@ func (s *Server) Decide(id string, a Action) error {
 		if _, ok := urgencyRank[u]; u != "" && !ok {
 			return errors.New("urgency must be now, soon or normal")
 		}
-		if a.Project != "" && (p == "" || p == store.Unsorted) {
+		if a.Project != "" && p == "" {
 			return fmt.Errorf("%q isn't a usable project name: use letters, digits and dashes", a.Project)
+		}
+		if p == projectName(it) {
+			p = "" // where it already is: nothing to move
+		}
+		if p == store.Unsorted {
+			return errors.New(`"unsorted" is where items without a project land; pick a project`)
 		}
 		if p != "" {
 			s.st.EnsureProject(p, "")

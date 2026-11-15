@@ -634,3 +634,35 @@ func (s *Store) MovedByKey(k, session, machine string) (Item, bool) {
 	}
 	return Item{}, false
 }
+
+// LastDecision is the most recent logged action on an item ("" if none).
+func (s *Store) LastDecision(itemID string) string {
+	var a string
+	s.DB.QueryRow(`SELECT action FROM decisions WHERE item_id=? ORDER BY id DESC LIMIT 1`, itemID).Scan(&a)
+	return a
+}
+
+// Reopen brings back an item closed without a logged decision (an agent's
+// done, a condition that cleared), with its closing note and expiry gone.
+func (s *Store) Reopen(id string) error {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var prev string
+	if err := tx.QueryRow(`SELECT status FROM items WHERE id=?`, id).Scan(&prev); err != nil {
+		return err
+	}
+	t := now()
+	if _, err := tx.Exec(`UPDATE items SET status='open', resolution='', resolved_at=NULL, expires_at=0, updated_at=? WHERE id=?`, t, id); err != nil {
+		if isDedupeConflict(err) {
+			return errors.New("can't reopen: an open item with the same key has been filed since")
+		}
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO decisions(item_id, ts, action, prev_status) VALUES (?,?,'reopen',?)`, id, t, prev); err != nil {
+		return err
+	}
+	return tx.Commit()
+}

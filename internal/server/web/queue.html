@@ -19,7 +19,7 @@
   {{with $q.ProjectInfo}}
   <form class="project-edit" method="post" action="/project/{{.Name}}" hidden>
     <label>Description <input name="description" value="{{.Description}}" placeholder="One line: what this project is"></label>
-    <input type="hidden" name="old_description" value="{{.Description}}">
+    <input type="hidden" name="old_description" value="{{.Description}}">{{if .Archived}}<input type="hidden" name="old_archived" value="1">{{end}}
     <label>Rename or merge into <input name="rename" placeholder="{{.Name}}"></label>
     <label class="check"><input type="checkbox" name="archived" value="1"{{if .Archived}} checked{{end}}> Archive (hide it from the sidebar once nothing is open)</label>
     <div class="actions"><button class="primary" type="submit">Save</button><button type="button" class="quiet" data-edit-project>Cancel</button></div>

@@ -53,6 +53,9 @@ func (safeLinks) Transform(doc *ast.Document, reader text.Reader, _ parser.Conte
 		}
 		if inLink {
 			parent := img.Parent()
+			if img.FirstChild() == nil {
+				img.AppendChild(img, ast.NewString([]byte("image")))
+			}
 			for c := img.FirstChild(); c != nil; {
 				next := c.NextSibling()
 				parent.InsertBefore(parent, img, c)

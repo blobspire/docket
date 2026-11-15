@@ -4,7 +4,7 @@
 {{if not .Closed}}<p class="empty">Nothing yet.</p>{{end}}
 <ol class="rows plain">
 {{range .Closed}}
-<li class="row closed" data-id="{{.ID}}" data-href="/item/{{.ID}}">
+<li class="row closed" data-id="{{.ID}}" data-href="/item/{{.ID}}" data-closed="1">
   <div class="row-head">
     <span class="kind k-{{kindClass .Kind}}">{{kindName .Kind}}</span>
     <div class="row-text">

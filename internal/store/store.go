@@ -1028,9 +1028,10 @@ func (s *Store) Undo(id string) (string, error) {
 		prev = "open"
 	}
 	// Back to an open state: the closing note no longer describes it.
-	if _, err := tx.Exec(`UPDATE items SET status=?, resolved_at=NULL, snoozed_until=NULL, updated_at=?, answer=CASE WHEN ? IN ('answer','approve','decline','choose') THEN '' ELSE answer END,
+	if _, err := tx.Exec(`UPDATE items SET status=?, snoozed_until=NULL, updated_at=?, answer=CASE WHEN ? IN ('answer','approve','decline','choose') THEN '' ELSE answer END,
 		expires_at=CASE WHEN ?='expire' THEN 0 ELSE expires_at END,
-		resolution=CASE WHEN ? IN ('open','answered','maybe') THEN '' ELSE resolution END WHERE id=?`, prev, now(), action, action, prev, id); err != nil {
+		resolution=CASE WHEN ? IN ('open','answered','maybe') THEN '' ELSE resolution END,
+		resolved_at=CASE WHEN ? IN ('done','dismissed','expired') THEN ? ELSE NULL END WHERE id=?`, prev, now(), action, action, prev, prev, now(), id); err != nil {
 		if isDedupeConflict(err) {
 			return "", errors.New("can't undo: an open item with the same key has been filed since")
 		}

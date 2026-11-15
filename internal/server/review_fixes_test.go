@@ -798,3 +798,58 @@ func TestLegacyKeyAdoptedBeforeTheMachineHasAContext(t *testing.T) {
 		t.Fatalf("a re-file before the first sync duplicated the old item: %+v", a)
 	}
 }
+
+func TestReopenUndoesWhatTheCloseSetOff(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	st.PatchSession("live", store.SessionPatch{Machine: store.Str("box"), State: store.Str("idle"), HasPlugin: store.Bool(true)})
+	// Expired: reopening keeps it open (the expiry is gone).
+	st.UpsertItem(store.Item{ID: "dk-ro000001", Kind: "ask", Title: "launch?", ExpiresAt: time.Now().Add(-time.Minute).Unix()})
+	st.Expire(time.Now().Unix())
+	e.s.Decide("dk-ro000001", Action{Kind: "reopen"})
+	e.s.chiefTick(e.ctx)
+	if it, _, _ := st.GetItem("dk-ro000001"); it.Status != "open" || it.ExpiresAt != 0 {
+		t.Fatalf("reopened expired item: %s expires=%d", it.Status, it.ExpiresAt)
+	}
+	// Not worth my time: the mark, its rules.md line and the suppression go too.
+	e.file(t, "live", record.Item{ID: "dk-ro000002", Kind: "issue", Title: "Raise the spending limit?", Key: "lim", Project: "w"})
+	e.s.Decide("dk-ro000002", Action{Kind: "noise", Text: "spending is mine"})
+	e.s.Decide("dk-ro000002", Action{Kind: "reopen"})
+	if strings.Contains(e.s.RulesMarkdown(), "spending is mine") {
+		t.Fatal("rules.md still carries a mark that was taken back")
+	}
+	e.s.Decide("dk-ro000002", Action{Kind: "dismiss"})
+	e.file(t, "live", record.Item{ID: "dk-ro000003", Kind: "issue", Title: "Raise the spending limit?", Key: "lim", Project: "w"})
+	if a := active(t, st); len(a) != 2 {
+		t.Fatalf("the taken-back mark still suppresses re-files: %+v", a)
+	}
+	// Done: the queued "marked done" note is withdrawn.
+	st.UpsertItem(store.Item{ID: "dk-ro000004", Kind: "human_task", Title: "paste the signature", SessionID: "live", Machine: "box", Source: "cli"})
+	e.s.Decide("dk-ro000004", Action{Kind: "done"})
+	e.s.Decide("dk-ro000004", Action{Kind: "reopen"})
+	if ds, _ := st.ItemDeliveries("dk-ro000004"); len(ds) != 0 {
+		t.Fatalf("a reopened task still tells the agent it's done: %+v", ds)
+	}
+	// Closed by an agent (no decision): it simply comes back, without the note.
+	st.UpsertItem(store.Item{ID: "dk-ro000005", Kind: "ask", Title: "x", Source: "cli"})
+	st.SetStatus("dk-ro000005", "done", "resolved by the agent", "")
+	e.s.Decide("dk-ro000005", Action{Kind: "reopen"})
+	if it, _, _ := st.GetItem("dk-ro000005"); it.Status != "open" || it.Resolution != "" {
+		t.Fatalf("agent-closed item after reopen: %s %q", it.Status, it.Resolution)
+	}
+}
+
+func TestMovingToWhereItIsIsANoOp(t *testing.T) {
+	e := newEnv(t, "")
+	e.s.st.UpsertItem(store.Item{ID: "dk-nm000001", Kind: "ask", Title: "x"})
+	if err := e.s.Decide("dk-nm000001", Action{Kind: "reclassify", Project: "unsorted"}); err != nil {
+		t.Fatalf("moving an unsorted item to unsorted: %v", err)
+	}
+	e.s.st.UpsertItem(store.Item{ID: "dk-nm000002", Kind: "ask", Title: "y", Project: "w"})
+	if err := e.s.Decide("dk-nm000002", Action{Kind: "reclassify", Project: "unsorted"}); err == nil {
+		t.Fatal("moved a project's item to unsorted")
+	}
+	if strings.Contains(string(renderMarkdown("[![](https://ci.example/b.svg)](https://ci.example/run)")), "></a>") {
+		t.Fatal("a linked image without alt text renders an empty link")
+	}
+}

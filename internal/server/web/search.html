@@ -8,7 +8,7 @@
 {{if .Query}}<p class="muted">{{len .Closed}} result{{if ne (len .Closed) 1}}s{{end}}</p>{{end}}
 <ol class="rows plain">
 {{range .Closed}}
-<li class="row" data-id="{{.ID}}" data-href="/item/{{.ID}}">
+<li class="row" data-id="{{.ID}}" data-href="/item/{{.ID}}"{{if closed .Status}} data-closed="1"{{end}}>
   <div class="row-head">
     <span class="kind k-{{kindClass .Kind}}">{{kindName .Kind}}</span>
     <div class="row-text">

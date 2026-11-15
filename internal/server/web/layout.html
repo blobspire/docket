@@ -107,7 +107,7 @@
     {{if .Blocks}}<p class="blocks"><b>Blocks:</b> {{.Blocks}}</p>{{end}}
     {{with .Body}}<div class="prose">{{if $.Expanded}}{{md .}}{{else}}{{mdShort . $.ID}}{{end}}</div>{{end}}
     {{if .Physical}}<p class="warn">Physical action: it can't be approved from here. Do it in person, then mark it done.</p>{{end}}
-    {{if closed .Status}}<div class="closed-note"><span class="muted small">Closed ({{.Status}}){{with .Resolution}}: {{trimDot .}}{{end}}.</span> <button data-act="reopen" class="small">Reopen</button></div>
+    {{if closed .Status}}<div class="closed-note"><span class="muted small">Closed{{with .Resolution}}: {{trimDot .}}{{else}} ({{.Status}}){{end}}.</span> <button data-act="reopen" class="small">Reopen</button></div>
     {{else}}
     {{if and (ne .Status "answered") (ne .Status "delivered")}}<div class="actions">{{template "actions" $it}}</div>{{end}}
     <form class="noise-form" hidden>

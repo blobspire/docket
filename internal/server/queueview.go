@@ -168,7 +168,13 @@ func (s *Server) buildQueue(query url.Values) (*queueView, error) {
 		names = append(names, p)
 	}
 	sort.Slice(names, func(i, j int) bool { return projectLess(names[i], names[j]) })
-	q.Projects = names
+	// Where items can be moved: real projects ("unsorted" only shows as an
+	// unsorted item's own current place).
+	for _, n := range names {
+		if n != store.Unsorted {
+			q.Projects = append(q.Projects, n)
+		}
+	}
 	for _, p := range names {
 		q.SideProjects = append(q.SideProjects, sideEntry{Name: p, Desc: desc[p], Count: count[p], HasNow: hasNow[p], On: q.Mode == "project" && q.Project == p, URL: q.Link(p, "", false)})
 	}

@@ -28,7 +28,8 @@
     const rs = rows();
     if (!rs.length) return;
     sel = Math.max(0, Math.min(i, rs.length - 1));
-    rs.forEach((r, j) => r.classList.toggle("sel", j === sel));
+    $$(".row.sel").forEach((r) => r.classList.remove("sel")); // hidden ones too
+    rs[sel].classList.add("sel");
     if (scroll) rs[sel].scrollIntoView({ block: "nearest" });
   };
   const current = () => (sel >= 0 && rows()[sel]) || (single && $(".row[data-id]")) || null;
@@ -70,7 +71,9 @@
       toast(j.error || `Couldn't ${action}`);
       return false;
     }
-    store.set("docket.last", id);
+    // What u undoes next; an undo itself leaves nothing more to undo.
+    if (action === "undo") store.set("docket.last", "");
+    else store.set("docket.last", id);
     const msg = { approve: "Approved", decline: "Declined", choose: "Sent to the agent", answer: "Sent to the agent",
       done: "Marked done", dismiss: "Dismissed", noise: "Closed. The agents will hear why.", snooze: "Snoozed",
       reclassify: "Moved", undo: "Undone", reopen: "Reopened" }[action];
@@ -145,6 +148,9 @@
   });
 
   document.addEventListener("submit", (e) => {
+    // An answer posts the plain way; remember it for u all the same.
+    const ans = e.target.closest(".answer-form");
+    if (ans) return store.set("docket.last", ans.closest("[data-id]").dataset.id);
     const f = e.target.closest(".noise-form");
     if (!f) return;
     e.preventDefault();
@@ -165,6 +171,10 @@
   document.addEventListener("pointerdown", (e) => {
     const s = e.target.closest("select[data-reclassify]");
     if (s) s.dataset.pointer = "1";
+  });
+  // A click that picked nothing mustn't license a later keystroke.
+  document.addEventListener("focusout", (e) => {
+    if (e.target.matches && e.target.matches("select[data-reclassify]")) delete e.target.dataset.pointer;
   });
   document.addEventListener("change", (e) => {
     const s = e.target.closest("select[data-reclassify]");
@@ -197,10 +207,14 @@
         e.preventDefault();
         document.activeElement.form.requestSubmit();
       }
-      // Enter on a project or urgency select moves the item.
-      if (e.key === "Enter" && document.activeElement.matches("select[data-reclassify]")) {
-        e.preventDefault();
-        reclassify(document.activeElement);
+      // Enter on a project or urgency select moves the item; any other key
+      // means the keyboard is driving it now, not an earlier click.
+      if (document.activeElement.matches("select[data-reclassify]")) {
+        delete document.activeElement.dataset.pointer;
+        if (e.key === "Enter") {
+          e.preventDefault();
+          reclassify(document.activeElement);
+        }
       }
       return;
     }
@@ -274,7 +288,9 @@
       const r = await fetch("/api/version");
       const { v } = await r.json();
       if (v === v0) return;
-      const busy = single || anyOpen() || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+      // A selected or expanded row, or typing, means you're in the middle of
+      // something: offer the refresh instead of yanking the page.
+      const busy = single || sel >= 0 || anyOpen() || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
       if (busy) $(".updated").hidden = false;
       else location.reload();
     } catch (_) {}

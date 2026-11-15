@@ -336,6 +336,10 @@ func (s *Server) editProject(w http.ResponseWriter, r *http.Request) {
 			if target != name && desc == strings.TrimSpace(r.FormValue("old_description")) {
 				desc = p.Description
 			}
+			// Likewise the archive box: an untouched box keeps the target's own flag.
+			if target != name && archived == (r.FormValue("old_archived") != "") {
+				archived = p.Archived
+			}
 			err = s.st.SetProject(target, desc, archived)
 		}
 	}
