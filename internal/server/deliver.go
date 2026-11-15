@@ -42,9 +42,10 @@ func (s *Server) Decide(id string, a Action) error {
 		return errors.New("no such item")
 	}
 	defer s.st.Bump()
-	// A closed item can only be undone (or moved); acting on it again would
-	// quietly reopen it. An answered-and-delivered one can still take a
-	// follow-up answer.
+	// A closed item can only be reopened or undone; acting on it again would
+	// quietly reopen it, and moving it would put a move between the close and
+	// the Reopen that undoes it. An answered-and-delivered one can still take
+	// a follow-up answer.
 	switch it.Status {
 	case "done", "dismissed", "expired":
 		if a.Kind == "reopen" {
@@ -57,8 +58,8 @@ func (s *Server) Decide(id string, a Action) error {
 			}
 			return s.st.Reopen(id)
 		}
-		if a.Kind != "undo" && a.Kind != "reclassify" {
-			return errors.New("this item is already closed; undo it from the Done page to act on it again")
+		if a.Kind != "undo" {
+			return errors.New("this item is already closed; reopen it to act on it again")
 		}
 	case "delivered":
 		if a.Kind != "undo" && a.Kind != "reclassify" && a.Kind != "answer" {

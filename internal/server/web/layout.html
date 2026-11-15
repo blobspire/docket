@@ -109,7 +109,8 @@
     {{if .Physical}}<p class="warn">Physical action: it can't be approved from here. Do it in person, then mark it done.</p>{{end}}
     {{if closed .Status}}<div class="closed-note"><span class="muted small">Closed{{with .Resolution}}: {{trimDot .}}{{else}} ({{.Status}}){{end}}.</span> <button data-act="reopen" class="small">Reopen</button></div>
     {{else}}
-    {{if and (ne .Status "answered") (ne .Status "delivered")}}<div class="actions">{{template "actions" $it}}</div>{{end}}
+    {{if eq .Status "answered"}}<div class="actions"><button data-act="dismiss" data-key="x" class="quiet" title="Take it off the dashboard; the answer still goes to the agent">Dismiss</button></div>
+    {{else if ne .Status "delivered"}}<div class="actions">{{template "actions" $it}}</div>{{end}}
     <form class="noise-form" hidden>
       <label>Why didn't this need you? <span class="muted">Optional. It goes to the agent and shapes what every agent files.</span>
       <textarea name="text" rows="2" placeholder="e.g. Post-merge reports don't need me; only send results I asked for."></textarea></label>
@@ -128,7 +129,7 @@
       {{with .Machine}}<span>{{.}}</span>{{end}}
       <span>filed {{clock .CreatedAt}}{{if gt .MentionCount 1}} · {{.MentionCount}} times{{end}}</span>
       {{with .Session.BridgeID}}<a href="{{rcURL .}}" target="_blank" rel="noopener">Open session ↗</a>{{end}}
-      {{if .Projects}}
+      {{if and .Projects (not (closed .Status))}}
       <label class="move">Project <select data-reclassify="project">{{$p := projectName .Item}}{{range .Projects}}<option{{if eq . $p}} selected{{end}}>{{.}}</option>{{end}}<option value="__new">New…</option></select></label>
       <label class="move">Urgency <select data-reclassify="urgency">{{$u := .Urgency}}{{range $v := list "now" "soon" "normal"}}<option{{if eq $v $u}} selected{{end}}>{{$v}}</option>{{end}}</select></label>
       {{end}}

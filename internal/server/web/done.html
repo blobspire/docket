@@ -17,7 +17,7 @@
         <span class="m-age">{{age .UpdatedAt}} ago</span>
       </div>
     </div>
-    <button data-act="undo" data-key="u" class="quiet small">Undo</button>
+    {{if ne .Status "delivered"}}<button data-act="reopen" data-key="u" class="quiet small">Reopen</button>{{end}}
   </div>
 </li>
 {{end}}

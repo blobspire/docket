@@ -72,7 +72,9 @@
       return false;
     }
     // What u undoes next; an undo itself leaves nothing more to undo.
-    if (action === "undo") store.set("docket.last", "");
+    // Reopening a human close already undid it; another u would reach past
+    // it to whatever came before (an answer, a move).
+    if (action === "undo" || action === "reopen") store.set("docket.last", "");
     else store.set("docket.last", id);
     const msg = { approve: "Approved", decline: "Declined", choose: "Sent to the agent", answer: "Sent to the agent",
       done: "Marked done", dismiss: "Dismissed", noise: "Closed. The agents will hear why.", snooze: "Snoozed",
@@ -247,10 +249,10 @@
       if ((k === "Enter" || k === " ") && current()) { e.preventDefault(); return toggle(current()); }
     }
     const el = current();
-    // u undoes the last action, selected row or not (on the Done page, the
-    // selected row's own Undo).
+    // u undoes the last action, selected row or not (on a closed item, the
+    // selected row's own Reopen).
     if (k === "u") {
-      const own = el && $("button[data-act=undo]", el);
+      const own = el && $("button[data-act=reopen]", el);
       if (own) return own.click();
       const id = store.get("docket.last");
       return id ? act(id, "undo") : toast("Nothing to undo");
