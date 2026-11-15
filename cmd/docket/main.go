@@ -18,7 +18,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/blobspire/docket/internal/backfill"
 	"github.com/blobspire/docket/internal/claudemd"
 	"github.com/blobspire/docket/internal/cli"
 	"github.com/blobspire/docket/internal/config"
@@ -158,8 +157,6 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (code int) {
 		err = uninstallCmd(stdout)
 	case cmd == "sync":
 		err = syncCmd(rest, stdout)
-	case cmd == "backfill":
-		err = backfillCmd(rest, stdout)
 	case cmd == "import":
 		err = importCmd(rest, stdout)
 	case cmd == "serve":
@@ -541,55 +538,6 @@ func sshRun(host, command string, stdin io.Reader) ([]byte, error) {
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
-func backfillCmd(args []string, stdout io.Writer) error {
-	if len(args) == 0 || args[0] != "grep" {
-		return errors.New("usage: docket backfill grep [--since 30d] [--last 30]")
-	}
-	fs := flag.NewFlagSet("backfill grep", flag.ContinueOnError)
-	since := fs.String("since", "30d", "look at transcripts modified within this long")
-	last := fs.Int("last", 30, "assistant messages to read from the end of each session")
-	dry := fs.Bool("dry-run", false, "print candidates without filing them")
-	if err := fs.Parse(args[1:]); err != nil {
-		return err
-	}
-	d, err := parseDays(*since)
-	if err != nil {
-		return err
-	}
-	root := os.Getenv("CLAUDE_CONFIG_DIR")
-	if root == "" {
-		home, _ := os.UserHomeDir()
-		root = filepath.Join(home, ".claude")
-	}
-	cands, err := backfill.Scan(filepath.Join(root, "projects"), time.Now().Add(-d), *last)
-	if err != nil {
-		return err
-	}
-	sp := spool.Spool{Dir: config.SpoolDir()}
-	self := os.Getenv("CLAUDE_CODE_SESSION_ID") // don't backfill the session running this
-	n := 0
-	for _, c := range cands {
-		if c.SessionID != "" && c.SessionID == self {
-			continue
-		}
-		n++
-		if *dry {
-			fmt.Fprintf(stdout, "%s  %-40s  %s\n", c.At, filepath.Base(c.Cwd), c.Sentence)
-			continue
-		}
-		r := record.New("backfill.candidate", os.Getenv)
-		r.SessionID, r.Cwd = c.SessionID, c.Cwd
-		r.Payload, _ = json.Marshal(map[string]string{"sentence": c.Sentence, "pattern": c.Pattern, "at": c.At})
-		if err := sp.Append(r); err != nil {
-			return err
-		}
-	}
-	if !*dry {
-		fmt.Fprintf(stdout, "docket: filed %d possible ask(s) from transcripts as \"maybe\" items.\n", n)
-	}
-	return nil
-}
-
 func parseDays(s string) (time.Duration, error) {
 	if strings.HasSuffix(s, "d") {
 		var n int
@@ -612,7 +560,7 @@ func importCmd(args []string, stdout io.Writer) error {
 	if err := fs.Parse(args[2:]); err != nil {
 		return err
 	}
-	tasks, err := backfill.ImportMarkdown(file, *section)
+	tasks, err := cli.ImportMarkdown(file, *section)
 	if err != nil {
 		return err
 	}
@@ -699,16 +647,6 @@ func serverCmd(args []string, stdin io.Reader, stdout io.Writer) error {
 			return err
 		}
 		return json.NewEncoder(stdout).Encode(reply)
-	case "backfill-prompt":
-		fs := flag.NewFlagSet("server backfill-prompt", flag.ContinueOnError)
-		dry := fs.Bool("dry-run", false, "list the sessions without prompting them")
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
-		}
-		for _, line := range s.BackfillPrompt(context.Background(), *dry) {
-			fmt.Fprintln(stdout, line)
-		}
-		return nil
 	case "test-push":
 		if err := s.TestPush(context.Background()); err != nil {
 			return err
@@ -732,7 +670,6 @@ person = %q
 listen = "127.0.0.1:7788"
 public_url = %q
 timezone = %q
-brief_at = "09:00"
 
 [ntfy]
 server = "https://ntfy.sh"

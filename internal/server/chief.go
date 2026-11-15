@@ -124,9 +124,7 @@ func (s *Server) chiefTick(ctx context.Context) {
 	s.watchMachines()
 	s.watchHealth(ctx)
 	s.pushes(ctx)
-	s.brief(ctx)
 	s.syncRules(ctx)
-	s.preReviewTick(ctx)
 	s.rulesTick(ctx)
 }
 
@@ -262,79 +260,6 @@ func (s *Server) resolveKey(key, why string) int {
 		}
 	}
 	return n
-}
-
-// Brief is the morning summary shown at the top of the queue.
-type Brief struct {
-	Date     string
-	Text     string
-	Open     int
-	Blocking int
-}
-
-// brief writes the morning brief once a day at brief_at.
-func (s *Server) brief(ctx context.Context) {
-	now := s.cfg.Now()
-	today := now.Format("2006-01-02")
-	if s.st.Get("brief_date") == today || now.Hour()*60+now.Minute() < minutes(s.cfg.BriefAt) {
-		return
-	}
-	text, open, blocking := s.composeBrief(now)
-	s.st.Set("brief_text", text)
-	s.st.Set("brief_date", today)
-	s.st.Bump()
-	if s.cfg.BriefPushOn() {
-		summary := fmt.Sprintf("%d open, %d blocking", open, blocking)
-		if open == 0 {
-			summary = "Nothing needs you right now."
-		}
-		if err := s.push(ctx, "Morning brief", summary, strings.TrimRight(s.cfg.PublicURL, "/")+"/", prioLow, "sunrise"); err != nil {
-			s.log.Printf("brief push: %v", err)
-		}
-	}
-}
-
-func (s *Server) composeBrief(now time.Time) (string, int, int) {
-	nowItems, _, _, _ := s.Queue()
-	since := now.Add(-24 * time.Hour).Unix()
-	closed, _ := s.st.RecentlyClosed(since, 200)
-	var b strings.Builder
-	blocking := 0
-	for _, r := range nowItems {
-		if r.Blocking {
-			blocking++
-		}
-	}
-	fmt.Fprintf(&b, "%s. %d open (%d blocking); %d resolved in the last 24 hours.\n", now.Format("Monday, January 2"), len(nowItems), blocking, len(closed))
-	if len(nowItems) > 0 {
-		b.WriteString("\nTop of the queue:\n")
-		for i, r := range nowItems {
-			if i == 5 {
-				break
-			}
-			fmt.Fprintf(&b, "- %s%s, waiting %s\n", r.Title, where(r.Item), age(now, r.CreatedAt))
-		}
-	}
-	ms, _ := s.st.Machines()
-	var down []string
-	for _, m := range ms {
-		if m.FailingSince > 0 {
-			down = append(down, m.Name)
-		}
-	}
-	if len(down) > 0 {
-		fmt.Fprintf(&b, "\nUnreachable: %s.\n", strings.Join(down, ", "))
-	}
-	sessions, _ := s.st.Sessions(true, 500)
-	nudges, hits := 0, 0
-	for _, x := range sessions {
-		nudges += x.Nudges
-		hits += x.NudgeHits
-	}
-	if nudges > 0 {
-		fmt.Fprintf(&b, "\nSelf-check: %d nudges so far, %d led to a filed item.\n", nudges, hits)
-	}
-	return b.String(), len(nowItems), blocking
 }
 
 func age(now time.Time, unix int64) string {

@@ -429,11 +429,10 @@ always_on = true
 	}
 }
 
-func TestBrainRulesAndPreReview(t *testing.T) {
+func TestBrainRules(t *testing.T) {
 	dir := t.TempDir()
 	fake := filepath.Join(dir, "claude")
-	// A stand-in for `claude -p`: answers the rules prompt with two rules and
-	// the review prompt with a low-confidence note.
+	// A stand-in for `claude -p`: answers the rules prompt with two rules.
 	os.WriteFile(fake, []byte(`#!/bin/sh
 for a in "$@"; do last="$a"; done
 case "$last" in
@@ -477,26 +476,6 @@ mode = "local"
 		t.Fatalf("re-proposed an approved rule (%d)", n)
 	}
 
-	// Pre-review: a review with no evidence is bounced once, and annotated.
-	st.PatchSession("s1", store.SessionPatch{Machine: store.Str("box"), State: store.Str("idle"), HasPlugin: store.Bool(true)})
-	st.UpsertItem(store.Item{ID: "dk-rrrrrrrr", Kind: "review", Title: "Ship the new hero?", Source: "cli", Machine: "box", SessionID: "s1"})
-	e.s.preReviewTick(e.ctx)
-	it, _, _ := st.GetItem("dk-rrrrrrrr")
-	if !strings.Contains(it.ChiefNote, "Deciding whether to ship") || !strings.Contains(it.ChiefNote, "the test results") {
-		t.Fatalf("chief note = %q", it.ChiefNote)
-	}
-	ds, _ := st.ItemDeliveries("dk-rrrrrrrr")
-	if len(ds) != 1 || !strings.Contains(ds[0].Text, "chief of staff") || !strings.Contains(ds[0].Text, "isn't Cole's answer") {
-		t.Fatalf("bounces = %+v", ds)
-	}
-	e.s.preReviewTick(e.ctx)
-	if ds, _ := st.ItemDeliveries("dk-rrrrrrrr"); len(ds) != 1 {
-		t.Fatalf("bounced twice: %d", len(ds))
-	}
-	it, _, _ = st.GetItem("dk-rrrrrrrr")
-	if it.Status != "open" || it.Answer != "" {
-		t.Fatalf("the chief changed the item's outcome: %+v", it)
-	}
 	rec := httptest.NewRecorder()
 	e.s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/brain", nil))
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Reuse existing checkpoints") {

@@ -4,8 +4,6 @@
 //   - SessionStart: tells the session its id via CLAUDE_ENV_FILE
 //   - SessionStart, UserPromptSubmit, PostToolUse, Stop: hand over any answer
 //     waiting in the mailbox for this session
-//   - Stop: the self-check, which nudges an agent (at most once per turn) that
-//     asked for something in chat without filing it
 //   - Wait (a background Stop hook with asyncRewake): sleeps until an answer
 //     arrives for this idle session, then wakes it by exiting 2
 //
@@ -17,21 +15,14 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
-	"crypto/sha256"
-	"encoding/hex"
-
-	"github.com/blobspire/docket/internal/claudemd"
 	"github.com/blobspire/docket/internal/config"
 	"github.com/blobspire/docket/internal/mailbox"
 	"github.com/blobspire/docket/internal/record"
-	"github.com/blobspire/docket/internal/selfcheck"
 	"github.com/blobspire/docket/internal/spool"
 	"github.com/blobspire/docket/internal/turnstate"
 )
@@ -109,9 +100,7 @@ func Run(event string, stdin io.Reader, stdout, stderr io.Writer, getenv func(st
 		}
 		if box.Pending(in.SessionID) {
 			deliver(in.SessionID, box, sp, stdout, getenv, "Stop", "stop")
-			return 0, nil
 		}
-		selfCheck(in, sp, stdout, getenv)
 	}
 	return 0, nil
 }
@@ -178,7 +167,9 @@ func wait(in input, box mailbox.Box, sp spool.Spool, stderr io.Writer, getenv fu
 		if parent > 0 && !alive(parent) {
 			return 0
 		}
-		if box.Pending(in.SessionID) {
+		// Quiet deliveries (feedback, notices) never wake an idle session;
+		// they ride along with the next loud one or the next turn.
+		if box.PendingLoud(in.SessionID) {
 			if ds, _ := box.Claim(in.SessionID); len(ds) > 0 {
 				fmt.Fprint(stderr, mailbox.Text(ds))
 				receipts(ds, sp, getenv, "rewake")
@@ -193,86 +184,6 @@ func wait(in input, box mailbox.Box, sp spool.Spool, stderr io.Writer, getenv fu
 func alive(pid int) bool {
 	err := syscall.Kill(pid, 0)
 	return err == nil || err == syscall.EPERM
-}
-
-// selfCheck nudges the agent once when its final message asks the human for
-// something and nothing was filed this turn. The follow-up turn is scored as
-// a hit (it filed) or a miss (it didn't; the server keeps the sentence as a
-// low-priority "maybe" so it can't vanish).
-func selfCheck(in input, sp spool.Spool, stdout io.Writer, getenv func(string) string) {
-	st, ok := turnstate.For(in.SessionID)
-	if !ok || getenv("DOCKET_SELFCHECK") == "0" || !claudemd.Installed() {
-		return
-	}
-	state := st.Load()
-	now := time.Now().UnixNano()
-	defer func() {
-		state.LastStop = now
-		st.Save(state)
-	}()
-
-	if in.StopHookActive {
-		if p := state.Pending; p != nil {
-			outcome := "miss"
-			if st.LastFiled() > p.At {
-				outcome = "hit"
-			}
-			nudgeRecord(in.SessionID, sp, getenv, p.Sentence, p.Pattern, outcome)
-			state.Pending = nil
-		}
-		return
-	}
-	state.Pending = nil
-	if st.LastFiled() > state.LastStop {
-		return // it already filed something this turn
-	}
-	sentence, pattern, found := selfcheck.Match(in.LastMessage)
-	if !found {
-		return
-	}
-	h := shortHash(sentence)
-	for _, done := range state.Nudged {
-		if done == h {
-			return
-		}
-	}
-	state.Nudged = append(state.Nudged, h)
-	state.Pending = &turnstate.Pending{Sentence: sentence, Pattern: pattern, At: now}
-	nudgeRecord(in.SessionID, sp, getenv, sentence, pattern, "")
-
-	person := person()
-	msg := fmt.Sprintf("docket self-check: your last message says %q. If that is something only %s can do or decide, file it now with `docket ask`, `docket task` or `docket review` (filing does not block you). If it is not, just finish.", clip(sentence, 300), person)
-	out, _ := json.Marshal(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": "Stop", "additionalContext": msg}})
-	fmt.Fprintln(stdout, string(out))
-}
-
-func nudgeRecord(sid string, sp spool.Spool, getenv func(string) string, sentence, pattern, outcome string) {
-	r := record.New("docket.nudge", getenv)
-	r.SessionID = sid
-	r.Payload, _ = json.Marshal(map[string]string{"sentence": sentence, "pattern": pattern, "outcome": outcome})
-	sp.Append(r)
-}
-
-// person is how docket refers to the human (set by `docket init --person`).
-func person() string {
-	if b, err := os.ReadFile(filepath.Join(config.Home(), "person")); err == nil {
-		if p := strings.TrimSpace(string(b)); p != "" {
-			return p
-		}
-	}
-	return "the user"
-}
-
-func shortHash(s string) string {
-	h := sha256.Sum256([]byte(strings.ToLower(s)))
-	return hex.EncodeToString(h[:6])
-}
-
-func clip(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
 }
 
 // bindSession exports DOCKET_SESSION into the session's environment through

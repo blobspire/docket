@@ -321,48 +321,6 @@ func (s *Server) Receive(machine string, r io.Reader, sessionsJSON []byte) (Sync
 // PutBlob stores an evidence file pushed by `docket sync`.
 func (s *Server) PutBlob(sha string, r io.Reader) error { return s.saveBlob(sha, r) }
 
-// BackfillText is the one-time prompt asking a live session to file what it
-// is already waiting on.
-func (s *Server) BackfillText() string {
-	return fmt.Sprintf("[docket] One-time setup: %[1]s now uses docket, a single queue for everything agents need from %[1]s. "+
-		"Please file each thing you are currently waiting on %[1]s for (held approvals, blockers, decisions, human-only tasks, open issues), "+
-		"one item each, with `~/.local/bin/docket ask \"<question>\" --options \"a|b\" --why \"<context>\" --key <short-stable-id>` "+
-		"(or `docket task` / `docket issue`; run `~/.local/bin/docket help` for details), then carry on with your work. "+
-		"Filing never blocks. If nothing is waiting on %[1]s, just say so and continue.", s.cfg.Person)
-}
-
-// BackfillPrompt sends BackfillText to every live, idle session the server
-// can type into safely. It returns one line per session describing the result.
-func (s *Server) BackfillPrompt(ctx context.Context, dryRun bool) []string {
-	var report []string
-	live, _ := s.st.Sessions(false, 500)
-	for _, x := range live {
-		m, ok := s.cfg.Machine(x.Machine)
-		label := x.Machine + "/" + firstNonEmptyStr(x.Name, x.ID)
-		switch {
-		case !ok || m.Mode == "push":
-			report = append(report, label+": skipped (the server can't reach it; it will file going forward)")
-			continue
-		case x.Tmux == "":
-			report = append(report, label+": skipped (not in tmux)")
-			continue
-		case x.State != "idle" && x.State != "waiting":
-			report = append(report, label+": skipped ("+x.State+")")
-			continue
-		}
-		if dryRun {
-			report = append(report, label+": would prompt")
-			continue
-		}
-		if _, err := s.remote(ctx, m, strings.NewReader(s.BackfillText()), "session", "send", "--pane", x.Tmux); err != nil {
-			report = append(report, label+": not sent ("+err.Error()+")")
-			continue
-		}
-		report = append(report, label+": prompted")
-	}
-	return report
-}
-
 func firstNonEmptyStr(v ...string) string {
 	for _, s := range v {
 		if s != "" {

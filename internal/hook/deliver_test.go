@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/blobspire/docket/internal/claudemd"
 	"github.com/blobspire/docket/internal/config"
 	"github.com/blobspire/docket/internal/mailbox"
 	"github.com/blobspire/docket/internal/turnstate"
@@ -125,98 +124,45 @@ func TestWaiterExitsWhenSessionDies(t *testing.T) {
 	}
 }
 
-func stop(t *testing.T, getenv func(string) string, sid, msg string, active bool) string {
+func stop(t *testing.T, getenv func(string) string, sid, msg string) string {
 	t.Helper()
-	payload, _ := json.Marshal(map[string]any{"session_id": sid, "hook_event_name": "Stop", "last_assistant_message": msg, "stop_hook_active": active})
+	payload, _ := json.Marshal(map[string]any{"session_id": sid, "hook_event_name": "Stop", "last_assistant_message": msg})
 	var out bytes.Buffer
 	Run("Stop", bytes.NewReader(payload), &out, &bytes.Buffer{}, getenv)
 	return out.String()
 }
 
-func nudges(t *testing.T) (count int, outcomes []string) {
+func TestStopNeverNudges(t *testing.T) {
+	getenv := setup(t)
+	if out := stop(t, getenv, "s8", "It needs your approval before I deploy."); out != "" {
+		t.Fatalf("Stop printed something with nothing to deliver: %q", out)
+	}
 	for _, r := range records(t) {
 		if r.Event == "docket.nudge" {
-			var p struct{ Outcome string }
-			json.Unmarshal(r.Payload, &p)
-			if p.Outcome == "" {
-				count++
-			} else {
-				outcomes = append(outcomes, p.Outcome)
-			}
+			t.Fatal("a nudge record was written")
 		}
 	}
-	return
 }
 
-func installBlock(t *testing.T) {
-	t.Helper()
-	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
-	if _, err := claudemd.Install("Cole"); err != nil {
+func TestQuietDeliveryNeverWakes(t *testing.T) {
+	getenv := envWith(setup(t), map[string]string{"DOCKET_WAIT_POLL": "20ms", "DOCKET_WAIT_MAX": "300ms"})
+	box := mailbox.Box{Dir: config.MailboxDir()}
+	if err := box.Put(mailbox.Delivery{ID: "q1", SessionID: "s10", Nonce: "n1", Text: "[docket dk-12345678 #n1] feedback", Quiet: true}); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func TestSelfCheckNudgesOnceAndScoresMiss(t *testing.T) {
-	getenv := setup(t)
-	installBlock(t)
-	ask := "Everything is staged. It needs your approval before I deploy."
-	out := stop(t, getenv, "s5", ask, false)
-	if !strings.Contains(out, "docket self-check") || !strings.Contains(out, "needs your approval") {
-		t.Fatalf("no nudge: %q", out)
+	if code, _ := Run("Wait", strings.NewReader(`{"session_id":"s10"}`), &bytes.Buffer{}, &bytes.Buffer{}, getenv); code != 0 {
+		t.Fatalf("a quiet delivery woke the session (code %d)", code)
 	}
-	// The continuation turn ends without filing: a miss, and no second nudge.
-	if out := stop(t, getenv, "s5", ask, true); out != "" {
-		t.Fatalf("nudged twice: %q", out)
-	}
-	n, outcomes := nudges(t)
-	if n != 1 || len(outcomes) != 1 || outcomes[0] != "miss" {
-		t.Fatalf("nudges=%d outcomes=%v", n, outcomes)
-	}
-	// The same sentence later never nudges again.
-	if out := stop(t, getenv, "s5", ask, false); out != "" {
-		t.Fatalf("re-nudged the same sentence: %q", out)
+	if out := stop(t, getenv, "s10", "done"); !strings.Contains(out, "feedback") {
+		t.Fatalf("the next turn didn't deliver it: %q", out)
 	}
 }
 
-func TestSelfCheckScoresHitWhenAgentFiles(t *testing.T) {
+func TestStopDeliversAnswer(t *testing.T) {
 	getenv := setup(t)
-	installBlock(t)
-	stop(t, getenv, "s6", "Could you please approve the spend?", false)
-	time.Sleep(time.Millisecond)
-	st, _ := turnstate.For("s6")
-	st.MarkFiled() // the agent ran `docket ask`
-	stop(t, getenv, "s6", "Filed it.", true)
-	if _, outcomes := nudges(t); len(outcomes) != 1 || outcomes[0] != "hit" {
-		t.Fatalf("outcomes=%v", outcomes)
-	}
-}
-
-func TestSelfCheckQuietWhenFiledThisTurn(t *testing.T) {
-	getenv := setup(t)
-	installBlock(t)
-	stop(t, getenv, "s7", "Starting work.", false) // establishes a turn boundary
-	st, _ := turnstate.For("s7")
-	time.Sleep(time.Millisecond)
-	st.MarkFiled()
-	if out := stop(t, getenv, "s7", "I filed it; it needs your approval.", false); out != "" {
-		t.Fatalf("nudged although the turn filed: %q", out)
-	}
-}
-
-func TestSelfCheckOffWithoutTheBlock(t *testing.T) {
-	getenv := setup(t)
-	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir()) // no CLAUDE.md block: docket not active here
-	if out := stop(t, getenv, "s8", "It needs your approval.", false); out != "" {
-		t.Fatalf("nudged on a machine where docket isn't active: %q", out)
-	}
-}
-
-func TestStopDeliversAnswerInsteadOfNudging(t *testing.T) {
-	getenv := setup(t)
-	installBlock(t)
 	put(t, "s9", "[docket dk-12345678 #nonce1] Cole answered: approved")
-	out := stop(t, getenv, "s9", "Waiting on your approval.", false)
-	if !strings.Contains(out, "Cole answered: approved") || strings.Contains(out, "self-check") {
+	out := stop(t, getenv, "s9", "Waiting on your approval.")
+	if !strings.Contains(out, "Cole answered: approved") {
 		t.Fatalf("output %q", out)
 	}
 }
