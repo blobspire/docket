@@ -331,6 +331,7 @@
     if (ans) {
       if (ans.dataset.sent) return e.preventDefault();
       ans.dataset.sent = "1";
+      setTimeout(() => delete ans.dataset.sent, 8000); // the page didn't go (stopped, offline)
       return store.set("docket.last", ans.closest("[data-id]").dataset.id);
     }
     const f = e.target.closest(".noise-form");
@@ -472,6 +473,7 @@
   window.addEventListener("pageshow", (e) => {
     if (!e.persisted) return;
     navigating = false;
+    $$(".answer-form").forEach((f) => delete f.dataset.sent);
     if (!single) location.reload();
   });
 
