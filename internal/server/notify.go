@@ -67,5 +67,5 @@ func (s *Server) TestPush(ctx context.Context) error {
 	if s.cfg.Ntfy.Topic == "" {
 		return fmt.Errorf("no ntfy topic configured")
 	}
-	return s.push(ctx, "docket is set up", "Test notification. From now on you'll only get pushes when an agent is blocked on you, a system is down, or something is due today.", strings.TrimRight(s.cfg.PublicURL, "/")+"/", prioHigh, "white_check_mark")
+	return s.push(ctx, "docket is set up", "Test notification. From now on your phone only buzzes for act-now items: something is down or blocked until you act.", strings.TrimRight(s.cfg.PublicURL, "/")+"/", prioHigh, "white_check_mark")
 }

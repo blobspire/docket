@@ -141,7 +141,7 @@ physical_keywords = ["robot", "arm"]
 
 func TestHumanTaskDoneTellsTheAgent(t *testing.T) {
 	e := newEnv(t, "")
-	e.s.st.UpsertItem(store.Item{ID: "dk-cccccccc", Kind: "human_task", Title: "Insert the SSD", Machine: "box", SessionID: "s"})
+	e.s.st.UpsertItem(store.Item{ID: "dk-cccccccc", Kind: "human_task", Title: "Insert the SSD", Machine: "box", SessionID: "s", Source: "cli"})
 	e.s.Decide("dk-cccccccc", Action{Kind: "done"})
 	ds, _ := e.s.st.ItemDeliveries("dk-cccccccc")
 	if len(ds) != 1 || !strings.Contains(ds[0].Text, "marked this done") {
@@ -178,7 +178,7 @@ mode = "local"
 	st.UpsertItem(store.Item{ID: "dk-00000002", Kind: "approval", Title: "an old-style approval", SessionID: "idle", CreatedAt: old})
 	st.UpsertItem(store.Item{ID: "dk-00000003", Kind: "review", Title: "Model A results", Urgency: "soon", SessionID: "idle", CreatedAt: old})
 	st.UpsertItem(store.Item{ID: "dk-00000004", Kind: "issue", Title: "too fresh", Urgency: "now", SessionID: "idle"})
-	st.UpsertItem(store.Item{ID: "dk-00000005", Kind: "health", Title: "a watchdog alert that keeps being re-checked", Urgency: "now", DedupeKey: "watchdog:x", CreatedAt: old})
+	st.UpsertItem(store.Item{ID: "dk-00000005", Kind: "health", Title: "a watchdog alert that keeps being re-checked", Urgency: "now", UrgentSince: old, DedupeKey: "watchdog:x", CreatedAt: old})
 	st.MarkPushed([]string{"dk-00000005"})
 	e.s.pushes(e.ctx)
 	mu.Lock()
@@ -187,8 +187,10 @@ mode = "local"
 		t.Fatalf("pushes = %+v", got)
 	}
 	mu.Unlock()
-	// A watchdog re-check of an already-pushed item must not re-arm it.
+	// Neither a watchdog re-check nor an agent re-filing at the same urgency
+	// re-arms an item that already pushed.
 	st.UpsertItem(store.Item{ID: "dk-x", Ongoing: true, Kind: "health", Title: "a watchdog alert that keeps being re-checked", Urgency: "now", DedupeKey: "watchdog:x"})
+	st.UpsertItem(store.Item{ID: "dk-y", Kind: "health", Title: "a watchdog alert that keeps being re-checked", Urgency: "now", DedupeKey: "watchdog:x"})
 	e.s.pushes(e.ctx) // never twice for the same item
 	mu.Lock()
 	defer mu.Unlock()
@@ -410,7 +412,7 @@ always_on = true
 		titles = append(titles, it.Title)
 	}
 	joined := strings.Join(titles, " | ")
-	for _, want := range []string{"weekly limit at 91%", "Lead orch is stuck waiting (dialog open)"} {
+	for _, want := range []string{"weekly limit nearly used", "Lead orch is stuck waiting (dialog open)"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing %q in %q", want, joined)
 		}

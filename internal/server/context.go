@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/blobspire/docket/internal/agentctx"
+	"github.com/blobspire/docket/internal/store"
 )
 
 // ContextFor builds ~/.docket/context.json for one machine: every project
@@ -51,7 +53,7 @@ func (s *Server) ContextFor(machine string) ([]byte, error) {
 		}
 		if it.Machine == machine {
 			c.Open = append(c.Open, agentctx.Item{ID: it.ID, Title: it.Title, Kind: it.Kind, Project: it.Project, Urgency: it.Urgency,
-				Key: agentKey(it.DedupeKey), SessionID: it.SessionID, CreatedAt: it.CreatedAt})
+				Key: store.AgentKey(it.DedupeKey), SessionID: it.SessionID, CreatedAt: it.CreatedAt})
 		}
 	}
 	var asOf int64
@@ -59,6 +61,11 @@ func (s *Server) ContextFor(machine string) ([]byte, error) {
 		a := get(p.Name)
 		c.Projects = append(c.Projects, agentctx.Project{Name: p.Name, Description: p.Description, Components: keys(a.components), Places: keys(a.places), Open: a.open})
 		asOf = max(asOf, p.UpdatedAt)
+	}
+	for _, it := range items {
+		if it.Machine == machine {
+			asOf = max(asOf, it.UpdatedAt)
+		}
 	}
 	c.Places = keys(places)
 	dirs, _ := s.st.ProjectDirs(machine)
@@ -69,25 +76,18 @@ func (s *Server) ContextFor(machine string) ([]byte, error) {
 		c.Leads[l.Name] = l.Project
 	}
 	sort.Slice(c.Open, func(i, j int) bool { return c.Open[i].ID < c.Open[j].ID })
+	// What the server has processed from this machine lately, open or not:
+	// the machine's own record of its filings defers to the server for these.
+	// Day-aligned, so the window doesn't change the file every second.
+	day := s.cfg.Now().Truncate(24 * time.Hour).Add(-48 * time.Hour).Unix()
+	c.Seen = s.st.SeenIDs(machine, day)
+	c.Timezone = s.cfg.loc.String()
 	// "As of" is the last change the file reflects, not the time it was made,
 	// so an unchanged queue gives byte-identical files.
-	var lastItem, lastDir int64
-	s.st.DB.QueryRow(`SELECT COALESCE(MAX(updated_at),0) FROM items`).Scan(&lastItem)
+	var lastDir int64
 	s.st.DB.QueryRow(`SELECT COALESCE(MAX(updated_at),0) FROM project_dirs WHERE machine=?`, machine).Scan(&lastDir)
-	c.AsOf = max(asOf, lastItem, lastDir)
+	c.AsOf = max(asOf, lastDir)
 	return json.Marshal(c)
-}
-
-// agentKey is the --key an agent gave, without docket's project scope.
-func agentKey(dedupe string) string {
-	if !strings.HasPrefix(dedupe, "key:") {
-		return ""
-	}
-	rest := strings.TrimPrefix(dedupe, "key:")
-	if i := strings.IndexByte(rest, ':'); i >= 0 {
-		return rest[i+1:]
-	}
-	return rest
 }
 
 func keys(m map[string]bool) []string {
@@ -112,7 +112,11 @@ func (s *Server) syncContext(ctx context.Context, m Machine) {
 	}
 	if _, err := s.remote(ctx, m, strings.NewReader(string(data)), "context", "put"); err != nil {
 		s.log.Printf("%s: context put: %v", m.Name, err)
-		return
+		// An older docket there doesn't take a context: don't retry this
+		// exact content every pull; a change (or an upgrade) tries again.
+		if !strings.Contains(err.Error(), `unknown command "context"`) {
+			return
+		}
 	}
 	s.st.Set("context:sent:"+m.Name, h)
 }

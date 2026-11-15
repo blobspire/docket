@@ -43,7 +43,7 @@ func Block(person string) string {
 - something broken that needs them
 Not docket: progress updates, merged-PR reports, problems you can fix yourself or track in the repo, and questions with a sensible default (take it and say so).
 If ` + person + ` is in the conversation with you right now, just ask in chat. File anyway when it would matter if they stepped away (it blocks work beyond this conversation, it's urgent, or it's results they'll want later), and close the item yourself with ` + "`docket done <id>`" + ` once it's settled in chat.
-Read the docket skill before filing: projects, urgency, and how to write a title they can scan. Answers arrive as messages tagged ` + "`[docket dk-…]`" + `.
+To file: ` + "`docket ask|task|review|issue \"<title>\" --project <p> --why \"<markdown>\"`" + `. Read the docket skill (or ` + "`docket help`" + `) first: projects, urgency, and how to write a title they can scan. Answers arrive as messages tagged ` + "`[docket dk-…]`" + `.
 Approved preferences, and items ` + person + ` marked not worth their time: @~/.docket/rules.md
 ` + end
 }

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -98,6 +99,9 @@ func (s *Store) RenameProject(from, to string) error {
 	if from == "" || to == "" || from == to {
 		return errors.New("rename needs two different project names")
 	}
+	if to == Unsorted {
+		return errors.New(`"unsorted" is where items without a project land; pick a real project name`)
+	}
 	tx, err := s.DB.Begin()
 	if err != nil {
 		return err
@@ -112,7 +116,11 @@ func (s *Store) RenameProject(from, to string) error {
 		}
 		tx.Exec(`INSERT OR IGNORE INTO projects(name, created_at, updated_at) VALUES (?,?,?)`, to, t, t)
 	}
-	rows, err := tx.Query(`SELECT id, COALESCE(dedupe_key,''), status FROM items WHERE project=?`, from)
+	q := `SELECT id, COALESCE(dedupe_key,''), status FROM items WHERE project=?`
+	if from == Unsorted {
+		q = `SELECT id, COALESCE(dedupe_key,''), status FROM items WHERE project IN ('', ?)`
+	}
+	rows, err := tx.Query(q, from)
 	if err != nil {
 		return err
 	}
@@ -137,6 +145,8 @@ func (s *Store) RenameProject(from, to string) error {
 					"merged into "+other, t, t, r.id); err != nil {
 					return err
 				}
+				// The agent that filed the merged item still knows its id.
+				tx.Exec(`INSERT OR IGNORE INTO item_aliases(alias, item_id, created_at) VALUES (?,?,?)`, r.id, other, t)
 				r.status = "done"
 			}
 		}
@@ -167,22 +177,37 @@ type ProjectDir struct {
 	Machine, Dir, Project string
 }
 
-// LearnDir remembers that work in dir (on machine) belongs to project, unless
-// that folder already has a mapping: the first explicit choice sticks.
+// LearnDir counts an explicit choice of project for a folder. The mapping
+// follows the majority: a different project wins it only after outvoting
+// the current one, so one errand filed from a repo doesn't re-home it.
 func (s *Store) LearnDir(machine, dir, project string) error {
 	dir = strings.TrimRight(dir, "/")
 	if machine == "" || dir == "" || project == "" || project == Unsorted {
 		return nil
 	}
-	_, err := s.DB.Exec(`INSERT OR IGNORE INTO project_dirs(machine, dir, project, updated_at) VALUES (?,?,?,?)`, machine, dir, project, now())
+	t := now()
+	var cur string
+	var votes int
+	err := s.DB.QueryRow(`SELECT project, votes FROM project_dirs WHERE machine=? AND dir=?`, machine, dir).Scan(&cur, &votes)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		_, err = s.DB.Exec(`INSERT OR IGNORE INTO project_dirs(machine, dir, project, updated_at, votes) VALUES (?,?,?,?,1)`, machine, dir, project, t)
+	case err != nil:
+	case cur == project:
+		_, err = s.DB.Exec(`UPDATE project_dirs SET votes=MIN(votes+1, 20) WHERE machine=? AND dir=?`, machine, dir)
+	case votes <= 1:
+		_, err = s.DB.Exec(`UPDATE project_dirs SET project=?, votes=1, updated_at=? WHERE machine=? AND dir=?`, project, t, machine, dir)
+	default:
+		_, err = s.DB.Exec(`UPDATE project_dirs SET votes=votes-1 WHERE machine=? AND dir=?`, machine, dir)
+	}
 	return err
 }
 
 // SetDir sets a folder's project, replacing any earlier mapping.
 func (s *Store) SetDir(machine, dir, project string) error {
 	dir = strings.TrimRight(dir, "/")
-	_, err := s.DB.Exec(`INSERT INTO project_dirs(machine, dir, project, updated_at) VALUES (?,?,?,?)
-		ON CONFLICT(machine, dir) DO UPDATE SET project=excluded.project, updated_at=excluded.updated_at`, machine, dir, project, now())
+	_, err := s.DB.Exec(`INSERT INTO project_dirs(machine, dir, project, updated_at, votes) VALUES (?,?,?,?,5)
+		ON CONFLICT(machine, dir) DO UPDATE SET project=excluded.project, updated_at=excluded.updated_at, votes=5`, machine, dir, project, now())
 	return err
 }
 
@@ -224,13 +249,51 @@ func ProjectForDir(dirs []ProjectDir, cwd string) string {
 
 // ---- aliases and lookups --------------------------------------------------------
 
-// AddAlias records that alias (an id an agent was told) means itemID.
-func (s *Store) AddAlias(alias, itemID string) error {
+// AddAlias records that alias (an id an agent on machine was told) means itemID.
+func (s *Store) AddAlias(alias, itemID, machine string) error {
 	if alias == "" || alias == itemID {
 		return nil
 	}
-	_, err := s.DB.Exec(`INSERT OR IGNORE INTO item_aliases(alias, item_id) VALUES (?,?)`, alias, itemID)
+	_, err := s.DB.Exec(`INSERT OR IGNORE INTO item_aliases(alias, item_id, machine, created_at) VALUES (?,?,?,?)`, alias, itemID, machine, now())
 	return err
+}
+
+// LatestAlias is the id most recently told to an agent for this item, when
+// that differs from the item's own id ("" otherwise).
+func (s *Store) LatestAlias(itemID string) string {
+	var a string
+	s.DB.QueryRow(`SELECT alias FROM item_aliases WHERE item_id=? ORDER BY rowid DESC LIMIT 1`, itemID).Scan(&a)
+	return a
+}
+
+// SeenIDs lists ids the server has processed from a machine since a time:
+// its items and the aliases of re-filings. A machine's local record of what
+// it filed can then defer to the server for exactly those.
+func (s *Store) SeenIDs(machine string, since int64) []string {
+	var out []string
+	rows, err := s.DB.Query(`SELECT id FROM items WHERE machine=? AND created_at>=? UNION SELECT alias FROM item_aliases WHERE machine=? AND created_at>=? ORDER BY 1`, machine, since, machine, since)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		rows.Scan(&id)
+		out = append(out, id)
+	}
+	return out
+}
+
+// AgentKey is the --key an agent gave, without docket's project scope.
+func AgentKey(dedupe string) string {
+	if !strings.HasPrefix(dedupe, "key:") {
+		return ""
+	}
+	rest := strings.TrimPrefix(dedupe, "key:")
+	if i := strings.IndexByte(rest, ':'); i >= 0 {
+		return rest[i+1:]
+	}
+	return rest
 }
 
 // ResolveItem finds an item by id or by an alias of it.
@@ -252,40 +315,46 @@ func (s *Store) ActiveByKey(key string) (Item, bool) {
 	return it, err == nil
 }
 
-// ActiveByAgentKey finds an active item filed with --key k (in any project)
-// by the given session, or failing that from the given machine.
+// ActiveByAgentKey finds an active item filed with exactly --key k (in any
+// project) by the given session, or failing that from the given machine.
 func (s *Store) ActiveByAgentKey(k, session, machine string) (Item, bool) {
-	like := "key:%:" + strings.NewReplacer("%", `\%`, "_", `\_`).Replace(k)
+	find := func(col, val string) (Item, bool) {
+		rows, err := s.DB.Query(`SELECT `+itemCols+` FROM items WHERE dedupe_key LIKE 'key:%' AND `+col+`=? AND status IN ('maybe','open','snoozed','answered') ORDER BY created_at DESC`, val)
+		if err != nil {
+			return Item{}, false
+		}
+		defer rows.Close()
+		for rows.Next() {
+			it, err := scanItem(rows)
+			if err == nil && AgentKey(it.DedupeKey) == k {
+				return it, true
+			}
+		}
+		return Item{}, false
+	}
 	if session != "" {
-		if it, err := scanItem(s.DB.QueryRow(`SELECT `+itemCols+` FROM items WHERE dedupe_key LIKE ? ESCAPE '\' AND session_id=? AND status IN ('maybe','open','snoozed','answered') ORDER BY created_at DESC LIMIT 1`, like, session)); err == nil {
+		if it, ok := find("session_id", session); ok {
 			return it, true
 		}
 	}
 	if machine != "" {
-		if it, err := scanItem(s.DB.QueryRow(`SELECT `+itemCols+` FROM items WHERE dedupe_key LIKE ? ESCAPE '\' AND machine=? AND status IN ('maybe','open','snoozed','answered') ORDER BY created_at DESC LIMIT 1`, like, machine)); err == nil {
-			return it, true
-		}
+		return find("machine", machine)
 	}
 	return Item{}, false
 }
 
-// RecentlyNoised reports whether the newest item with this key was marked
-// "not worth my time" since the given time, and when.
+// RecentlyNoised reports whether any item with this key was marked "not
+// worth my time" since the given time, and when.
 func (s *Store) RecentlyNoised(key string, since int64) (int64, bool) {
-	var id string
-	var resolved int64
-	err := s.DB.QueryRow(`SELECT id, COALESCE(resolved_at,0) FROM items WHERE dedupe_key=? ORDER BY created_at DESC LIMIT 1`, key).Scan(&id, &resolved)
-	if err != nil || resolved < since {
-		return 0, false
-	}
-	var action string
-	s.DB.QueryRow(`SELECT action FROM decisions WHERE item_id=? ORDER BY id DESC LIMIT 1`, id).Scan(&action)
-	return resolved, action == "noise"
+	var ts int64
+	err := s.DB.QueryRow(`SELECT COALESCE(MAX(d.ts),0) FROM decisions d JOIN items i ON i.id = d.item_id
+		WHERE i.dedupe_key=? AND d.action='noise' AND d.ts>=?`, key, since).Scan(&ts)
+	return ts, err == nil && ts > 0
 }
 
 // ResolveKeyPrefix closes active items whose key starts with prefix.
 func (s *Store) ResolveKeyPrefix(prefix, why string) (int, error) {
-	like := strings.NewReplacer("%", `\%`, "_", `\_`).Replace(prefix) + "%"
+	like := strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(prefix) + "%"
 	res, err := s.DB.Exec(`UPDATE items SET status='done', resolution=?, resolved_at=?, updated_at=? WHERE dedupe_key LIKE ? ESCAPE '\' AND status IN ('open','snoozed')`, why, now(), now(), like)
 	if err != nil {
 		return 0, err
@@ -300,6 +369,7 @@ type reclassified struct {
 	Project string `json:"project"`
 	Urgency string `json:"urgency"`
 	Pinned  string `json:"pinned"`
+	Key     string `json:"key,omitempty"`
 }
 
 // Reclassify moves an item to another project and/or urgency by hand. The
@@ -313,10 +383,11 @@ func (s *Store) Reclassify(id, project, urgency string) error {
 	}
 	defer tx.Rollback()
 	var prev reclassified
-	var status string
-	if err := tx.QueryRow(`SELECT project, urgency, pinned, status FROM items WHERE id=?`, id).Scan(&prev.Project, &prev.Urgency, &prev.Pinned, &status); err != nil {
+	var status, key string
+	if err := tx.QueryRow(`SELECT project, urgency, pinned, status, COALESCE(dedupe_key,'') FROM items WHERE id=?`, id).Scan(&prev.Project, &prev.Urgency, &prev.Pinned, &status, &key); err != nil {
 		return err
 	}
+	prev.Key = key
 	pins := map[string]bool{}
 	for _, p := range strings.Split(prev.Pinned, ",") {
 		if p != "" {
@@ -327,6 +398,11 @@ func (s *Store) Reclassify(id, project, urgency string) error {
 	if project != "" && project != prev.Project {
 		if _, err := tx.Exec(`UPDATE items SET project=? WHERE id=?`, project, id); err != nil {
 			return err
+		}
+		// Keep its key in the new project's scope, so the agent's re-file
+		// (which now resolves to the new project) finds it.
+		if k := AgentKey(key); k != "" {
+			tx.Exec(`UPDATE OR IGNORE items SET dedupe_key=? WHERE id=?`, "key:"+project+":"+k, id)
 		}
 		pins["project"] = true
 	}
@@ -360,28 +436,66 @@ func undoReclassify(tx *sql.Tx, id, answer string) error {
 	if err := json.Unmarshal([]byte(answer), &prev); err != nil {
 		return err
 	}
-	_, err := tx.Exec(`UPDATE items SET project=?, urgency=?, pinned=?, updated_at=? WHERE id=?`, prev.Project, prev.Urgency, prev.Pinned, now(), id)
-	return err
+	if _, err := tx.Exec(`UPDATE items SET project=?, urgency=?, pinned=?, updated_at=? WHERE id=?`, prev.Project, prev.Urgency, prev.Pinned, now(), id); err != nil {
+		return err
+	}
+	if prev.Key != "" {
+		tx.Exec(`UPDATE OR IGNORE items SET dedupe_key=? WHERE id=?`, prev.Key, id)
+	}
+	return nil
 }
 
-// Expire closes open or snoozed items whose expiry has passed.
+// Expire closes items whose expiry has passed, logging each so it can be
+// undone from the Done page.
 func (s *Store) Expire(at int64) (int, error) {
-	res, err := s.DB.Exec(`UPDATE items SET status='expired', resolution='expired: no longer relevant after its expiry time', resolved_at=?, updated_at=?
-		WHERE expires_at > 0 AND expires_at <= ? AND status IN ('open','snoozed')`, at, at, at)
+	tx, err := s.DB.Begin()
 	if err != nil {
 		return 0, err
 	}
-	n, _ := res.RowsAffected()
-	return int(n), nil
+	defer tx.Rollback()
+	rows, err := tx.Query(`SELECT id, status FROM items WHERE expires_at > 0 AND expires_at <= ? AND status IN ('open','snoozed','answered')`, at)
+	if err != nil {
+		return 0, err
+	}
+	type row struct{ id, status string }
+	var due []row
+	for rows.Next() {
+		var r row
+		rows.Scan(&r.id, &r.status)
+		due = append(due, r)
+	}
+	rows.Close()
+	for _, r := range due {
+		if _, err := tx.Exec(`UPDATE items SET status='expired', resolution='expired: no longer relevant after its expiry time', resolved_at=?, updated_at=? WHERE id=?`, at, at, r.id); err != nil {
+			return 0, err
+		}
+		if _, err := tx.Exec(`INSERT INTO decisions(item_id, ts, action, prev_status) VALUES (?,?,'expire',?)`, r.id, at, r.status); err != nil {
+			return 0, err
+		}
+	}
+	return len(due), tx.Commit()
 }
 
-// QueueDigest changes whenever the active queue does, and only then.
+// QueueDigest changes whenever what the dashboard shows does, and only
+// then: every active item's visible fields, and whether its agent is waiting.
 func (s *Store) QueueDigest() string {
-	var n, max int64
-	s.DB.QueryRow(`SELECT COUNT(*), COALESCE(MAX(updated_at),0) FROM items WHERE status IN ('open','snoozed','answered')`).Scan(&n, &max)
-	var closed int64
-	s.DB.QueryRow(`SELECT COALESCE(MAX(updated_at),0) FROM items`).Scan(&closed)
-	return fmt.Sprintf("%d.%d.%d", n, max, closed)
+	rows, err := s.DB.Query(`SELECT i.id, i.status, i.title, i.urgency, i.project, i.component, i.place, i.due, i.expires_at, i.updated_at, COALESCE(se.state,'')
+		FROM items i LEFT JOIN sessions se ON se.id = i.session_id AND i.blocking=1
+		WHERE i.status IN ('open','snoozed','answered') ORDER BY i.id`)
+	if err != nil {
+		return ""
+	}
+	defer rows.Close()
+	h := sha256.New()
+	n := 0
+	for rows.Next() {
+		var id, status, title, urgency, project, component, place, due, state string
+		var exp, upd int64
+		rows.Scan(&id, &status, &title, &urgency, &project, &component, &place, &due, &exp, &upd, &state)
+		fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%s\n", id, status, title, urgency, project, component, place, due, exp, upd, state)
+		n++
+	}
+	return fmt.Sprintf("%d.%x", n, h.Sum(nil)[:8])
 }
 
 // Noise is one item the human marked "not worth my time".

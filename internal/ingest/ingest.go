@@ -48,6 +48,15 @@ var nonceRe = regexp.MustCompile(`\[docket (dk-[0-9a-z]{8} )?#([0-9a-z]{6,16})\]
 type Options struct {
 	// LeadProject maps a lead name to its project ("" if unknown).
 	LeadProject func(lead string) string
+	// SystemProject is where docket's own health items go (logins, machines).
+	SystemProject string
+}
+
+func (o Options) system() string {
+	if o.SystemProject != "" {
+		return o.SystemProject
+	}
+	return "system"
 }
 
 // Process applies every unprocessed event, oldest first. It returns how many
@@ -190,7 +199,10 @@ func apply(s *store.Store, e store.RawEvent, o Options) error {
 			if p := store.Slug(d.Project); p != "" {
 				it, ok = s.ActiveByKey("key:" + p + ":" + d.Key)
 			}
-			if !ok {
+			// The project resolved now may differ from the one at filing time
+			// (a folder default vs. an explicit --project then); only an
+			// explicitly named project rules out looking elsewhere.
+			if !ok && !d.Explicit {
 				it, ok = s.ActiveByAgentKey(d.Key, sid, r.Machine)
 			}
 		}
@@ -223,7 +235,16 @@ func apply(s *store.Store, e store.RawEvent, o Options) error {
 		return s.PatchSession(sid, store.SessionPatch{PendingPermission: store.Str(describeTool(p.ToolName, p.ToolInput))})
 
 	case "Notification":
-		return notification(s, sid, p, base, at)
+		return notification(s, sid, p, base, at, o)
+
+	case "cli.project":
+		var pr struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		}
+		_ = json.Unmarshal(r.Payload, &pr)
+		_ = s.EnsureProject(store.Slug(pr.Name), clip(oneLine(pr.Description, 200), 200))
+		return nil
 
 	case "StopFailure":
 		if err := s.PatchSession(sid, store.SessionPatch{State: store.Str("waiting"), WaitingFor: store.Str("error: " + p.Error)}); err != nil {
@@ -240,12 +261,12 @@ func apply(s *store.Store, e store.RawEvent, o Options) error {
 		it.Source = SrcFailure
 		it.Blocking = true
 		it.Urgency = "now"
+		it.Project = o.system()
 		it.SessionID = "" // one item per machine, not per session
 		it.Title = failureTitle(p.Error) + " on " + base.Machine
 		it.Body = strings.TrimSpace(firstNonEmpty(p.ErrorDetails, p.LastMessage))
 		it.DedupeKey = "stopfail:" + base.Machine + ":" + p.Error
-		_, _, err := s.UpsertItem(it)
-		return err
+		return upsertHealth(s, it)
 
 	case "Stop":
 		patch := store.SessionPatch{State: store.Str("idle"), WaitingFor: store.Str(""), WaitingSince: store.Int(0)}
@@ -349,7 +370,7 @@ func fileItem(s *store.Store, r record.Record, base store.Item, o Options) error
 		it.Project = projectFor(s, o, r.Lead, base.Machine, firstNonEmpty(in.Root, base.Cwd))
 	}
 	if in.Key != "" {
-		it.DedupeKey = "key:" + it.Project + ":" + in.Key
+		it.DedupeKey = "key:" + it.Project + ":" + clip(in.Key, 200)
 		// The human said items like this aren't worth their time: a re-file
 		// within the week is kept for the record but stays out of the queue.
 		if when, ok := s.RecentlyNoised(it.DedupeKey, time.Now().Add(-7*24*time.Hour).Unix()); ok {
@@ -363,11 +384,13 @@ func fileItem(s *store.Store, r record.Record, base store.Item, o Options) error
 	}
 	// Bookkeeping is best effort: a failure here must never stop ingest.
 	if id != in.ID {
-		_ = s.AddAlias(in.ID, id) // the agent was told in.ID
+		_ = s.AddAlias(in.ID, id, base.Machine) // the agent was told in.ID
 	}
 	if explicit != "" {
 		_ = s.EnsureProject(explicit, clip(oneLine(in.NewProject, 200), 200))
-		if in.Root != "" {
+		// Only a project the agent named teaches the folder's default; one
+		// the CLI filled in from the folder or the lead would just echo it.
+		if in.Root != "" && in.Explicit {
 			_ = s.LearnDir(base.Machine, in.Root, explicit)
 		}
 	}
@@ -405,9 +428,12 @@ func active(status string) bool {
 	return status == "maybe" || status == "open" || status == "snoozed" || status == "answered"
 }
 
-func notification(s *store.Store, sid string, p payload, base store.Item, at int64) error {
+func notification(s *store.Store, sid string, p payload, base store.Item, at int64, o Options) error {
 	switch p.NotificationType {
-	case "idle_prompt", "permission_prompt", "agent_needs_input", "elicitation_dialog", "elicitation_url_dialog":
+	case "idle_prompt":
+		// Finished and waiting for the next prompt: idle, not stuck.
+		return s.PatchSession(sid, store.SessionPatch{State: store.Str("idle"), WaitingFor: store.Str(""), WaitingSince: store.Int(0)})
+	case "permission_prompt", "agent_needs_input", "elicitation_dialog", "elicitation_url_dialog":
 		what := "your input"
 		if p.NotificationType == "permission_prompt" {
 			what = "permission"
@@ -421,20 +447,32 @@ func notification(s *store.Store, sid string, p payload, base store.Item, at int
 		}
 		return s.PatchSession(sid, patch)
 	}
-	if strings.HasPrefix(p.NotificationType, "auth_") && strings.Contains(p.NotificationType, "fail") {
+	// auth_storage_failure means the sign-in worked but couldn't be saved,
+	// not that the machine is signed out.
+	if strings.HasPrefix(p.NotificationType, "auth_") && strings.Contains(p.NotificationType, "fail") && p.NotificationType != "auth_storage_failure" {
 		it := base
 		it.ID = ulid.ItemID()
 		it.Kind = "health"
 		it.Source = SrcFailure
 		it.Blocking = true
 		it.Urgency = "now"
+		it.Project = o.system()
 		it.Title = "Claude Code is signed out on " + base.Machine
 		it.Body = p.Message
 		it.DedupeKey = "auth:" + base.Machine + ":" + p.NotificationType
-		_, _, err := s.UpsertItem(it)
-		return err
+		return upsertHealth(s, it)
 	}
 	return nil
+}
+
+// upsertHealth files a machine-level failure unless the human said such
+// alerts aren't worth their time this week.
+func upsertHealth(s *store.Store, it store.Item) error {
+	if _, noised := s.RecentlyNoised(it.DedupeKey, time.Now().Add(-7*24*time.Hour).Unix()); noised {
+		return nil
+	}
+	_, _, err := s.UpsertItem(it)
+	return err
 }
 
 // confirmReceipts marks deliveries confirmed when their nonce shows up in a

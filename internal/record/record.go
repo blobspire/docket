@@ -59,7 +59,8 @@ type Item struct {
 	// Where it belongs and how soon it matters, chosen by the agent. Empty
 	// fields mean "not given": a re-file with the same key keeps the old value.
 	Project    string `json:"project,omitempty"`
-	NewProject string `json:"new_project,omitempty"` // one-line description when creating a project
+	Explicit   bool   `json:"project_explicit,omitempty"` // the agent named the project (vs. a folder or lead default)
+	NewProject string `json:"new_project,omitempty"`      // one-line description when creating a project
 	Component  string `json:"component,omitempty"`
 	Place      string `json:"place,omitempty"`   // where the human must be to do it
 	Urgency    string `json:"urgency,omitempty"` // now | soon | normal
@@ -76,10 +77,11 @@ type Evidence struct {
 
 // Done marks a previously filed item resolved by the agent.
 type Done struct {
-	ItemID  string `json:"item_id,omitempty"`
-	Key     string `json:"key,omitempty"` // resolve by the --key it was filed with instead of its id
-	Project string `json:"project,omitempty"`
-	Note    string `json:"note,omitempty"`
+	ItemID   string `json:"item_id,omitempty"`
+	Key      string `json:"key,omitempty"` // resolve by the --key it was filed with instead of its id
+	Project  string `json:"project,omitempty"`
+	Explicit bool   `json:"project_explicit,omitempty"` // --project was given: don't look in other projects
+	Note     string `json:"note,omitempty"`
 }
 
 // New starts a record for event with the fields every record shares.

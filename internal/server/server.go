@@ -106,7 +106,7 @@ func (s *Server) Run(ctx context.Context) error {
 		})
 	}
 	loop("ingest", 2*time.Second, s.processKick, func(context.Context) {
-		if n, err := ingest.ProcessWith(s.st, 200, ingest.Options{LeadProject: s.leadProject}); err != nil {
+		if n, err := ingest.ProcessWith(s.st, 200, ingest.Options{LeadProject: s.leadProject, SystemProject: s.cfg.SystemProject}); err != nil {
 			s.log.Printf("ingest: %v", err)
 		} else if n > 0 {
 			s.kickDeliver()

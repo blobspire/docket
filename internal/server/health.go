@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/blobspire/docket/internal/ingest"
@@ -66,8 +67,18 @@ func (s *Server) ApplyUsage(machine string, data []byte) {
 // watchHealth turns quota pressure, sessions stuck on a dialog, and always-on
 // leads that stopped into items.
 func (s *Server) watchHealth(ctx context.Context) {
-	quotas, _ := s.st.Quotas()
-	for _, q := range quotas {
+	// Several machines can report the same account: judge each account and
+	// window by its newest snapshot, or one stale report re-opens what a
+	// fresh one just cleared.
+	all, _ := s.st.Quotas()
+	newest := map[string]store.Quota{}
+	for _, q := range all {
+		k := firstNonEmptyStr(q.Account, q.Machine) + ":" + q.Window
+		if cur, ok := newest[k]; !ok || q.CapturedAt > cur.CapturedAt {
+			newest[k] = q
+		}
+	}
+	for _, q := range newest {
 		limit := quotaWarn7d
 		label := "weekly"
 		if q.Window == "five_hour" {
@@ -81,8 +92,8 @@ func (s *Server) watchHealth(ctx context.Context) {
 			}
 			s.watch(store.Item{ID: ulid.ItemID(), Ongoing: true, Kind: "health", Source: ingest.SrcWatchdog, Machine: q.Machine, DedupeKey: key,
 				Project: s.cfg.SystemProject, Urgency: "soon",
-				Title: fmt.Sprintf("Claude %s limit at %.0f%% (%s)", label, q.UsedPct, firstNonEmptyStr(q.Account, q.Machine)),
-				Body:  "Nothing is paused automatically. The Health page shows which leads are spending." + reset})
+				Title: fmt.Sprintf("Claude %s limit nearly used (%s)", label, firstNonEmptyStr(q.Account, q.Machine)),
+				Body:  fmt.Sprintf("%.0f%% used. Nothing is paused automatically. The Health page shows which leads are spending.", q.UsedPct) + reset})
 		} else if q.UsedPct < quotaClearAt {
 			s.resolveKey(key, "usage dropped")
 		}
@@ -91,9 +102,9 @@ func (s *Server) watchHealth(ctx context.Context) {
 	// A lead runs unattended, so a lead stuck on a dialog or a question can sit
 	// for hours with nobody watching. Interactive sessions are left alone:
 	// the human is usually right there, and anything that matters gets filed.
-	all, _ := s.st.Sessions(false, 500)
+	sessions, _ := s.st.Sessions(false, 500)
 	now := time.Now()
-	for _, x := range all {
+	for _, x := range sessions {
 		key := "waiting:" + x.ID
 		lead := s.leadOf(store.Item{}, x)
 		if lead != "" && x.State == "waiting" && x.WaitingSince > 0 && now.Sub(time.Unix(x.WaitingSince, 0)) > waitingAfter {
@@ -104,6 +115,16 @@ func (s *Server) watchHealth(ctx context.Context) {
 				Body:  "It has been waiting since " + time.Unix(x.WaitingSince, 0).In(s.cfg.loc).Format("Mon 15:04") + ". Open the session to answer."})
 		} else if x.State != "waiting" {
 			s.resolveKey(key, "the session moved on")
+		}
+	}
+	// A stuck lead whose session ended (or vanished) isn't waiting any more.
+	if open, err := s.st.Items("open", "snoozed"); err == nil {
+		for _, it := range open {
+			if strings.HasPrefix(it.DedupeKey, "waiting:") {
+				if x, ok, _ := s.st.GetSession(strings.TrimPrefix(it.DedupeKey, "waiting:")); !ok || x.State != "waiting" {
+					s.resolveKey(it.DedupeKey, "the session isn't waiting any more")
+				}
+			}
 		}
 	}
 

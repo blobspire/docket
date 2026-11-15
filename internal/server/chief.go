@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -169,7 +171,11 @@ func (s *Server) pushes(ctx context.Context) {
 	}
 	if err := s.push(ctx, title, body, click, prioUrgent, "rotating_light"); err != nil {
 		s.log.Printf("push: %v", err)
-		return
+		// A timeout usually means ntfy took the message but answered late:
+		// count it as sent rather than buzz the phone again every tick.
+		if !errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
 	}
 	ids := make([]string, len(due))
 	for i, it := range due {
@@ -178,18 +184,49 @@ func (s *Server) pushes(ctx context.Context) {
 	s.st.MarkPushed(ids)
 }
 
-// pushBody is "project · type", then the first line of the details.
+// pushBody is "project · type", then the first line of the details as
+// plain text.
 func pushBody(it store.Item) string {
 	b := firstNonEmptyStr(it.Project, store.Unsorted) + " · " + kindName(it.Kind)
-	for _, line := range strings.Split(it.Body, "\n") {
-		if line = strings.TrimSpace(strings.TrimLeft(line, "#*->` ")); line != "" {
-			if len(line) > 200 {
-				line = line[:200] + "…"
-			}
-			return b + "\n" + line
-		}
+	if line := firstLine(it.Body); line != "" {
+		return b + "\n" + line
 	}
 	return b
+}
+
+var (
+	mdListMark = regexp.MustCompile(`^(?:[-*+]|\d+[.)])\s+`)
+	mdHeading  = regexp.MustCompile(`^#{1,6}\s+`)
+	mdLink     = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
+	mdEmph     = regexp.MustCompile("\\*\\*|__|`")
+)
+
+// firstLine is the first line of prose in a markdown body, without its
+// markup, cut to about 200 characters on a character boundary.
+func firstLine(body string) string {
+	inFence := false
+	for _, line := range strings.Split(body, "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if inFence || t == "" || strings.HasPrefix(t, "|") || strings.Trim(t, "-=*_ ") == "" {
+			continue
+		}
+		t = mdHeading.ReplaceAllString(t, "")
+		t = mdListMark.ReplaceAllString(t, "")
+		t = mdLink.ReplaceAllString(t, "$1")
+		t = strings.TrimSpace(mdEmph.ReplaceAllString(t, ""))
+		if t == "" {
+			continue
+		}
+		if r := []rune(t); len(r) > 200 {
+			t = string(r[:200]) + "…"
+		}
+		return t
+	}
+	return ""
 }
 
 func project(cwd string) string {

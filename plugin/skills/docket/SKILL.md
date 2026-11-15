@@ -36,7 +36,7 @@ CI has been off since Nov 10: the free minutes ran out.
 - **wait**: no CI until Dec 1
 EOF
 )"
-docket task "Plug the COLE thumb drive into aurora for a backup" --project cwant --place home --component backups
+docket task "Plug the backup drive into the server" --project infra --place home --component backups
 docket review "LIBERO-plus results: Model A 65.5% vs control 78.6%" --project vlm-teacher --component "Model A" --evidence report.md
 docket issue "ARC login expired: all training jobs are failing" --project vlm-teacher --urgency now --key arc-auth --why "..."
 ```
@@ -64,7 +64,7 @@ Lead with what you need from them and why, in a sentence or two. Then at most ~5
 
 ### Project, component, place
 
-- `--project <name>`: run `docket projects` to see the projects, with descriptions. Reuse one when it fits. In a repo that already filed to a project, you can leave it out. If nothing fits, start one: `--project <short-name> --new-project "<one-line description>"`. A project is a body of work, not a repo: several repos can share one.
+- `--project <name>`: run `docket projects` to see the projects, with descriptions. Reuse one when it fits. If nothing fits, start one: `--project <short-name> --new-project "<one-line description>"`. A project is a body of work, not a repo: several repos can share one. A repository's default project is whatever is named there most; once it has one (`docket projects` tells you), you can leave `--project` out for work that belongs to it.
 - `--component <name>`: optional, the part of the project ("FR5 hardware", "billing", "CI"). Reuse names `docket projects` shows.
 - `--place <name>`: only for things they must physically be somewhere to do ("tealab", "home", "office"). Items are grouped by place so one trip covers them, because a missed physical task can cost a trip back. Reuse existing place names.
 
@@ -81,7 +81,7 @@ Lead with what you need from them and why, in a sentence or two. Then at most ~5
 
 ### Other flags
 
-- `--key <stable-id>`: re-filing with the same key updates the one item instead of adding another: a new title, body or urgency. Escalate this way (`--urgency now`) if a waiting item becomes urgent. Use it for anything you re-check on a schedule.
+- `--key <stable-id>`: re-filing with the same key updates the one item instead of adding another: a new title, body or urgency, and answers go to the session that re-filed it. Escalate this way (`--urgency now`): it brings a snoozed item back and pushes their phone. Use it for anything you re-check on a schedule, and close it with `docket done --key <key>`.
 - `--blocking`: you're paused until they answer.
 - `--physical`: needs physical action (robots, hardware). It can never be approved remotely; they'll do it in person.
 
@@ -106,7 +106,7 @@ If you start something that runs for a long time (training, a backfill, a cluste
 ```sh
 docket job register nightly-backtest --every 10m --why "3h run on the cluster"
 docket job beat nightly-backtest --why "epoch 4/12"
-docket job done nightly-backtest [--failed] --why "sharpe 1.4"
+docket job done nightly-backtest --why "sharpe 1.4"     # add --failed if it failed
 ```
 
 A job that misses two beats shows up on their dashboard, and its lead is woken to look. When it finishes, file the **results** with `docket review` if they're waiting on them.

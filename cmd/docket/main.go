@@ -62,6 +62,7 @@ The bar is high: file only what needs them and would otherwise be missed.
   docket done <dk-id> | --key <key> [--why "<what happened>"]  close an item (answered in chat, moot, fixed)
   docket list [--project <p>] [--all]     open items from this machine
   docket projects                         projects, components and places in use
+  docket projects add <name> --why "<one-line description>"   create a project
 
 Long-running jobs (so a stall gets noticed):
   docket job register <name> --every 10m [--why "..."]
@@ -709,12 +710,11 @@ person = %q
 listen = "127.0.0.1:7788"
 public_url = %q
 timezone = %q
+system_project = "system"   # where docket's own health items go
 
 [ntfy]
 server = "https://ntfy.sh"
 topic = %q
-quiet_start = "23:00"
-quiet_end = "07:00"
 
 # This machine. Add one [[machine]] per computer with agents:
 #   mode = "pull" (the server SSHes in; set ssh = "<host>") or

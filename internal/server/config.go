@@ -41,7 +41,7 @@ type Ntfy struct {
 	Topic      string `toml:"topic"`
 	Token      string `toml:"token"`
 	EnvFile    string `toml:"env_file"`
-	QuietStart string `toml:"quiet_start"`
+	QuietStart string `toml:"quiet_start"` // no longer used: act-now pushes go out at any hour
 	QuietEnd   string `toml:"quiet_end"`
 }
 
@@ -146,9 +146,6 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if c.Ntfy.Server == "" {
 		c.Ntfy.Server = "https://ntfy.sh"
-	}
-	if c.Ntfy.QuietStart == "" && c.Ntfy.QuietEnd == "" {
-		c.Ntfy.QuietStart, c.Ntfy.QuietEnd = "23:00", "07:00"
 	}
 	if c.Ntfy.EnvFile != "" {
 		if err := c.Ntfy.loadEnv(expand(c.Ntfy.EnvFile)); err != nil {

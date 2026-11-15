@@ -187,7 +187,7 @@ func (s *Server) applySessions(machine string, data []byte) {
 		// its updated time is when the wait began, even if docket only
 		// noticed later.
 		since := time.Now().Unix()
-		if u := l.Updated / 1000; u > 0 && u < since && since-u < 30*86400 {
+		if u := l.Updated / 1000; l.Status == "waiting" && u > 0 && u < since && since-u < 30*86400 {
 			since = u
 		}
 		switch {

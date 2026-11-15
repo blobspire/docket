@@ -47,15 +47,18 @@ func (s *Server) Decide(id string, a Action) error {
 		// A watchdog condition that still holds would re-open the moment it's
 		// dismissed: hide it for a day instead. It closes on its own when the
 		// condition clears.
-		if a.Kind == "dismiss" && it.Source == ingest.SrcWatchdog && it.Kind != "rule" {
+		// The same goes for a machine whose login is still failing.
+		if a.Kind == "dismiss" && (it.Source == ingest.SrcWatchdog || it.Source == ingest.SrcFailure) && it.Kind != "rule" {
 			return s.st.Snooze(id, time.Now().Add(24*time.Hour).Unix())
 		}
 		status := map[string]string{"done": "done", "dismiss": "dismissed"}[a.Kind]
 		if err := s.st.SetStatus(id, status, a.Text, a.Kind); err != nil {
 			return err
 		}
-		// A human-only task the agent is waiting on: tell it the task is done.
-		if a.Kind == "done" && (it.Kind == "human_task" || it.Kind == "blocker") && it.SessionID != "" {
+		// A human-only task an agent is waiting on: tell it the task is done.
+		// docket's own health items have no agent waiting (and telling one
+		// would resume a session the human may have ended).
+		if a.Kind == "done" && (it.Kind == "human_task" || it.Kind == "blocker") && it.SessionID != "" && it.Source == ingest.SrcCLI {
 			return s.queue(it, fmt.Sprintf("%s marked this done: %q.%s", s.cfg.Person, it.Title, comment(a.Text)))
 		}
 		return nil
@@ -73,11 +76,23 @@ func (s *Server) Decide(id string, a Action) error {
 		}
 		return s.st.Reclassify(id, p, u)
 	case "undo":
+		sentNoise := false
+		if ds, _ := s.st.ItemDeliveries(id); len(ds) > 0 {
+			for _, d := range ds {
+				sentNoise = sentNoise || (d.LiveOnly && d.Status != "pending" && strings.Contains(d.Text, "not worth their time"))
+			}
+		}
 		action, err := s.st.Undo(id)
+		if err != nil {
+			return err
+		}
 		if action == "noise" {
 			s.rulesChanged()
+			if sentNoise {
+				return s.notifyQuietly(it, fmt.Sprintf("%s took back the \"not worth my time\" on %q: it's open again.", s.cfg.Person, it.Title))
+			}
 		}
-		return err
+		return nil
 	}
 
 	if it.Kind == "rule" {
@@ -154,6 +169,9 @@ func (s *Server) physical(it store.Item) bool {
 // still running, and without waking it), and every agent sees it in the
 // feedback section of rules.md from then on.
 func (s *Server) noise(it store.Item, note string) error {
+	if it.Status != "open" && it.Status != "snoozed" && it.Status != "answered" && it.Status != "maybe" {
+		return errors.New("this item is already closed")
+	}
 	res := "Not worth " + s.cfg.Person + "'s time"
 	if note != "" {
 		res += ": " + note
@@ -170,6 +188,12 @@ func (s *Server) noise(it store.Item, note string) error {
 		msg += ". Their note: " + note
 	}
 	msg += ". It's closed; don't re-file it. File fewer items like this: keep docket for what really needs " + s.cfg.Person + ", and mention smaller things in chat instead."
+	return s.notifyQuietly(it, msg)
+}
+
+// notifyQuietly tells the session that filed an item something it should
+// know at its next turn, without waking it, and only if it's still running.
+func (s *Server) notifyQuietly(it store.Item, msg string) error {
 	nonce := randomNonce()
 	if err := s.st.AddDelivery(store.Delivery{ID: ulid.New(time.Now()), ItemID: it.ID, Machine: it.Machine, SessionID: it.SessionID, Nonce: nonce,
 		Text: fmt.Sprintf("[docket %s #%s] %s", it.ID, nonce, msg), LiveOnly: true, Quiet: true}); err != nil {
@@ -184,6 +208,10 @@ func (s *Server) queue(it store.Item, text string) error {
 	nonce := randomNonce()
 	if m, ok := s.cfg.Machine(it.Machine); ok && len(m.Physical) > 0 {
 		text += " This does not authorize any physical or robot motion."
+	}
+	// A re-filed item keeps its first id; say which id this agent was told.
+	if a := s.st.LatestAlias(it.ID); a != "" {
+		text = "(this is the item you filed as " + a + ") " + text
 	}
 	d := store.Delivery{ID: ulid.New(time.Now()), ItemID: it.ID, Machine: it.Machine, SessionID: it.SessionID, Nonce: nonce,
 		Text: fmt.Sprintf("[docket %s #%s] %s", it.ID, nonce, text)}

@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/blobspire/docket/internal/config"
@@ -24,11 +25,13 @@ type Context struct {
 	AsOf     int64             `json:"as_of"`
 	Person   string            `json:"person,omitempty"`
 	Machine  string            `json:"machine,omitempty"`
+	Timezone string            `json:"timezone,omitempty"` // the human's, for dates like "today"
 	Projects []Project         `json:"projects"`
 	Places   []string          `json:"places,omitempty"`
 	Dirs     []Dir             `json:"dirs,omitempty"`  // this machine's folders only
 	Leads    map[string]string `json:"leads,omitempty"` // lead name → project
 	Open     []Item            `json:"open,omitempty"`  // this machine's open items only
+	Seen     []string          `json:"seen,omitempty"`  // ids from this machine the server has processed lately
 }
 
 type Project struct {
@@ -120,6 +123,17 @@ func (c Context) ProjectForDir(dirs ...string) string {
 	return ""
 }
 
+// Location is the human's time zone, for dates like "today" and "tomorrow"
+// (the agent's machine may be on UTC).
+func (c Context) Location() *time.Location {
+	if c.Timezone != "" {
+		if l, err := time.LoadLocation(c.Timezone); err == nil {
+			return l
+		}
+	}
+	return time.Local
+}
+
 // HasProject reports whether a project by that name exists.
 func (c Context) HasProject(name string) bool {
 	for _, p := range c.Projects {
@@ -132,17 +146,32 @@ func (c Context) HasProject(name string) bool {
 
 // ---- local overlay ------------------------------------------------------------
 
-// Overlay is what this machine did since its context copy was made.
+// Overlay is what this machine did that the server may not have processed
+// yet. Each entry carries the id of the filing it came from; once that id is
+// in the context's Seen list, the server's copy is authoritative.
 type Overlay struct {
-	Filed    []Item    `json:"filed,omitempty"`
-	Closed   []Closed  `json:"closed,omitempty"`
-	Projects []Project `json:"projects,omitempty"`
+	Filed    []Item     `json:"filed,omitempty"`
+	Closed   []Closed   `json:"closed,omitempty"`
+	Projects []NewThing `json:"projects,omitempty"`
+	Dirs     []NewThing `json:"dirs,omitempty"`
 }
 
+// Closed is an item this machine closed with `docket done`.
 type Closed struct {
-	ID  string `json:"id,omitempty"`
-	Key string `json:"key,omitempty"`
-	At  int64  `json:"at"`
+	ID      string `json:"id,omitempty"`
+	Key     string `json:"key,omitempty"`
+	Project string `json:"project,omitempty"`
+	At      int64  `json:"at"`
+}
+
+// NewThing is a project, or a folder's default project, this machine
+// introduced with a filing.
+type NewThing struct {
+	Name        string `json:"name"` // project name; for a folder, the folder
+	Project     string `json:"project,omitempty"`
+	Description string `json:"description,omitempty"`
+	ID          string `json:"id"` // the filing that introduced it
+	At          int64  `json:"at"`
 }
 
 func overlayPath() string { return filepath.Join(config.Home(), "state", "local.json") }
@@ -155,79 +184,103 @@ func LoadOverlay() Overlay {
 	return o
 }
 
-// Remember applies f to the overlay and saves it, dropping entries older than
-// two days (by then the server's copy has long caught up).
+// Remember applies f to the overlay and saves it, under a lock so parallel
+// filings don't lose each other's entries. Entries older than two days are
+// dropped: by then the server has long caught up.
 func Remember(f func(*Overlay)) error {
+	dir := filepath.Dir(overlayPath())
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	lock, err := os.OpenFile(filepath.Join(dir, "local.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+
 	o := LoadOverlay()
 	f(&o)
 	cut := time.Now().Add(-48 * time.Hour).Unix()
-	var filed []Item
-	for _, it := range o.Filed {
-		if it.CreatedAt >= cut {
-			filed = append(filed, it)
-		}
-	}
-	var closed []Closed
-	for _, c := range o.Closed {
-		if c.At >= cut {
-			closed = append(closed, c)
-		}
-	}
-	o.Filed, o.Closed = filed, closed
-	if len(o.Projects) > 50 {
-		o.Projects = o.Projects[len(o.Projects)-50:]
-	}
+	o.Filed = keep(o.Filed, func(it Item) bool { return it.CreatedAt >= cut })
+	o.Closed = keep(o.Closed, func(c Closed) bool { return c.At >= cut })
+	o.Projects = keep(o.Projects, func(p NewThing) bool { return p.At >= cut })
+	o.Dirs = keep(o.Dirs, func(d NewThing) bool { return d.At >= cut })
 	b, err := json.Marshal(o)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(overlayPath()), 0o700); err != nil {
+	tmp, err := os.CreateTemp(dir, ".local-*.json")
+	if err != nil {
 		return err
 	}
-	tmp := overlayPath() + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
 		return err
 	}
-	return os.Rename(tmp, overlayPath())
+	tmp.Close()
+	return os.Rename(tmp.Name(), overlayPath())
 }
 
-// Merged is the context with this machine's recent filings, closings and new
-// projects applied on top.
+func keep[T any](xs []T, ok func(T) bool) []T {
+	var out []T
+	for _, x := range xs {
+		if ok(x) {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// Merged is the context with this machine's not-yet-processed filings,
+// closings, new projects and folder defaults applied on top.
 func (c Context) Merged(o Overlay) Context {
+	seen := map[string]bool{}
+	for _, id := range c.Seen {
+		seen[id] = true
+	}
 	out := c
 	out.Projects = append([]Project(nil), c.Projects...)
 	for _, p := range o.Projects {
-		if !out.HasProject(p.Name) {
-			out.Projects = append(out.Projects, p)
+		// Once the server has the filing, its project list is the truth (the
+		// project may have been renamed or archived since).
+		if !seen[p.ID] && !out.HasProject(p.Name) {
+			out.Projects = append(out.Projects, Project{Name: p.Name, Description: p.Description})
 		}
 	}
-	closedID, closedKey := map[string]bool{}, map[string]bool{}
-	for _, x := range o.Closed {
-		if x.ID != "" {
-			closedID[x.ID] = true
-		}
-		if x.Key != "" {
-			closedKey[x.Key] = true
+	var dirs []Dir
+	for _, d := range o.Dirs {
+		if !seen[d.ID] {
+			dirs = append(dirs, Dir{Dir: d.Name, Project: d.Project})
 		}
 	}
-	seen, seenKey := map[string]bool{}, map[string]bool{}
+	out.Dirs = append(dirs, c.Dirs...)
+
+	closed := func(it Item) bool {
+		for _, x := range o.Closed {
+			if x.ID != "" && x.ID == it.ID {
+				return true
+			}
+			if x.Key != "" && x.Key == it.Key && (x.Project == "" || x.Project == it.Project) && it.CreatedAt <= x.At {
+				return true
+			}
+		}
+		return false
+	}
+	have := map[string]bool{}
 	var open []Item
 	for _, it := range c.Open {
-		if closedID[it.ID] || (it.Key != "" && closedKey[it.Key]) {
-			continue
+		have[it.ID] = true
+		if !closed(it) {
+			open = append(open, it)
 		}
-		seen[it.ID] = true
-		if it.Key != "" {
-			seenKey[it.Key] = true
-		}
-		open = append(open, it)
 	}
 	for _, it := range o.Filed {
-		// Filed well before this copy was made: the server has processed it
-		// (possibly merging it into an existing item, or the human already
-		// closed it), so the copy is authoritative. The margin covers records
-		// the server had received but not yet processed.
-		if seen[it.ID] || closedID[it.ID] || it.CreatedAt < c.AsOf-10*60 || (it.Key != "" && (seenKey[it.Key] || closedKey[it.Key])) {
+		if seen[it.ID] || have[it.ID] || closed(it) {
 			continue
 		}
 		open = append(open, it)

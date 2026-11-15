@@ -203,11 +203,14 @@ CREATE TABLE IF NOT EXISTS project_dirs (
   dir TEXT NOT NULL,
   project TEXT NOT NULL,
   updated_at INTEGER NOT NULL,
+  votes INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY (machine, dir)
 );
 CREATE TABLE IF NOT EXISTS item_aliases (
   alias TEXT PRIMARY KEY,
-  item_id TEXT NOT NULL
+  item_id TEXT NOT NULL,
+  machine TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS kv (
   k TEXT PRIMARY KEY,
@@ -263,6 +266,9 @@ var added = []struct{ table, column, ddl string }{
 	{"items", "pinned", "TEXT NOT NULL DEFAULT ''"},
 	{"deliveries", "live_only", "INTEGER NOT NULL DEFAULT 0"},
 	{"deliveries", "quiet", "INTEGER NOT NULL DEFAULT 0"},
+	{"item_aliases", "machine", "TEXT NOT NULL DEFAULT ''"},
+	{"item_aliases", "created_at", "INTEGER NOT NULL DEFAULT 0"},
+	{"project_dirs", "votes", "INTEGER NOT NULL DEFAULT 1"},
 }
 
 func migrate(db *sql.DB) error {
@@ -724,36 +730,59 @@ func (s *Store) UpsertItem(it Item) (string, bool, error) {
 		var id string
 		err := s.DB.QueryRow(`SELECT id FROM items WHERE dedupe_key=? AND status IN ('maybe','open','snoozed','answered')`, it.DedupeKey).Scan(&id)
 		if err == nil {
-			urg := it.Urgency
 			if it.Ongoing {
-				urg = ""
+				// A watchdog re-check of a condition that still holds: refresh
+				// the wording, but only a changed title counts as a change, so
+				// an unchanged queue stays unchanged (page reloads, context.json
+				// resends and pushes all key off that).
+				_, err = s.DB.Exec(`UPDATE items SET last_seen_at=?, mention_count=1,
+					updated_at=CASE WHEN ?<>'' AND title<>? THEN ? ELSE updated_at END,
+					title=CASE WHEN ?<>'' THEN ? ELSE title END,
+					body=CASE WHEN ?<>'' THEN ? ELSE body END
+					WHERE id=?`, t, it.Title, it.Title, t, it.Title, it.Title, it.Body, it.Body, id)
+				return id, false, err
 			}
 			opts := ""
 			if len(it.Options) > 0 {
 				b, _ := json.Marshal(it.Options)
 				opts = string(b)
 			}
+			urg := it.Urgency
 			// SQLite evaluates every SET expression against the old row, so
-			// the urgency comparisons below see the previous value.
-			_, err = s.DB.Exec(`UPDATE items SET mention_count=CASE WHEN ? THEN 1 ELSE mention_count+1 END, last_seen_at=?, updated_at=?,
+			// the urgency comparisons below see the previous value. Raising
+			// an item to "now" also brings it back from snoozed or answered:
+			// the filer is saying it can't wait.
+			const toNow = `?='now' AND urgency<>'now' AND instr(pinned,'urgency')=0`
+			_, err = s.DB.Exec(`UPDATE items SET mention_count=mention_count+1, last_seen_at=?, updated_at=?,
 				title=CASE WHEN ?<>'' THEN ? ELSE title END,
 				body=CASE WHEN ?<>'' THEN ? ELSE body END,
-				status=CASE WHEN status='maybe' AND ?='open' THEN 'open' ELSE status END,
+				status=CASE WHEN status='maybe' AND ?='open' THEN 'open' WHEN `+toNow+` AND status IN ('snoozed','answered') THEN 'open' ELSE status END,
+				snoozed_until=CASE WHEN `+toNow+` THEN NULL ELSE snoozed_until END,
+				kind=CASE WHEN ?<>'' THEN ? ELSE kind END,
 				component=CASE WHEN ?<>'' AND instr(pinned,'component')=0 THEN ? ELSE component END,
 				place=CASE WHEN ?<>'' AND instr(pinned,'place')=0 THEN ? ELSE place END,
 				due=CASE WHEN ?<>'' THEN ? ELSE due END,
 				recommend=CASE WHEN ?<>'' THEN ? ELSE recommend END,
 				options=CASE WHEN ?<>'' THEN ? ELSE options END,
+				blocks=CASE WHEN ?<>'' THEN ? ELSE blocks END,
 				blocking=CASE WHEN ? THEN 1 ELSE blocking END,
+				physical=CASE WHEN ? THEN 1 ELSE physical END,
 				expires_at=CASE WHEN ?>0 THEN ? ELSE expires_at END,
-				urgent_since=CASE WHEN ?='now' AND urgency<>'now' AND instr(pinned,'urgency')=0 THEN ? ELSE urgent_since END,
-				pushed_at=CASE WHEN ?='now' AND urgency<>'now' AND instr(pinned,'urgency')=0 THEN NULL ELSE pushed_at END,
+				session_id=CASE WHEN ?<>'' THEN ? ELSE session_id END,
+				machine=CASE WHEN ?<>'' THEN ? ELSE machine END,
+				cwd=CASE WHEN ?<>'' THEN ? ELSE cwd END,
+				urgent_since=CASE WHEN `+toNow+` THEN ? ELSE urgent_since END,
+				pushed_at=CASE WHEN `+toNow+` THEN NULL ELSE pushed_at END,
 				urgency=CASE WHEN ?<>'' AND instr(pinned,'urgency')=0 THEN ? ELSE urgency END
 				WHERE id=?`,
-				boolInt(it.Ongoing), t, t,
-				it.Title, it.Title, it.Body, it.Body, it.Status,
+				t, t,
+				it.Title, it.Title, it.Body, it.Body,
+				it.Status, urg,
+				urg,
+				it.Kind, it.Kind,
 				it.Component, it.Component, it.Place, it.Place, it.Due, it.Due, it.Recommend, it.Recommend, opts, opts,
-				boolInt(it.Blocking), it.ExpiresAt, it.ExpiresAt,
+				it.Blocks, it.Blocks, boolInt(it.Blocking), boolInt(it.Physical), it.ExpiresAt, it.ExpiresAt,
+				it.SessionID, it.SessionID, it.Machine, it.Machine, it.Cwd, it.Cwd,
 				urg, t, urg, urg, urg, id)
 			return id, false, err
 		}
@@ -962,7 +991,15 @@ func (s *Store) Undo(id string) (string, error) {
 		}
 		return action, tx.Commit()
 	}
-	if _, err := tx.Exec(`UPDATE items SET status=?, resolved_at=NULL, snoozed_until=NULL, updated_at=?, answer=CASE WHEN ? IN ('answer','approve','decline','choose') THEN '' ELSE answer END WHERE id=?`, prev, now(), action, id); err != nil {
+	// A snooze can't be restored without its time: bring it back open.
+	if prev == "snoozed" {
+		prev = "open"
+	}
+	if _, err := tx.Exec(`UPDATE items SET status=?, resolved_at=NULL, snoozed_until=NULL, updated_at=?, answer=CASE WHEN ? IN ('answer','approve','decline','choose') THEN '' ELSE answer END,
+		expires_at=CASE WHEN ?='expire' THEN 0 ELSE expires_at END WHERE id=?`, prev, now(), action, action, id); err != nil {
+		if isDedupeConflict(err) {
+			return "", errors.New("can't undo: an open item with the same key has been filed since")
+		}
 		return "", err
 	}
 	tx.Exec(`DELETE FROM deliveries WHERE item_id=? AND status='pending'`, id)

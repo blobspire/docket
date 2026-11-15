@@ -187,7 +187,7 @@ func TestProjectsKeysAndAliases(t *testing.T) {
 		it.ID, it.Kind, it.Title = id, "ask", title
 		h.send(record.Record{Event: "cli.file", SessionID: "s1", Cwd: "/w/robot/sub", Item: &it})
 	}
-	file("dk-00000001", "Which arm first?", record.Item{Project: "VLM Teacher", NewProject: "Robot learning", Root: "/w/robot", Key: "arm", Urgency: "now", Component: "FR5"})
+	file("dk-00000001", "Which arm first?", record.Item{Project: "VLM Teacher", Explicit: true, NewProject: "Robot learning", Root: "/w/robot", Key: "arm", Urgency: "now", Component: "FR5"})
 	items := h.active()
 	if len(items) != 1 || items[0].Project != "vlm-teacher" || items[0].Urgency != "now" || items[0].DedupeKey != "key:vlm-teacher:arm" {
 		t.Fatalf("items = %+v", items)

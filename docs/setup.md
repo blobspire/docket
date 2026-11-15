@@ -60,14 +60,17 @@ Install the [ntfy](https://ntfy.sh) app and subscribe to the topic in your confi
 
 Pushes go out only for **act-now** items: an agent marked something `--urgency now`, or a Claude login failed. Each goes out once, 90 seconds after it became urgent, at any hour. Everything else waits on the dashboard.
 
-Other programs can use the same path: `docket issue "<what broke>" --project <p> --urgency now --key <id>` raises an alert, and `docket done --key <id>` clears it. An alert that clears within the grace period never buzzes.
+Other programs can use the same path:
+- `docket issue "<what broke>" --project <p> --new-project "<description>" --urgency now --key <id>` raises an alert. `--new-project` makes it work even before the project exists; it is ignored once it does.
+- `docket done --key <id> --project <p>` clears it.
+- An alert that clears within the grace period never buzzes.
 
 ### Projects
 
-Agents choose and create projects as they file. Seed the ones you know so agents reuse them. Here `docket` is the CLI the agents use:
+Agents choose and create projects as they file. Seed the ones you know so agents reuse them:
 
 ```sh
-docket ask "First item for this project" --project website --new-project "The company website and blog"
+docket projects add website --why "The company website and blog"
 ```
 
 Map a lead to its project with `project = "website"` in its `[[lead]]`. Put docket's own health items (machines, logins, quota) where you like with `system_project = "admin"`. You can rename, merge or archive projects from a project's page on the dashboard.
