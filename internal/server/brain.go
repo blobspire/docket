@@ -24,11 +24,11 @@ import (
 
 // Chief is the [chief] section of the config.
 type Chief struct {
-	RulesModel  string  `toml:"rules_model"`
-	DailyCap    int     `toml:"daily_cap"`   // model calls per day
-	BudgetUSD   float64 `toml:"budget_usd"`  // per call
-	Claude      string  `toml:"claude"`      // path to the claude CLI on the server
-	RulesEvery  string  `toml:"rules_every"` // "7d"
+	RulesModel string  `toml:"rules_model"`
+	DailyCap   int     `toml:"daily_cap"`   // model calls per day
+	BudgetUSD  float64 `toml:"budget_usd"`  // per call
+	Claude     string  `toml:"claude"`      // path to the claude CLI on the server
+	RulesEvery string  `toml:"rules_every"` // "7d"
 }
 
 func (s *Server) chiefDefaults() Chief {
