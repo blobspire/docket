@@ -390,10 +390,15 @@ type Noise struct {
 	TS                                 int64
 }
 
-// RecentNoise lists the latest "not worth my time" marks, newest first.
-func (s *Store) RecentNoise(limit int) ([]Noise, error) {
-	rows, err := s.DB.Query(`SELECT d.item_id, COALESCE(i.title,''), COALESCE(i.project,''), COALESCE(i.kind,''), d.answer, d.ts
-		FROM decisions d LEFT JOIN items i ON i.id = d.item_id WHERE d.action='noise' ORDER BY d.id DESC LIMIT ?`, limit)
+// RecentNoise lists the latest "not worth my time" marks, newest first;
+// agentOnly keeps just items agents filed (not docket's own health checks).
+func (s *Store) RecentNoise(limit int, agentOnly bool) ([]Noise, error) {
+	q := `SELECT d.item_id, COALESCE(i.title,''), COALESCE(i.project,''), COALESCE(i.kind,''), d.answer, d.ts
+		FROM decisions d LEFT JOIN items i ON i.id = d.item_id WHERE d.action='noise'`
+	if agentOnly {
+		q += ` AND i.source='cli'`
+	}
+	rows, err := s.DB.Query(q+` ORDER BY d.id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}

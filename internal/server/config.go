@@ -12,23 +12,26 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/blobspire/docket/internal/store"
 )
 
 // Config is ~/.config/docket/docket.toml on the server. It is personal (host
 // names, push topic), so it never lives in the repository.
 type Config struct {
-	DataDir     string    `toml:"data_dir"`
-	Listen      string    `toml:"listen"`
-	PublicURL   string    `toml:"public_url"`
-	Person      string    `toml:"person"`
-	Timezone    string    `toml:"timezone"`
-	AllowLogins []string  `toml:"allow_logins"`
-	BriefAt     string    `toml:"brief_at"`
-	BriefPush   *bool     `toml:"brief_push"`
-	Ntfy        Ntfy      `toml:"ntfy"`
-	Machines    []Machine `toml:"machine"`
-	Leads       []Lead    `toml:"lead"`
-	Chief       Chief     `toml:"chief"`
+	DataDir     string   `toml:"data_dir"`
+	Listen      string   `toml:"listen"`
+	PublicURL   string   `toml:"public_url"`
+	Person      string   `toml:"person"`
+	Timezone    string   `toml:"timezone"`
+	AllowLogins []string `toml:"allow_logins"`
+	// SystemProject is where docket's own health items go (machines,
+	// logins, quota). Default "system".
+	SystemProject string    `toml:"system_project"`
+	Ntfy          Ntfy      `toml:"ntfy"`
+	Machines      []Machine `toml:"machine"`
+	Leads         []Lead    `toml:"lead"`
+	Chief         Chief     `toml:"chief"`
 
 	loc *time.Location
 }
@@ -73,6 +76,7 @@ type Lead struct {
 	Enabled    *bool    `toml:"enabled"`     // false: listed, but docket never starts or wakes it
 	MatchDir   bool     `toml:"match_dir"`   // also treat any session working in dir as this lead
 	AlwaysOn   bool     `toml:"always_on"`   // alert when its session isn't running
+	Project    string   `toml:"project"`     // the project its items belong to (default: its name)
 }
 
 func (l Lead) On() bool { return l.Enabled == nil || *l.Enabled }
@@ -136,8 +140,9 @@ func LoadConfig(path string) (*Config, error) {
 	if c.Person == "" {
 		c.Person = "the user"
 	}
-	if c.BriefAt == "" {
-		c.BriefAt = "09:00"
+	c.SystemProject = store.Slug(c.SystemProject)
+	if c.SystemProject == "" {
+		c.SystemProject = "system"
 	}
 	if c.Ntfy.Server == "" {
 		c.Ntfy.Server = "https://ntfy.sh"
@@ -197,6 +202,10 @@ func LoadConfig(path string) (*Config, error) {
 		if l.Session == "" {
 			l.Session = "lead-" + l.Name
 		}
+		l.Project = store.Slug(l.Project)
+		if l.Project == "" {
+			l.Project = store.Slug(l.Name)
+		}
 		for _, sch := range l.Schedule {
 			if _, err := parseSchedule(sch); err != nil {
 				return nil, fmt.Errorf("config: lead %s: %w", l.Name, err)
@@ -252,9 +261,6 @@ func (m Machine) Approvable() bool { return m.RemoteApprove == nil || *m.RemoteA
 
 // Now is the current time in the configured zone.
 func (c *Config) Now() time.Time { return time.Now().In(c.loc) }
-
-// BriefPushOn reports whether the morning brief also goes to the phone.
-func (c *Config) BriefPushOn() bool { return c.BriefPush == nil || *c.BriefPush }
 
 func expand(p string) string {
 	if strings.HasPrefix(p, "~/") {

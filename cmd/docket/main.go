@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/blobspire/docket/internal/agentctx"
 	"github.com/blobspire/docket/internal/claudemd"
 	"github.com/blobspire/docket/internal/cli"
 	"github.com/blobspire/docket/internal/config"
@@ -34,21 +35,33 @@ import (
 // version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
-const usage = `docket: one queue for everything your agents need from you.
+const usage = `docket: the dashboard of what your agents need from you.
 
-Filing (for agents; never blocks, keep working afterwards):
-  docket ask "<question>" [--options "a|b"] [--recommend a] [--why "..."] [--blocking] [--due YYYY-MM-DD|today|tomorrow] [--physical]
-      You are holding an action for the human's approval, or need their decision.
-  docket task "<what only they can do>" [--blocks "<work it blocks>"] [--due ...]
-      Logins, credentials, hardware, money, anything physical.
-  docket review "<what to review>" --evidence <file>[,<file>...] [--why "..."]
-      Work ready for review: screenshots, videos, reports, diffs.
-  docket issue "<problem you noticed>" [--why "..."]
-      A problem you are not fixing now.
-  docket fyi "<something they should know>"
-  docket add <dk-id> [--why "<more details>"] [--evidence <files>]   add to an item you filed
-  docket done <dk-id> [--why "<how it was resolved>"]
-  --key <stable-id> on any of these updates one item instead of adding another.
+Reaching the human (for agents; never blocks, keep working afterwards).
+The bar is high: file only what needs them and would otherwise be missed.
+  docket ask "<decision>" --project <p> [--options "a|b"] [--recommend a] [--why "<markdown>"]
+      A decision you can't reasonably make yourself, or an action you're holding for approval.
+  docket task "<what only they can do>" --project <p> [--place <where>] [--blocks "<work it blocks>"]
+      Logins, credentials, money, hardware, people to contact, anything physical.
+  docket review "<results to look at>" --project <p> --evidence <file>[,<file>...] [--why "..."]
+      Results they asked for or are waiting on: an experiment finished, a report is ready.
+  docket issue "<something broken that needs them>" --project <p> [--why "..."]
+
+  Flags for all of these:
+    --project <name>           which project (see docket projects); --new-project "<description>" to start one
+    --component <name>         part of the project, e.g. "FR5 hardware", "billing"
+    --place <name>             where they must physically be to do it, e.g. lab, home
+    --urgency now|soon|normal  now = act immediately (pushes their phone); default normal
+    --due <date>               a real deadline (YYYY-MM-DD, today, tomorrow)
+    --expires <when>           closes itself after this, when it no longer matters (date, 6h, 3d)
+    --key <stable-id>          re-filing with the same key updates one item (and can raise its urgency)
+    --blocking                 you are paused until they answer
+    --physical                 needs physical action; can never be approved remotely
+
+  docket add <dk-id> [--why "<more>"] [--evidence <files>]   add to an item you filed
+  docket done <dk-id> | --key <key> [--why "<what happened>"]  close an item (answered in chat, moot, fixed)
+  docket list [--project <p>] [--all]     open items from this machine
+  docket projects                         projects, components and places in use
 
 Long-running jobs (so a stall gets noticed):
   docket job register <name> --every 10m [--why "..."]
@@ -59,19 +72,17 @@ Setting up a machine:
   docket init --agent [--machine <name>] [--person <name>] [--no-claude-md]
   docket uninstall                          remove docket's block from ~/.claude/CLAUDE.md
   docket sync --server <ssh-host>           for laptops: push events to the server, fetch answers
-  docket backfill grep [--since 30d]        file "maybe" items for asks already in transcripts
-  docket import md <file> [--section "<heading>"] [--lead <name>]   import open tasks from markdown
+  docket import md <file> --project <p> [--section "<heading>"] [--lead <name>]   import open tasks from markdown
 
 Server:
-  docket serve                              run the queue (config: ~/.config/docket/docket.toml)
+  docket serve                              run the dashboard (config: ~/.config/docket/docket.toml)
   docket server receive --machine <name>    (used by docket sync over SSH)
   docket server put-blob <sha256>           (used by docket sync over SSH)
-  docket server backfill-prompt [--dry-run] ask live sessions to file what they're waiting on
   docket server test-push                   send a test notification to your phone
 
 Used by the server and the plugin:
   docket spool tail|export|ack|blob|path
-  docket mailbox put
+  docket mailbox put | rules put | context put
   docket sessions --json | quota | usage [--json] [--since 7d]
   docket statusline [-- <your statusline command>]   record quota as Claude Code renders its status line
   docket session send --pane <%id> | resume --id <id> --cwd <dir> --name <name>
@@ -125,6 +136,17 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (code int) {
 		err = cli.Job(rest, stdout, os.Getenv)
 	case cmd == "add":
 		err = cli.Add(rest, stdout, os.Getenv)
+	case cmd == "list":
+		err = cli.List(rest, stdout, os.Getenv)
+	case cmd == "projects":
+		err = cli.Projects(rest, stdout, os.Getenv)
+	case cmd == "context":
+		if len(rest) != 1 || rest[0] != "put" {
+			err = errors.New("usage: docket context put  (reads ~/.docket/context.json content on stdin)")
+		} else {
+			body, _ := io.ReadAll(io.LimitReader(stdin, 4<<20))
+			err = agentctx.Write(body)
+		}
 	case cmd == "rules":
 		if len(rest) != 1 || rest[0] != "put" {
 			err = errors.New("usage: docket rules put  (reads ~/.docket/rules.md content on stdin)")
@@ -465,7 +487,7 @@ func syncCmd(args []string, stdout io.Writer) error {
 	box := mailbox.Box{Dir: config.MailboxDir()}
 	machine := config.Machine()
 	live, _ := sessions.List()
-	env := map[string]any{"_sessions": live}
+	env := map[string]any{"_sessions": live, "_context_hash": agentctx.CurrentHash(), "_rules_hash": server.RulesHash()}
 	if q, ok := tokens.Read(); ok {
 		env["_quota"] = q
 	}
@@ -506,6 +528,9 @@ func syncCmd(args []string, stdout io.Writer) error {
 		if reply.Rules != nil {
 			server.WriteRules([]byte(*reply.Rules))
 		}
+		if reply.Context != nil {
+			agentctx.Write([]byte(*reply.Context))
+		}
 		for _, sha := range reply.WantBlobs {
 			if f, err := os.Open(filepath.Join(sp.Dir, "blobs", sha)); err == nil {
 				sshRun(*host, *remoteBin+" server put-blob "+sha, f)
@@ -516,7 +541,8 @@ func syncCmd(args []string, stdout io.Writer) error {
 		if !tr.More {
 			break
 		}
-		sessJSON = []byte(`{"_sessions":null}`)
+		next, _ := json.Marshal(map[string]any{"_sessions": nil, "_context_hash": agentctx.CurrentHash(), "_rules_hash": server.RulesHash()})
+		sessJSON = next
 	}
 	box.GC(7 * 24 * time.Hour)
 	if !*quiet {
@@ -550,15 +576,19 @@ func parseDays(s string) (time.Duration, error) {
 
 func importCmd(args []string, stdout io.Writer) error {
 	if len(args) < 2 || args[0] != "md" {
-		return errors.New(`usage: docket import md <file> [--section "<heading>"] [--lead <name>] [--kind human_task]`)
+		return errors.New(`usage: docket import md <file> --project <name> [--section "<heading>"] [--lead <name>] [--kind human_task]`)
 	}
 	file := args[1]
 	fs := flag.NewFlagSet("import md", flag.ContinueOnError)
 	section := fs.String("section", "", "also import plain bullets under headings containing this text")
 	lead := fs.String("lead", "", "lead these items belong to")
 	kind := fs.String("kind", "human_task", "item kind")
+	project := fs.String("project", "", "project these items belong to")
 	if err := fs.Parse(args[2:]); err != nil {
 		return err
+	}
+	if cli.Slug(*project) == "" {
+		return errors.New("import md needs --project <name>")
 	}
 	tasks, err := cli.ImportMarkdown(file, *section)
 	if err != nil {
@@ -575,7 +605,7 @@ func importCmd(args []string, stdout io.Writer) error {
 		})
 		r.Cwd = filepath.Dir(abs)
 		r.Item = &record.Item{ID: ulid.ItemID(), Kind: *kind, Title: t.Text, Body: fmt.Sprintf("Imported from %s line %d.", filepath.Base(file), t.Line),
-			Key: "import:" + filepath.Base(file) + ":" + strings.ToLower(t.Text)}
+			Key: "import:" + filepath.Base(file) + ":" + strings.ToLower(t.Text), Project: cli.Slug(*project)}
 		if err := sp.Append(r); err != nil {
 			return err
 		}
@@ -626,23 +656,32 @@ func serverCmd(args []string, stdin io.Reader, stdout io.Writer) error {
 			return err
 		}
 		var sessJSON, quotaJSON, usageJSON []byte
+		have := server.Hashes{Rules: "-", Context: "-"} // an older client reports neither
 		if i := bytes.IndexByte(all, '\n'); i > 0 && bytes.HasPrefix(all, []byte(`{"_`)) {
 			var env struct {
-				Sessions json.RawMessage `json:"_sessions"`
-				Quota    json.RawMessage `json:"_quota"`
-				Usage    json.RawMessage `json:"_usage"`
+				Sessions    json.RawMessage `json:"_sessions"`
+				Quota       json.RawMessage `json:"_quota"`
+				Usage       json.RawMessage `json:"_usage"`
+				ContextHash *string         `json:"_context_hash"`
+				RulesHash   *string         `json:"_rules_hash"`
 			}
 			if json.Unmarshal(all[:i], &env) == nil {
 				if string(env.Sessions) != "null" {
 					sessJSON = env.Sessions
 				}
 				quotaJSON, usageJSON = env.Quota, env.Usage
+				if env.ContextHash != nil {
+					have.Context = *env.ContextHash
+				}
+				if env.RulesHash != nil {
+					have.Rules = *env.RulesHash
+				}
 			}
 			all = all[i+1:]
 		}
 		s.ApplyQuota(*machine, quotaJSON)
 		s.ApplyUsage(*machine, usageJSON)
-		reply, err := s.Receive(*machine, bytes.NewReader(all), sessJSON)
+		reply, err := s.Receive(*machine, bytes.NewReader(all), sessJSON, have)
 		if err != nil {
 			return err
 		}

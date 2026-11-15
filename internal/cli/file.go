@@ -1,8 +1,10 @@
-// Package cli implements the commands agents run to file items for the
-// human: docket ask | review | task | issue | fyi | done.
+// Package cli implements the commands agents run to reach the human:
+// docket ask | review | task | issue | done | add | list | projects | job.
 package cli
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,18 +13,23 @@ import (
 	"io"
 	"mime"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/blobspire/docket/internal/agentctx"
 	"github.com/blobspire/docket/internal/config"
 	"github.com/blobspire/docket/internal/record"
 	"github.com/blobspire/docket/internal/spool"
 	"github.com/blobspire/docket/internal/ulid"
 )
 
-// Kinds an agent can file, by command name.
+// Kinds an agent can file, by command name. fyi is kept for older callers
+// and shows as a review.
 var kinds = map[string]string{
 	"ask":    "ask",
 	"review": "review",
@@ -31,12 +38,18 @@ var kinds = map[string]string{
 	"fyi":    "fyi",
 }
 
-const maxEvidence = 200 << 20
+const (
+	maxEvidence = 200 << 20
+	maxTitle    = 90
+)
 
 var (
-	boolFlags  = map[string]bool{"blocking": true, "physical": true}
-	valueFlags = map[string]bool{"options": true, "recommend": true, "why": true, "details": true, "blocks": true, "due": true, "key": true, "evidence": true}
-	dateOK     = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+	boolFlags  = map[string]bool{"blocking": true, "physical": true, "all": true}
+	valueFlags = map[string]bool{"options": true, "recommend": true, "why": true, "details": true, "blocks": true, "due": true, "key": true, "evidence": true,
+		"project": true, "new-project": true, "component": true, "place": true, "urgency": true, "expires": true}
+	dateOK   = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+	slugBad  = regexp.MustCompile(`[^a-z0-9]+`)
+	relative = regexp.MustCompile(`^(\d+)([mhd])$`)
 )
 
 // IsFileCommand reports whether cmd is one of the filing commands.
@@ -52,9 +65,25 @@ func File(cmd string, args []string, stdout io.Writer, getenv func(string) strin
 	if err != nil {
 		return err
 	}
+	if flags["all"] != "" {
+		return errors.New("unknown flag --all")
+	}
+	person := Person()
 	title := strings.TrimSpace(strings.Join(pos, " "))
 	if title == "" {
-		return fmt.Errorf("usage: docket %s \"<what you need from Cole>\" [flags]  (see `docket help`)", cmd)
+		return fmt.Errorf("usage: docket %s \"<what you need from %s>\" --project <name> [flags]  (see `docket help`)", cmd, person)
+	}
+	if strings.ContainsAny(title, "\r\n") {
+		return errors.New("the title must be one line. Put details in --why (markdown is fine)")
+	}
+	if n := utf8.RuneCountInString(title); n > maxTitle {
+		return fmt.Errorf("the title is %d characters; keep it under %d so %s can scan it. Say the decision or action in plain words, no paths, hashes or ids, and put the details in --why", n, maxTitle, person)
+	}
+	urgency := strings.ToLower(flags["urgency"])
+	switch urgency {
+	case "", "now", "soon", "normal":
+	default:
+		return fmt.Errorf("--urgency is now, soon or normal (got %q). now = %s must act immediately; it pushes their phone", flags["urgency"], person)
 	}
 	it := &record.Item{
 		ID:        ulid.ItemID(),
@@ -66,6 +95,12 @@ func File(cmd string, args []string, stdout io.Writer, getenv func(string) strin
 		Blocks:    flags["blocks"],
 		Physical:  flags["physical"] == "true",
 		Key:       flags["key"],
+		Urgency:   urgency,
+		Component: strings.TrimSpace(flags["component"]),
+		Place:     Slug(flags["place"]),
+	}
+	if utf8.RuneCountInString(it.Component) > 40 {
+		return errors.New("--component is a short name for a part of the project (at most 40 characters)")
 	}
 	if it.Blocks != "" {
 		it.Blocking = true
@@ -77,10 +112,28 @@ func File(cmd string, args []string, stdout io.Writer, getenv func(string) strin
 			}
 		}
 	}
+	now := time.Now()
 	if d := flags["due"]; d != "" {
-		if it.Due, err = parseDue(d, time.Now()); err != nil {
+		if it.Due, err = parseDue(d, now); err != nil {
 			return err
 		}
+	}
+	if e := flags["expires"]; e != "" {
+		if it.Expires, err = parseExpires(e, now); err != nil {
+			return err
+		}
+	}
+	cwd, _ := os.Getwd()
+	it.Root = RepoRoot(cwd)
+	ctx, hasCtx := agentctx.Load()
+	ctx = ctx.Merged(agentctx.LoadOverlay())
+	project, warn, err := resolveProject(flags["project"], flags["new-project"], ctx, hasCtx, it.Root, cwd, getenv("DOCKET_LEAD"), true)
+	if err != nil {
+		return err
+	}
+	it.Project = project
+	if flags["new-project"] != "" {
+		it.NewProject = strings.TrimSpace(flags["new-project"])
 	}
 	sp := spool.Spool{Dir: config.SpoolDir()}
 	if ev := flags["evidence"]; ev != "" {
@@ -94,33 +147,282 @@ func File(cmd string, args []string, stdout io.Writer, getenv func(string) strin
 	}
 	r := record.New("cli.file", getenv)
 	r.SessionID = sessionID(getenv)
-	r.Cwd, _ = os.Getwd()
+	r.Cwd = cwd
 	r.Item = it
 	if err := sp.Append(r); err != nil {
 		return fmt.Errorf("could not record the item: %w", err)
 	}
-	fmt.Fprintf(stdout, "docket: filed %s (%s). Cole will see it in his queue; keep working. His answer arrives as a message tagged [docket %s].\n", it.ID, kind, it.ID)
+	agentctx.Remember(func(o *agentctx.Overlay) {
+		o.Filed = append(o.Filed, agentctx.Item{ID: it.ID, Title: it.Title, Kind: kind, Project: project, Urgency: firstNonEmpty(urgency, "normal"), Key: it.Key, SessionID: r.SessionID, CreatedAt: now.Unix()})
+		if it.NewProject != "" && !ctx.HasProject(project) {
+			o.Projects = append(o.Projects, agentctx.Project{Name: project, Description: it.NewProject})
+		}
+	})
+	if warn != "" {
+		fmt.Fprintln(stdout, warn)
+	}
+	where := ""
+	if project != "" {
+		where = " in " + project
+	}
+	fmt.Fprintf(stdout, "docket: filed %s%s (%s). %s will see it in docket; keep working. An answer arrives as a message tagged [docket %s]. If it's settled in chat instead, run `docket done %s`.\n",
+		it.ID, where, firstNonEmpty(urgency, "normal"), person, it.ID, it.ID)
 	return nil
 }
 
-// Done records that an item the agent filed is resolved.
+// resolveProject decides which project an item belongs to. strict makes an
+// unknown or missing project an error that lists the existing ones, so the
+// agent can choose; without a project list on this machine yet, it files and
+// lets the server decide.
+func resolveProject(flag, newDesc string, ctx agentctx.Context, hasCtx bool, root, cwd, lead string, strict bool) (string, string, error) {
+	if flag != "" {
+		p := Slug(flag)
+		if p == "" {
+			return "", "", fmt.Errorf("--project %q isn't a usable name: use letters, digits and dashes", flag)
+		}
+		if !hasCtx || ctx.HasProject(p) || strings.TrimSpace(newDesc) != "" || !strict {
+			return p, "", nil
+		}
+		return "", "", fmt.Errorf("there is no project %q yet.\n%s", p, projectHelp(ctx))
+	}
+	if !hasCtx {
+		return "", "docket: this machine has no project list yet (it arrives with the next sync), so the server will pick the project. Next time pass --project.", nil
+	}
+	if p := ctx.ProjectForDir(root, cwd); p != "" {
+		return p, "", nil
+	}
+	if p := ctx.Leads[lead]; lead != "" && p != "" {
+		return p, "", nil
+	}
+	if !strict {
+		return "", "", nil
+	}
+	return "", "", fmt.Errorf("which project is this for? Pass --project <name>.\n%s", projectHelp(ctx))
+}
+
+func projectHelp(ctx agentctx.Context) string {
+	var b strings.Builder
+	if len(ctx.Projects) > 0 {
+		b.WriteString("Existing projects:\n")
+		w := 0
+		for _, p := range ctx.Projects {
+			if len(p.Name) > w {
+				w = len(p.Name)
+			}
+		}
+		for _, p := range ctx.Projects {
+			fmt.Fprintf(&b, "  %-*s  %s\n", w, p.Name, p.Description)
+		}
+	}
+	b.WriteString(`If none fits, start one: --project <short-name> --new-project "<one-line description>". Reuse an existing project when you can.`)
+	return b.String()
+}
+
+// Done records that an item the agent filed is resolved, by id or by key.
 func Done(args []string, stdout io.Writer, getenv func(string) string) error {
 	pos, flags, err := parse(args)
 	if err != nil {
 		return err
 	}
-	if len(pos) != 1 || !strings.HasPrefix(pos[0], "dk-") {
-		return errors.New(`usage: docket done <dk-id> [--why "<how it was resolved>"]`)
+	key := flags["key"]
+	if (len(pos) != 1 || !strings.HasPrefix(pos[0], "dk-")) && !(len(pos) == 0 && key != "") {
+		return errors.New(`usage: docket done <dk-id> | --key <key> [--project <name>] [--why "<how it was resolved>"]`)
 	}
 	r := record.New("cli.done", getenv)
 	r.SessionID = sessionID(getenv)
 	r.Cwd, _ = os.Getwd()
-	r.Done = &record.Done{ItemID: pos[0], Note: firstNonEmpty(flags["why"], flags["details"])}
+	d := &record.Done{Note: firstNonEmpty(flags["why"], flags["details"])}
+	if len(pos) == 1 {
+		d.ItemID = pos[0]
+	} else {
+		d.Key = key
+		ctx, hasCtx := agentctx.Load()
+		d.Project, _, _ = resolveProject(flags["project"], "", ctx, hasCtx, RepoRoot(r.Cwd), r.Cwd, getenv("DOCKET_LEAD"), false)
+	}
+	r.Done = d
 	if err := (spool.Spool{Dir: config.SpoolDir()}).Append(r); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "docket: marked %s done.\n", pos[0])
+	agentctx.Remember(func(o *agentctx.Overlay) {
+		o.Closed = append(o.Closed, agentctx.Closed{ID: d.ItemID, Key: d.Key, At: time.Now().Unix()})
+	})
+	fmt.Fprintf(stdout, "docket: marked %s done.\n", firstNonEmpty(d.ItemID, "--key "+d.Key))
 	return nil
+}
+
+// List prints this machine's open items, so an agent can find and close what
+// it filed (after a context compaction, say).
+func List(args []string, stdout io.Writer, getenv func(string) string) error {
+	_, flags, err := parse(args)
+	if err != nil {
+		return err
+	}
+	ctx, hasCtx := agentctx.Load()
+	if !hasCtx {
+		fmt.Fprintln(stdout, "docket: this machine has no copy of the queue yet; it arrives with the next sync.")
+		return nil
+	}
+	ctx = ctx.Merged(agentctx.LoadOverlay())
+	cwd, _ := os.Getwd()
+	project := ""
+	if flags["all"] == "" {
+		project, _, _ = resolveProject(flags["project"], "", ctx, true, RepoRoot(cwd), cwd, getenv("DOCKET_LEAD"), false)
+	}
+	me := sessionID(getenv)
+	items := ctx.Open
+	sort.SliceStable(items, func(i, j int) bool { return items[i].CreatedAt > items[j].CreatedAt })
+	n := 0
+	for _, it := range items {
+		if project != "" && it.Project != project {
+			continue
+		}
+		mark := " "
+		if me != "" && it.SessionID == me {
+			mark = "*"
+		}
+		key := ""
+		if it.Key != "" {
+			key = "  key:" + it.Key
+		}
+		fmt.Fprintf(stdout, "%s %s  %-6s  %-12s  %s%s  (%s ago)\n", mark, it.ID, firstNonEmpty(it.Urgency, "normal"), it.Project, it.Title, key, ago(time.Unix(it.CreatedAt, 0)))
+		n++
+	}
+	scope := "on this machine"
+	if project != "" {
+		scope = "in " + project + " on this machine (--all for every project)"
+	}
+	if n == 0 {
+		fmt.Fprintf(stdout, "docket: nothing open %s.\n", scope)
+	} else {
+		fmt.Fprintf(stdout, "docket: %d open %s; * = filed by this session. As of %s. Close one with `docket done <id>`.\n", n, scope, time.Unix(ctx.AsOf, 0).Format("15:04"))
+	}
+	return nil
+}
+
+// Projects prints the projects agents can file to.
+func Projects(args []string, stdout io.Writer, getenv func(string) string) error {
+	ctx, hasCtx := agentctx.Load()
+	if !hasCtx {
+		fmt.Fprintln(stdout, "docket: this machine has no project list yet; it arrives with the next sync. File with --project <name> meanwhile.")
+		return nil
+	}
+	ctx = ctx.Merged(agentctx.LoadOverlay())
+	cwd, _ := os.Getwd()
+	for _, p := range ctx.Projects {
+		fmt.Fprintf(stdout, "%s (%d open)  %s\n", p.Name, p.Open, p.Description)
+		if len(p.Components) > 0 {
+			fmt.Fprintf(stdout, "    components: %s\n", strings.Join(p.Components, ", "))
+		}
+		if len(p.Places) > 0 {
+			fmt.Fprintf(stdout, "    places: %s\n", strings.Join(p.Places, ", "))
+		}
+	}
+	if len(ctx.Places) > 0 {
+		fmt.Fprintf(stdout, "\nPlaces in use: %s\n", strings.Join(ctx.Places, ", "))
+	}
+	here, _, _ := resolveProject("", "", ctx, true, RepoRoot(cwd), cwd, getenv("DOCKET_LEAD"), false)
+	if here != "" {
+		fmt.Fprintf(stdout, "\nThis folder files to %s by default.\n", here)
+	} else {
+		fmt.Fprintln(stdout, "\nThis folder has no default project: pass --project (your first filing here becomes the default).")
+	}
+	return nil
+}
+
+// RepoRoot is the main repository folder containing dir: for a git worktree,
+// the repository it belongs to, so every worktree maps to one project. ""
+// outside a repository.
+func RepoRoot(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--git-common-dir")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if cmd.Run() != nil {
+		return ""
+	}
+	common := strings.TrimSpace(out.String())
+	if common == "" {
+		return ""
+	}
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(dir, common)
+	}
+	common = filepath.Clean(common)
+	if filepath.Base(common) != ".git" {
+		return "" // a bare repository or something unusual: don't guess
+	}
+	root := filepath.Dir(common)
+	if home, _ := os.UserHomeDir(); root == home || root == "/" {
+		return ""
+	}
+	return root
+}
+
+// Slug normalises a project or place name.
+func Slug(s string) string {
+	s = strings.Trim(slugBad.ReplaceAllString(strings.ToLower(strings.TrimSpace(s)), "-"), "-")
+	if len(s) > 40 {
+		s = strings.TrimRight(s[:40], "-")
+	}
+	return s
+}
+
+// Person is how docket refers to the human (set by `docket init --person`).
+func Person() string {
+	if b, err := os.ReadFile(filepath.Join(config.Home(), "person")); err == nil {
+		if p := strings.TrimSpace(string(b)); p != "" {
+			return p
+		}
+	}
+	return "the user"
+}
+
+func ago(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	}
+	return fmt.Sprintf("%dd", int(d.Hours()/24))
+}
+
+// parseExpires accepts YYYY-MM-DD (end of that day), YYYY-MM-DDTHH:MM, today,
+// tomorrow, or a relative 30m / 6h / 3d.
+func parseExpires(s string, now time.Time) (int64, error) {
+	endOfDay := func(t time.Time) int64 {
+		return time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 0, t.Location()).Unix()
+	}
+	var at int64
+	switch low := strings.ToLower(strings.TrimSpace(s)); {
+	case low == "today":
+		at = endOfDay(now)
+	case low == "tomorrow":
+		at = endOfDay(now.AddDate(0, 0, 1))
+	case relative.MatchString(low):
+		m := relative.FindStringSubmatch(low)
+		var n int
+		fmt.Sscanf(m[1], "%d", &n)
+		unit := map[string]time.Duration{"m": time.Minute, "h": time.Hour, "d": 24 * time.Hour}[m[2]]
+		at = now.Add(time.Duration(n) * unit).Unix()
+	default:
+		if t, err := time.ParseInLocation("2006-01-02T15:04", s, now.Location()); err == nil {
+			at = t.Unix()
+		} else if t, err := time.ParseInLocation("2006-01-02", s, now.Location()); err == nil {
+			at = endOfDay(t)
+		} else {
+			return 0, fmt.Errorf("--expires takes YYYY-MM-DD, YYYY-MM-DDTHH:MM, today, tomorrow or 6h / 3d (got %q)", s)
+		}
+	}
+	if at <= now.Unix() {
+		return 0, fmt.Errorf("--expires %q is already past", s)
+	}
+	return at, nil
 }
 
 // parse accepts flags before or after the positional words, as

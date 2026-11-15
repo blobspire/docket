@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{.Title}} · docket</title>
+<title>{{.Title}}{{if ne .Title "docket"}} · docket{{end}}</title>
 <link rel="stylesheet" href="/static/app.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2' y='2' width='12' height='12' rx='3' fill='%23d97757'/%3E%3C/svg%3E">
 </head>
@@ -11,52 +11,62 @@
 <header class="top">
   <a class="brand" href="/">docket</a>
   <nav>
-    <a href="/" {{if eq .Nav "queue"}}class="on"{{end}}>Queue</a>
+    <a href="/" {{if eq .Nav "queue"}}class="on"{{end}}>Dashboard</a>
+    <a href="/done" {{if eq .Nav "done"}}class="on"{{end}}>Done</a>
+    <a href="/search" {{if eq .Nav "search"}}class="on"{{end}}>Search</a>
     <a href="/checklist" {{if eq .Nav "checklist"}}class="on"{{end}}>Only you</a>
+    <a href="/brain" {{if eq .Nav "brain"}}class="on"{{end}}>Brain{{if .RuleCount}} <span class="pill">{{.RuleCount}}</span>{{end}}</a>
     <a href="/leads" {{if eq .Nav "leads"}}class="on"{{end}}>Leads</a>
     <a href="/evidence" {{if eq .Nav "evidence"}}class="on"{{end}}>Evidence</a>
-    <a href="/brain" {{if eq .Nav "brain"}}class="on"{{end}}>Brain</a>
-    <a href="/search" {{if eq .Nav "search"}}class="on"{{end}}>Search</a>
-    <a href="/done" {{if eq .Nav "done"}}class="on"{{end}}>Done</a>
     <a href="/health" {{if eq .Nav "health"}}class="on"{{end}}>Health</a>
   </nav>
   <button class="keys" type="button" data-help aria-label="Keyboard shortcuts">?</button>
 </header>
-<main>
 {{end}}
 
 {{define "foot"}}
-</main>
 <div class="help" hidden>
   <div class="help-card" role="dialog" aria-label="Keyboard shortcuts">
     <button class="help-close" type="button" data-help-close aria-label="Close">×</button>
     <h2>Keyboard</h2>
     <dl>
-      <dt>j / k</dt><dd>next / previous</dd>
-      <dt>enter</dt><dd>open</dd>
+      <dt>j / k</dt><dd>next / previous item</dd>
+      <dt>enter</dt><dd>expand or collapse</dd>
+      <dt>[ / ]</dt><dd>previous / next project</dd>
       <dt>y / n</dt><dd>approve / decline</dd>
       <dt>1–9</dt><dd>pick an option</dd>
-      <dt>a</dt><dd>answer</dd>
-      <dt>o</dt><dd>open the agent's session</dd>
+      <dt>a</dt><dd>answer in your own words</dd>
       <dt>d</dt><dd>done</dd>
-      <dt>s / S</dt><dd>snooze 1 hour / until tomorrow</dd>
+      <dt>w</dt><dd>not worth my time (with a note)</dd>
       <dt>x</dt><dd>dismiss</dd>
-      <dt>p</dt><dd>promote a "maybe"</dd>
+      <dt>s / S</dt><dd>snooze 1 hour / until tomorrow</dd>
+      <dt>o</dt><dd>open the agent's session</dd>
       <dt>u</dt><dd>undo the last action</dd>
       <dt>/</dt><dd>search</dd>
-      <dt>g q · g c · g l · g e · g d · g h</dt><dd>queue · only-you · leads · evidence · done · health</dd>
+      <dt>g d · g c · g b · g h</dt><dd>dashboard · only you · brain · health</dd>
     </dl>
     <p class="muted">Press ? or Esc, or click outside, to close.</p>
   </div>
 </div>
 <div class="toast" hidden></div>
+<div class="updated" hidden><span>The queue changed.</span> <button type="button" data-refresh>Refresh</button></div>
 <script src="/static/app.js"></script>
 </body>
 </html>
 {{end}}
 
+{{define "sidebar"}}
+<aside class="side" aria-label="Projects">
+  {{if .NowCount}}<a class="side-now{{if eq .Mode "now"}} on{{end}}" href="{{.Link "" "" true}}"><span>Act now</span><b>{{.NowCount}}</b></a>{{end}}
+  <a class="side-all{{if eq .Mode "all"}} on{{end}}" href="{{.Link "" "" false}}"><span>All</span><b>{{.AllCount}}</b></a>
+  {{if .SideProjects}}<div class="side-h">Projects</div>{{end}}
+  {{range .SideProjects}}<a class="side-p{{if .On}} on{{end}}{{if not .Count}} empty{{end}}" href="{{.URL}}" data-project="{{.Name}}"{{with .Desc}} title="{{.}}"{{end}}><span>{{.Name}}{{if .HasNow}}<i class="dot" title="Has act-now items"></i>{{end}}</span><b>{{if .Count}}{{.Count}}{{end}}</b></a>{{end}}
+  {{if .SidePlaces}}<div class="side-h">Places</div>{{end}}
+  {{range .SidePlaces}}<a class="side-p{{if .On}} on{{end}}" href="{{.URL}}"><span>📍 {{.Name}}</span><b>{{.Count}}</b></a>{{end}}
+</aside>
+{{end}}
+
 {{define "actions"}}
-{{$id := .ID}}
 {{if or (eq .Kind "approval") (eq .Kind "rule")}}
   <button data-act="approve" data-key="y" class="primary">Approve</button>
   <button data-act="decline" data-key="n">Decline</button>
@@ -65,10 +75,61 @@
 {{else if .Options}}
   {{$rec := .Recommend}}{{range $i, $o := .Options}}<button data-act="choose" data-option="{{$i}}" data-key="{{add $i 1}}"{{if recommended $o $rec}} class="primary" title="The agent recommends this"{{end}}>{{add $i 1}}. {{$o}}{{if recommended $o $rec}} <span class="rec-tag">recommended</span>{{end}}</button>{{end}}
 {{end}}
-{{if or (eq .Kind "human_task") (eq .Kind "health") (eq .Kind "issue") (eq .Kind "fyi") (eq .Kind "blocker")}}
+{{if or (eq .Kind "human_task") (eq .Kind "health") (eq .Kind "issue") (eq .Kind "fyi") (eq .Kind "blocker") (eq .Kind "ask")}}
   <button data-act="done" data-key="d" {{if or (eq .Kind "human_task") (eq .Kind "health")}}class="primary"{{end}}>Done</button>
 {{end}}
-{{if eq .Status "maybe"}}<button data-act="promote" data-key="p">Promote</button>{{end}}
 <button data-act="snooze" data-key="s" class="quiet">Snooze</button>
+{{if ne .Kind "rule"}}<button data-noise data-key="w" class="quiet" title="Close it and tell the agents why it didn't need you">Not worth my time</button>{{end}}
 <button data-act="dismiss" data-key="x" class="quiet">Dismiss</button>
+{{end}}
+
+{{define "row"}}{{$it := .Item}}
+<li class="row u-{{.Urgency}}{{if .Expanded}} open{{end}}{{if .Stale}} stale{{end}}" data-id="{{.ID}}" data-href="/item/{{.ID}}"{{with .Session.BridgeID}} data-session="{{rcURL .}}"{{end}}>
+  <div class="row-head" role="button" tabindex="-1" aria-expanded="{{if .Expanded}}true{{else}}false{{end}}">
+    <span class="kind k-{{kindClass .Kind}}">{{kindName .Kind}}</span>
+    <div class="row-text">
+      <a class="title" href="/item/{{.ID}}">{{.Title}}</a>
+      <div class="meta">
+        {{if eq .Urgency "now"}}{{if not .InBand}}<span class="m-now">Act now</span>{{end}}{{else if eq .Urgency "soon"}}<span class="m-soon">Soon</span>{{end}}
+        {{if not .HideComponent}}{{with .Component}}<span class="m-comp">{{.}}</span>{{end}}{{end}}
+        {{with .Place}}<span class="m-place">📍 {{.}}</span>{{end}}
+        {{with .Due}}<span class="m-due due-{{dueState .}}">due {{dueLabel .}}</span>{{end}}
+        {{if .ExpiresAt}}<span class="m-exp" title="It closes on its own after this">expires in {{until .ExpiresAt}}</span>{{end}}
+        {{if .Paused}}<span class="m-paused" title="The agent is waiting on your answer">agent paused</span>{{end}}
+        {{if eq .Status "answered"}}<span>answer sent</span>{{end}}
+        {{if eq .Status "snoozed"}}<span>snoozed until {{clock .SnoozedUntil}}</span>{{end}}
+        <span class="m-age" title="Filed {{clock .CreatedAt}}">{{age .CreatedAt}}</span>
+      </div>
+    </div>
+  </div>
+  <div class="detail"{{if not .Expanded}} hidden{{end}}>
+    {{if .Recommend}}{{if not .Options}}<p class="recommend"><b>Recommends:</b> {{.Recommend}}</p>{{end}}{{end}}
+    {{if .Blocks}}<p class="blocks"><b>Blocks:</b> {{.Blocks}}</p>{{end}}
+    {{with .Body}}<div class="prose">{{md .}}</div>{{end}}
+    {{if .Physical}}<p class="warn">Physical action: it can't be approved from here. Do it in person, then mark it done.</p>{{end}}
+    {{if ne .Status "answered"}}<div class="actions">{{template "actions" $it}}</div>{{end}}
+    <form class="noise-form" hidden>
+      <label>Why didn't this need you? <span class="muted">Optional. It goes to the agent and shapes what every agent files.</span>
+      <textarea name="text" rows="2" placeholder="e.g. Post-merge reports don't need me; only send results I asked for."></textarea></label>
+      <div class="actions"><button class="primary" type="submit">Close it</button><button type="button" class="quiet" data-noise-cancel>Cancel</button></div>
+    </form>
+    {{if and .SessionID (ne .Status "answered") (ne .Kind "rule")}}
+    <form class="answer-form" method="post" action="/item/{{.ID}}/act">
+      <input type="hidden" name="action" value="answer"><input type="hidden" name="back" value="{{.Back}}">
+      <textarea name="text" rows="2" placeholder="Answer in your own words. It goes straight to the agent."></textarea>
+      <button type="submit">Send answer</button>
+    </form>
+    {{end}}
+    <div class="foot">
+      <span>{{.ID}}</span>
+      {{with .Machine}}<span>{{.}}</span>{{end}}
+      <span>filed {{clock .CreatedAt}}</span>
+      {{with .Session.BridgeID}}<a href="{{rcURL .}}" target="_blank" rel="noopener">Open session ↗</a>{{end}}
+      {{if .Projects}}
+      <label class="move">Project <select data-reclassify="project">{{$p := .Project}}{{range .Projects}}<option{{if eq . $p}} selected{{end}}>{{.}}</option>{{end}}<option value="__new">New…</option></select></label>
+      <label class="move">Urgency <select data-reclassify="urgency">{{$u := .Urgency}}{{range $v := list "now" "soon" "normal"}}<option{{if eq $v $u}} selected{{end}}>{{$v}}</option>{{end}}</select></label>
+      {{end}}
+    </div>
+  </div>
+</li>
 {{end}}

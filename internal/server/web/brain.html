@@ -1,16 +1,17 @@
 {{define "brain.html"}}{{template "head" .}}
+<main class="page">
 <h1>Brain</h1>
 <p class="muted">Preferences every agent follows. They come from your corrections and decisions; you approve each one, and nothing is applied without you.</p>
 {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
 
 <section>
   <h2>Approved ({{len .Rules}})</h2>
-  {{if not .Rules}}<p class="empty">None yet. Proposals show up in the queue as "rule" items.</p>{{end}}
+  {{if not .Rules}}<p class="empty">None yet. Proposals appear below for you to approve.</p>{{end}}
   <ol class="rows">
   {{range .Rules}}
   <li class="row">
-    <div class="row-main"><span class="badge">{{if eq .Scope "all"}}all agents{{else}}{{.Scope}}{{end}}</span> <span class="title">{{.Text}}</span></div>
-    <div class="row-actions"><form method="post" action="/rule/{{.ID}}/retire"><button class="quiet" type="submit">Retire</button></form></div>
+    <div class="row-head"><span class="kind k-rule">{{if eq .Scope "all"}}all agents{{else}}{{.Scope}}{{end}}</span><div class="row-text"><span class="title">{{.Text}}</span></div>
+    <form method="post" action="/rule/{{.ID}}/retire"><button class="quiet small" type="submit">Retire</button></form></div>
   </li>
   {{end}}
   </ol>
@@ -19,16 +20,26 @@
 <section>
   <h2>Proposed</h2>
   {{if not .Closed}}<p class="empty">No proposals waiting.</p>{{end}}
-  <ol class="rows">{{range .Closed}}<li class="row" data-id="{{.ID}}" data-href="/item/{{.ID}}"><div class="row-main"><a class="title" href="/item/{{.ID}}">{{.Title}}</a></div><div class="row-actions">{{template "actions" .}}</div></li>{{end}}</ol>
+  <ol class="rows plain">{{range .Closed}}<li class="row" data-id="{{.ID}}" data-href="/item/{{.ID}}"><div class="row-head"><span class="kind k-rule">Rule</span><div class="row-text"><a class="title" href="/item/{{.ID}}">{{.Title}}</a></div></div><div class="actions">{{template "actions" .}}</div></li>{{end}}</ol>
   <form method="post" action="/brain/propose"><button type="submit">Propose rules from the last two weeks now</button></form>
   <p class="muted">Runs one small model call on the server. It also runs on its own about once a week.</p>
 </section>
 
 <section>
-  <h2>Recent corrections ({{len .Corrections}})</h2>
-  <p class="muted">Prompts where you corrected or redirected an agent. This is what proposals learn from.</p>
-  <ol class="rows done">
-  {{range .Corrections}}<li class="row"><div class="row-meta"><span>{{clock .TS}}</span><span>{{.Context}}</span></div><div>{{.Answer}}</div></li>{{end}}
+  <h2>Not worth your time ({{len .Noise}})</h2>
+  <p class="muted">Items you closed with "Not worth my time". The latest ones, with your notes, are in every agent's rules.md so they file fewer things like them.</p>
+  {{if not .Noise}}<p class="empty">None yet.</p>{{end}}
+  <ol class="rows plain">
+  {{range .Noise}}<li class="row"><div class="row-head"><span class="kind k-{{kindClass .Kind}}">{{kindName .Kind}}</span><div class="row-text"><a class="title" href="/item/{{.ItemID}}">{{.Title}}</a><div class="meta">{{with .Project}}<span class="m-comp">{{.}}</span>{{end}}{{with .Note}}<span>“{{.}}”</span>{{end}}<span class="m-age">{{clock .TS}}</span></div></div></div></li>{{end}}
   </ol>
 </section>
+
+<section>
+  <h2>Recent corrections ({{len .Corrections}})</h2>
+  <p class="muted">Prompts where you corrected or redirected an agent. This is what proposals learn from.</p>
+  <ol class="rows plain">
+  {{range .Corrections}}<li class="row"><div class="row-head"><div class="row-text"><span>{{.Answer}}</span><div class="meta"><span>{{.Context}}</span><span class="m-age">{{clock .TS}}</span></div></div></div></li>{{end}}
+  </ol>
+</section>
+</main>
 {{template "foot" .}}{{end}}

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/blobspire/docket/internal/agentctx"
 	"github.com/blobspire/docket/internal/config"
 	"github.com/blobspire/docket/internal/mailbox"
 	"github.com/blobspire/docket/internal/sessions"
@@ -74,6 +75,9 @@ func localRun(stdin io.Reader, args ...string) ([]byte, error) {
 	case "rules":
 		body, _ := io.ReadAll(io.LimitReader(stdin, 256<<10))
 		return nil, writeRules(body)
+	case "context":
+		body, _ := io.ReadAll(io.LimitReader(stdin, 4<<20))
+		return nil, agentctx.Write(body)
 	case "quota":
 		q, ok := usage.Read()
 		if !ok {
@@ -138,4 +142,14 @@ func writeRules(body []byte) error {
 }
 
 // WriteRules is writeRules for the CLI.
+// RulesHash is the hash of the local rules.md ("" if none), which `docket
+// sync` reports so the server only resends rules that changed.
+func RulesHash() string {
+	b, err := os.ReadFile(filepath.Join(config.Home(), "rules.md"))
+	if err != nil {
+		return ""
+	}
+	return agentctx.Hash(b)
+}
+
 func WriteRules(body []byte) error { return writeRules(body) }

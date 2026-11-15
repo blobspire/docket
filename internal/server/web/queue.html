@@ -1,53 +1,60 @@
-{{define "queue.html"}}{{template "head" .}}
-{{if .Brief}}
-<section class="brief">
-  <h2>Morning brief</h2>
-  <pre>{{.Brief}}</pre>
-</section>
-{{end}}
+{{define "queue.html"}}{{template "head" .}}{{$q := .Queue}}
+<div class="shell">
+{{template "sidebar" $q}}
+<main class="main">
+  <div class="view-head">
+    <div>
+      <h1>{{$q.Heading}}{{if eq $q.Mode "project"}} <button type="button" class="quiet small" data-edit-project>Edit</button>{{end}}</h1>
+      {{with $q.Sub}}<p class="sub">{{.}}</p>{{end}}
+    </div>
+    <div class="sort" role="group" aria-label="Sort">
+      <span class="muted">Sort</span>
+      <a href="{{$q.SortLink "priority"}}" {{if eq $q.Sort "priority"}}class="on"{{end}}>Priority</a>
+      <a href="{{$q.SortLink "deadline"}}" {{if eq $q.Sort "deadline"}}class="on"{{end}}>Deadline</a>
+      <a href="{{$q.SortLink "newest"}}" {{if eq $q.Sort "newest"}}class="on"{{end}}>Newest</a>
+    </div>
+  </div>
+  {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
 
-<section>
-  <h1>{{if .Now}}{{len .Now}} need{{if eq (len .Now) 1}}s{{end}} you{{else}}Nothing needs you{{end}}</h1>
-  {{if not .Now}}<p class="empty">Your agents aren't waiting on anything. New items appear here on their own.</p>{{end}}
-  <ol class="rows">
-  {{range .Now}}{{template "row" .}}{{end}}
-  </ol>
-</section>
+  {{with $q.ProjectInfo}}
+  <form class="project-edit" method="post" action="/project/{{.Name}}" hidden>
+    <label>Description <input name="description" value="{{.Description}}" placeholder="One line: what this project is"></label>
+    <label>Rename or merge into <input name="rename" placeholder="{{.Name}}"></label>
+    <label class="check"><input type="checkbox" name="archived" value="1"{{if .Archived}} checked{{end}}> Archive (hide from the sidebar)</label>
+    <div class="actions"><button class="primary" type="submit">Save</button><button type="button" class="quiet" data-edit-project>Cancel</button></div>
+  </form>
+  {{end}}
 
-{{if .Maybe}}
-<section>
-  <h2>Maybe <span class="muted">({{len .Maybe}}): things an agent said that might need you</span></h2>
-  <ol class="rows maybe">
-  {{range .Maybe}}{{template "row" .}}{{end}}
-  </ol>
-</section>
-{{end}}
+  {{if $q.Now}}
+  <section class="band-now" aria-label="Act now">
+    <h2>Act now <span class="count">{{len $q.Now}}</span></h2>
+    <ol class="rows">{{range $q.Now}}{{template "row" ($q.BandRow .)}}{{end}}</ol>
+  </section>
+  {{end}}
 
-{{if .Snoozed}}
-<details class="snoozed">
-  <summary>Snoozed ({{len .Snoozed}})</summary>
-  <ol class="rows">
-  {{range .Snoozed}}{{template "row" .}}{{end}}
-  </ol>
-</details>
-{{end}}
+  {{range $q.Sections}}
+  <section class="proj"{{with .Anchor}} id="{{.}}"{{end}}>
+    {{if .Title}}<h2><a href="{{.URL}}">{{.Title}}</a> <span class="count">{{.Count}}</span>{{with .Sub}}<span class="sub">{{.}}</span>{{end}}</h2>{{end}}
+    {{range .Groups}}
+      {{with .Title}}<h3>{{.}}</h3>{{end}}
+      <ol class="rows">{{range .Items}}{{template "row" ($q.Row .)}}{{end}}</ol>
+    {{end}}
+  </section>
+  {{end}}
+
+  {{if $q.Empty}}
+  <div class="empty">
+    {{if eq $q.Mode "all"}}<p><b>Nothing needs you.</b></p><p class="muted">Your agents aren't waiting on anything. New items appear here on their own.</p>
+    {{else}}<p class="muted">Nothing open here.</p>{{end}}
+  </div>
+  {{end}}
+
+  {{if $q.Snoozed}}
+  <details class="snoozed">
+    <summary>Snoozed ({{len $q.Snoozed}})</summary>
+    <ol class="rows">{{range $q.Snoozed}}{{template "row" ($q.Row .)}}{{end}}</ol>
+  </details>
+  {{end}}
+</main>
+</div>
 {{template "foot" .}}{{end}}
-
-{{define "row"}}
-<li class="row kind-{{.Kind}}{{if .Blocking}} blocking{{end}}" data-id="{{.ID}}" data-href="/item/{{.ID}}"{{with .Session.BridgeID}} data-session="{{rcURL .}}"{{end}}>
-  <div class="row-main">
-    <span class="badge">{{kindName .Kind}}</span>
-    <a class="title" href="/item/{{.ID}}">{{.Title}}</a>
-    {{if gt .MentionCount 1}}<span class="muted">×{{.MentionCount}}</span>{{end}}
-  </div>
-  <div class="row-meta">
-    {{with where .Item}}<span>{{.}}</span>{{end}}
-    <span>{{age .CreatedAt}} ago</span>
-    {{if .Due}}<span class="due">due {{.Due}}</span>{{end}}
-    {{if .Session.State}}<span class="state state-{{.Session.State}}">{{.Session.State}}{{with .Session.WaitingFor}}: {{.}}{{end}}</span>{{end}}
-    {{if eq .Status "answered"}}<span class="state">answer sent, awaiting receipt</span>{{end}}
-  </div>
-  {{with .ChiefNote}}<div class="chief small">{{.}}</div>{{end}}
-  {{if ne .Status "answered"}}<div class="row-actions">{{template "actions" .Item}}</div>{{end}}
-</li>
-{{end}}

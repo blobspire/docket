@@ -278,14 +278,34 @@ func (s *Server) rulesText() string {
 	return b.String()
 }
 
-// RulesMarkdown is ~/.docket/rules.md, imported by docket's CLAUDE.md block.
+// noiseShown is how many "not worth my time" examples every agent sees.
+const noiseShown = 12
+
+// RulesMarkdown is ~/.docket/rules.md, imported by docket's CLAUDE.md block:
+// the approved preferences, then the latest items the human marked "not
+// worth my time" (with their notes), so every agent calibrates what to file.
 func (s *Server) RulesMarkdown() string {
 	body := s.rulesText()
 	if body == "" {
 		body = "(none yet)\n"
 	}
-	return "# Preferences " + s.cfg.Person + " has approved\n\n" +
+	md := "# Preferences " + s.cfg.Person + " has approved\n\n" +
 		"Managed by docket; " + s.cfg.Person + " approves these in the docket queue. Follow them unless a task says otherwise. A rule in parentheses applies only to that project.\n\n" + body
+	if ns, _ := s.st.RecentNoise(noiseShown, true); len(ns) > 0 {
+		md += "\n## Recently marked not worth " + s.cfg.Person + "'s time\n\n" +
+			"Items agents filed in docket that " + s.cfg.Person + " said didn't need them, newest first. Don't file things like these; mention them in chat instead.\n\n"
+		for _, n := range ns {
+			line := "- " + n.Title
+			if n.Project != "" {
+				line += " (" + n.Project + ")"
+			}
+			if n.Note != "" {
+				line += ": " + n.Note
+			}
+			md += line + "\n"
+		}
+	}
+	return md
 }
 
 // syncRules sends changed rules to every machine the server can reach.

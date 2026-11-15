@@ -23,7 +23,7 @@ const (
 )
 
 // How long a session may sit on a dialog before it becomes an item.
-const waitingAfter = 5 * time.Minute
+const waitingAfter = 15 * time.Minute
 
 // collectHealth gathers quota on every pull and token usage every 15 minutes.
 func (s *Server) collectHealth(ctx context.Context, m Machine) {
@@ -79,7 +79,8 @@ func (s *Server) watchHealth(ctx context.Context) {
 			if q.ResetsAt > 0 {
 				reset = " It resets " + time.Unix(q.ResetsAt, 0).In(s.cfg.loc).Format("Mon 15:04") + "."
 			}
-			s.st.UpsertItem(store.Item{ID: ulid.ItemID(), Ongoing: true, Kind: "health", Source: ingest.SrcWatchdog, Machine: q.Machine, DedupeKey: key,
+			s.watch(store.Item{ID: ulid.ItemID(), Ongoing: true, Kind: "health", Source: ingest.SrcWatchdog, Machine: q.Machine, DedupeKey: key,
+				Project: s.cfg.SystemProject, Urgency: "soon",
 				Title: fmt.Sprintf("Claude %s limit at %.0f%% (%s)", label, q.UsedPct, firstNonEmptyStr(q.Account, q.Machine)),
 				Body:  "Nothing is paused automatically. The Health page shows which leads are spending." + reset})
 		} else if q.UsedPct < quotaClearAt {
@@ -87,14 +88,19 @@ func (s *Server) watchHealth(ctx context.Context) {
 		}
 	}
 
+	// A lead runs unattended, so a lead stuck on a dialog or a question can sit
+	// for hours with nobody watching. Interactive sessions are left alone:
+	// the human is usually right there, and anything that matters gets filed.
 	all, _ := s.st.Sessions(false, 500)
 	now := time.Now()
 	for _, x := range all {
 		key := "waiting:" + x.ID
-		if x.State == "waiting" && x.WaitingSince > 0 && now.Sub(time.Unix(x.WaitingSince, 0)) > waitingAfter && !x.HasPlugin {
-			s.st.UpsertItem(store.Item{ID: ulid.ItemID(), Ongoing: true, Kind: "blocker", Blocking: true, Source: ingest.SrcNotification,
-				Machine: x.Machine, SessionID: x.ID, Cwd: x.Cwd, DedupeKey: key, CreatedAt: x.WaitingSince,
-				Title: fmt.Sprintf("Session %s is waiting on you (%s)", firstNonEmptyStr(x.Name, short(x.ID)), firstNonEmptyStr(x.WaitingFor, "input")),
+		lead := s.leadOf(store.Item{}, x)
+		if lead != "" && x.State == "waiting" && x.WaitingSince > 0 && now.Sub(time.Unix(x.WaitingSince, 0)) > waitingAfter {
+			s.watch(store.Item{ID: ulid.ItemID(), Ongoing: true, Kind: "blocker", Blocking: true, Source: ingest.SrcWatchdog,
+				Machine: x.Machine, SessionID: x.ID, Cwd: x.Cwd, Lead: lead, DedupeKey: key, CreatedAt: x.WaitingSince,
+				Project: s.leadProject(lead), Urgency: "soon",
+				Title: fmt.Sprintf("Lead %s is stuck waiting (%s)", lead, firstNonEmptyStr(x.WaitingFor, "input")),
 				Body:  "It has been waiting since " + time.Unix(x.WaitingSince, 0).In(s.cfg.loc).Format("Mon 15:04") + ". Open the session to answer."})
 		} else if x.State != "waiting" {
 			s.resolveKey(key, "the session moved on")
@@ -111,11 +117,11 @@ func (s *Server) watchHealth(ctx context.Context) {
 			s.resolveKey(key, l.Name+" is running again")
 			continue
 		}
-		s.st.UpsertItem(store.Item{ID: ulid.ItemID(), Ongoing: true, Kind: "health", Blocking: true, Source: ingest.SrcWatchdog, Machine: l.Machine, Lead: l.Name, DedupeKey: key,
+		s.watch(store.Item{ID: ulid.ItemID(), Ongoing: true, Kind: "health", Blocking: true, Source: ingest.SrcWatchdog, Machine: l.Machine, Lead: l.Name, DedupeKey: key,
+			Project: l.Project, Urgency: "soon",
 			Title: fmt.Sprintf("Lead %s isn't running", l.Name),
 			Body:  "It is marked always_on. Wake it from the Leads page to start or resume it."})
 	}
-	s.st.Bump()
 }
 
 // Spend is one lead's (or project's) token use over a window.

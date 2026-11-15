@@ -88,7 +88,7 @@ func TestAskAnswerDeliverReceipt(t *testing.T) {
 	hook.Run("Stop", strings.NewReader(`{"session_id":"sess-1","last_assistant_message":"Filed the question."}`), io.Discard, io.Discard, agent)
 	e.cycle()
 
-	now, _, _, _ := e.s.Queue()
+	now, _, _ := e.s.Queue()
 	if len(now) != 1 || now[0].Title != "Ship the redesign today?" || now[0].Session.State != "idle" {
 		t.Fatalf("queue = %+v", now)
 	}
@@ -173,17 +173,22 @@ mode = "local"
 	old := time.Now().Add(-10 * time.Minute).Unix()
 	st := e.s.st
 	st.PatchSession("idle", store.SessionPatch{State: store.Str("idle")})
-	st.PatchSession("busy", store.SessionPatch{State: store.Str("busy")})
-	st.UpsertItem(store.Item{ID: "dk-00000001", Kind: "approval", Title: "rm -rf build", SessionID: "idle", CreatedAt: old})
-	st.UpsertItem(store.Item{ID: "dk-00000002", Kind: "approval", Title: "still working", SessionID: "busy", CreatedAt: old})
-	st.UpsertItem(store.Item{ID: "dk-00000003", Kind: "review", Title: "look at the hero", SessionID: "idle", CreatedAt: old})
-	st.UpsertItem(store.Item{ID: "dk-00000004", Kind: "approval", Title: "too fresh", SessionID: "idle"})
+	// Only "act now" pushes, and only once the grace period has passed.
+	st.UpsertItem(store.Item{ID: "dk-00000001", Kind: "issue", Title: "ARC login expired: training stopped", Project: "vlm-teacher", Urgency: "now", UrgentSince: old, Body: "## What\n- every job fails at auth", SessionID: "idle", CreatedAt: old})
+	st.UpsertItem(store.Item{ID: "dk-00000002", Kind: "approval", Title: "an old-style approval", SessionID: "idle", CreatedAt: old})
+	st.UpsertItem(store.Item{ID: "dk-00000003", Kind: "review", Title: "Model A results", Urgency: "soon", SessionID: "idle", CreatedAt: old})
+	st.UpsertItem(store.Item{ID: "dk-00000004", Kind: "issue", Title: "too fresh", Urgency: "now", SessionID: "idle"})
+	st.UpsertItem(store.Item{ID: "dk-00000005", Kind: "health", Title: "a watchdog alert that keeps being re-checked", Urgency: "now", DedupeKey: "watchdog:x", CreatedAt: old})
+	st.MarkPushed([]string{"dk-00000005"})
 	e.s.pushes(e.ctx)
 	mu.Lock()
-	if len(got) != 1 || got[0]["title"] != "An agent needs your approval" || got[0]["click"] != "https://docket.example/item/dk-00000001" {
+	if len(got) != 1 || got[0]["title"] != "ARC login expired: training stopped" || got[0]["click"] != "https://docket.example/item/dk-00000001" ||
+		got[0]["message"] != "vlm-teacher · Problem\nWhat" {
 		t.Fatalf("pushes = %+v", got)
 	}
 	mu.Unlock()
+	// A watchdog re-check of an already-pushed item must not re-arm it.
+	st.UpsertItem(store.Item{ID: "dk-x", Ongoing: true, Kind: "health", Title: "a watchdog alert that keeps being re-checked", Urgency: "now", DedupeKey: "watchdog:x"})
 	e.s.pushes(e.ctx) // never twice for the same item
 	mu.Lock()
 	defer mu.Unlock()
@@ -268,18 +273,18 @@ mode = "push"
 	e.s.st.UpsertItem(store.Item{ID: "dk-eeeeeeee", Kind: "ask", Title: "q", Machine: "laptop", SessionID: "s1"})
 	e.s.Decide("dk-eeeeeeee", Action{Kind: "answer", Text: "yes"})
 	export := `{"id":"01AAA","v":1,"event":"Stop","session_id":"s1","machine":"laptop","payload":{"session_id":"s1"}}` + "\n" + `{"_cursor":"seg-2026110900.jsonl:120","_more":false}` + "\n"
-	reply, err := e.s.Receive("laptop", strings.NewReader(export), []byte(`[{"session_id":"s1","status":"idle","pid":1}]`))
+	reply, err := e.s.Receive("laptop", strings.NewReader(export), []byte(`[{"session_id":"s1","status":"idle","pid":1}]`), Hashes{Rules: "-", Context: "-"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if reply.Cursor != "seg-2026110900.jsonl:120" || len(reply.Deliveries) != 1 || !strings.Contains(reply.Deliveries[0].Text, "yes") {
 		t.Fatalf("reply = %+v", reply)
 	}
-	reply, _ = e.s.Receive("laptop", strings.NewReader(`{"_cursor":"seg-2026110900.jsonl:120","_more":false}`+"\n"), nil)
+	reply, _ = e.s.Receive("laptop", strings.NewReader(`{"_cursor":"seg-2026110900.jsonl:120","_more":false}`+"\n"), nil, Hashes{Rules: "-", Context: "-"})
 	if len(reply.Deliveries) != 0 {
 		t.Fatal("handed out the same delivery twice")
 	}
-	if _, err := e.s.Receive("nope", strings.NewReader(""), nil); err == nil {
+	if _, err := e.s.Receive("nope", strings.NewReader(""), nil, Hashes{}); err == nil {
 		t.Fatal("accepted an unconfigured machine")
 	}
 }
@@ -386,7 +391,10 @@ always_on = true
 	st := e.s.st
 	now := time.Now().Unix()
 	st.SetQuota(store.Quota{Machine: "box", Account: "Personal", Window: "seven_day", UsedPct: 91, CapturedAt: now})
-	st.PatchSession("dlg", store.SessionPatch{Machine: store.Str("box"), State: store.Str("waiting"), WaitingFor: store.Str("dialog open"), WaitingSince: store.Int(now - 600), Name: store.Str("world-models-29")})
+	// A lead stuck on a dialog for over 15 minutes is raised; an interactive
+	// session waiting just as long is left to the human at its terminal.
+	st.PatchSession("dlg", store.SessionPatch{Machine: store.Str("box"), Lead: store.Str("orch"), State: store.Str("waiting"), WaitingFor: store.Str("dialog open"), WaitingSince: store.Int(now - 1200), Name: store.Str("orch-29")})
+	st.PatchSession("chat", store.SessionPatch{Machine: store.Str("box"), State: store.Str("waiting"), WaitingFor: store.Str("permission"), WaitingSince: store.Int(now - 3600), Name: store.Str("quick-chat")})
 	e.s.watchHealth(e.ctx)
 	// Re-checks don't pile up mentions.
 	e.s.watchHealth(e.ctx)
@@ -402,20 +410,28 @@ always_on = true
 		titles = append(titles, it.Title)
 	}
 	joined := strings.Join(titles, " | ")
-	for _, want := range []string{"weekly limit at 91%", "world-models-29 is waiting on you (dialog open)", "Lead orch isn't running"} {
+	for _, want := range []string{"weekly limit at 91%", "Lead orch is stuck waiting (dialog open)"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing %q in %q", want, joined)
+		}
+	}
+	if strings.Contains(joined, "quick-chat") || len(items) != 2 {
+		t.Errorf("items = %q", joined)
+	}
+	for _, it := range items {
+		if it.Urgency != "soon" || it.Project == "" {
+			t.Errorf("%q: urgency %q project %q", it.Title, it.Urgency, it.Project)
 		}
 	}
 	// Recover: below the clear threshold, dialog answered, lead running.
 	st.SetQuota(store.Quota{Machine: "box", Account: "Personal", Window: "seven_day", UsedPct: 40, CapturedAt: now + 1})
 	st.PatchSession("dlg", store.SessionPatch{State: store.Str("busy"), WaitingSince: store.Int(0)})
-	st.PatchSession("orch-1", store.SessionPatch{Machine: store.Str("box"), Lead: store.Str("orch"), State: store.Str("idle")})
 	e.s.watchHealth(e.ctx)
 	if items, _ := st.Items("open"); len(items) != 0 {
 		t.Fatalf("still open after recovery: %+v", items)
 	}
 
+	st.PatchSession("orch-1", store.SessionPatch{Machine: store.Str("box"), Lead: store.Str("orch"), State: store.Str("idle")})
 	st.SetUsage(store.Usage{Machine: "box", SessionID: "orch-1", Day: time.Now().UTC().Format("2006-01-02"), Cwd: "/tmp", Output: 1000, CacheRead: 100000})
 	st.SetUsage(store.Usage{Machine: "box", SessionID: "x", Day: time.Now().UTC().Format("2006-01-02"), Cwd: "/w/site", Output: 100})
 	sp := e.s.LeadSpend(7)
