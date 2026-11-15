@@ -410,7 +410,7 @@ func (s *Store) AllEvidence(q string, limit int) ([]EvidenceRow, error) {
 		if err := rows.Scan(&r.SHA256, &r.ItemID, &r.Name, &r.Mime, &r.Size, &f, &r.ItemTitle, &r.ItemStatus, &r.ItemKind, &r.Machine, &r.CreatedAt); err != nil {
 			return nil, err
 		}
-		r.Fetched = f != 0
+		r.Fetched, r.Gone = f > 0, f < 0
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -1091,6 +1091,7 @@ type Evidence struct {
 	SHA256, ItemID, Name, Mime string
 	Size                       int64
 	Fetched                    bool
+	Gone                       bool // the file was gone from its machine before it was copied
 }
 
 func (s *Store) AddEvidence(e Evidence) error {
@@ -1111,7 +1112,7 @@ func (s *Store) Evidence(itemID string) ([]Evidence, error) {
 		if err := rows.Scan(&e.SHA256, &e.ItemID, &e.Name, &e.Mime, &e.Size, &f); err != nil {
 			return nil, err
 		}
-		e.Fetched = f != 0
+		e.Fetched, e.Gone = f > 0, f < 0
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -1137,6 +1138,13 @@ func (s *Store) MissingBlobs(machine string) ([]string, error) {
 
 func (s *Store) BlobFetched(sha string) error {
 	_, err := s.DB.Exec(`UPDATE evidence SET fetched=1 WHERE sha256=?`, sha)
+	return err
+}
+
+// BlobGone stops asking a machine for a blob it no longer has (its spool
+// was cleared or the file deleted); the item says so instead of "copying".
+func (s *Store) BlobGone(machine, sha string) error {
+	_, err := s.DB.Exec(`UPDATE evidence SET fetched=-1 WHERE sha256=? AND fetched=0 AND item_id IN (SELECT id FROM items WHERE machine=?)`, sha, machine)
 	return err
 }
 

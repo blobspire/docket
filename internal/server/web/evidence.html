@@ -10,7 +10,8 @@
 {{range .Gallery}}
   <figure>
     <a href="/item/{{.ItemID}}">
-    {{if not .Fetched}}<div class="muted">{{.Name}}: still being copied…</div>
+    {{if .Gone}}<div class="muted">{{.Name}}: gone from its machine before it was copied</div>
+    {{else if not .Fetched}}<div class="muted">{{.Name}}: still being copied…</div>
     {{else if isImage .Mime}}<img src="/blob/{{.SHA256}}?type={{.Mime}}" alt="{{.Name}}" loading="lazy">
     {{else if isVideo .Mime}}<video preload="metadata" muted src="/blob/{{.SHA256}}?type={{.Mime}}"></video>
     {{else}}<div class="filecard">{{.Name}}</div>{{end}}

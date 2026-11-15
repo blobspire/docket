@@ -10,7 +10,8 @@
   <section class="evidence">
     {{range .Evidence}}
       <figure>
-      {{if not .Fetched}}<div class="muted">{{.Name}}: still being copied from its machine…</div>
+      {{if .Gone}}<div class="muted">{{.Name}}: the file was gone from its machine before it could be copied.</div>
+      {{else if not .Fetched}}<div class="muted">{{.Name}}: still being copied from its machine…</div>
       {{else if isImage .Mime}}<a href="/blob/{{.SHA256}}?type={{.Mime}}" target="_blank"><img src="/blob/{{.SHA256}}?type={{.Mime}}" alt="{{.Name}}"></a>
       {{else if isVideo .Mime}}<video controls preload="metadata" src="/blob/{{.SHA256}}?type={{.Mime}}"></video>
       {{else}}<a class="filecard" href="/blob/{{.SHA256}}?type={{.Mime}}" target="_blank">{{.Name}}</a>{{end}}
