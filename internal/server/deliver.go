@@ -69,10 +69,13 @@ func (s *Server) Decide(id string, a Action) error {
 		}
 	case "answered":
 		// Its answer is still on the way: a second one (a double press, a
-		// second tab) would reach the agent twice. Undo changes an answer.
+		// second tab) would reach the agent twice. Nor can it be snoozed: it
+		// would wake as open, asking for an answer it already has.
 		switch a.Kind {
 		case "approve", "decline", "choose", "answer":
-			return errors.New("you've already answered this and it's on its way to the agent; undo it to change the answer")
+			return errors.New("you've already answered this; the answer is on its way to the agent")
+		case "snooze":
+			return errors.New("its answer is on its way to the agent; dismiss it to take it off the list")
 		}
 	}
 	switch a.Kind {

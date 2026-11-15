@@ -8,20 +8,28 @@
     set: (k, v) => { try { sessionStorage.setItem(k, v); } catch (_) {} },
   };
   // A toast, with an Undo button when the action it reports can be undone.
-  const toast = (msg, undoId) => {
-    const t = $(".toast");
-    t.replaceChildren(document.createTextNode(msg));
-    if (undoId) {
+  // A recent error and a recent Undo both outlive the next message, so
+  // overlapping actions can't hide a failure or take away an Undo.
+  let errNote = null, undoNote = null;
+  const toast = (msg, undoId, isErr = false) => {
+    const t = $(".toast"), now = Date.now();
+    if (isErr) errNote = { text: msg, until: now + 6000 };
+    else undoNote = undoId ? { id: undoId, until: now + 6000 } : null;
+    const err = !isErr && errNote && errNote.until > now ? errNote.text : "";
+    const undo = undoNote && undoNote.until > now ? undoNote.id : "";
+    t.replaceChildren(document.createTextNode(err ? `${msg}. ${err}` : msg));
+    if (undo) {
       const b = document.createElement("button");
       b.type = "button";
       b.textContent = "Undo";
-      b.addEventListener("click", () => { t.hidden = true; act(undoId, "undo"); });
+      b.addEventListener("click", () => { t.hidden = true; undoNote = null; act(undo, "undo"); });
       t.append(b);
     }
     t.hidden = false;
     clearTimeout(t._h);
-    t._h = setTimeout(() => (t.hidden = true), undoId ? 6000 : 3500);
+    t._h = setTimeout(() => (t.hidden = true), undo || err || isErr ? 6000 : 3500);
   };
+  const timeout = (ms) => (AbortSignal.timeout ? AbortSignal.timeout(ms) : undefined);
   // A toast for the page about to load (an item's page goes back to the list).
   const carry = (msg, undoId) => store.set("docket.toast", JSON.stringify({ msg, undoId, at: Date.now() }));
   const single = $("[data-detail]"); // an item's own page
@@ -102,7 +110,7 @@
     let err = "";
     try {
       const body = new URLSearchParams({ action, ...extra });
-      const res = await fetch(`/item/${encodeURIComponent(id)}/act`, { method: "POST", body, headers: { "X-Requested-With": "fetch" } });
+      const res = await fetch(`/item/${encodeURIComponent(id)}/act`, { method: "POST", body, headers: { "X-Requested-With": "fetch" }, signal: timeout(20000) });
       if (!res.ok) err = (await res.json().catch(() => ({}))).error || `Couldn't ${verb[action] || action}`;
     } catch (_) {
       err = `Couldn't ${verb[action] || action}: the server didn't answer`;
@@ -112,7 +120,7 @@
     if (last) latest = mine;
     if (err) {
       if (holds) { leaving.delete(id); follow.delete(id); fade(); }
-      toast(err); // a failure always says so, even behind a later success
+      toast(err, "", true); // a failure always says so, even beside a later success
       if (!single) refresh(); // it may have changed elsewhere
       return false;
     }
@@ -194,12 +202,19 @@
   const reselect = (selId) => {
     if (!selId) return;
     const at = (id) => rows().findIndex((r) => r.dataset.id === id);
+    // Move on only past closes that worked (a pending one may still fail and
+    // its row stay); one already gone from the page can't hold the place.
     let id = selId;
-    for (let hops = 0; follow.has(id) && hops < 100; hops++) id = follow.get(id);
+    for (let hops = 0; follow.has(id) && (leaving.get(id) !== Infinity || at(id) < 0) && hops < 100; hops++) id = follow.get(id);
     const i = at(id);
     sel = -1;
     $$(".row.sel").forEach((r) => r.classList.remove("sel"));
-    if (i >= 0) select(i, true);
+    if (i < 0) return;
+    if (id !== selId) return select(i, true); // the next row, brought into view
+    // Still the same row: never scroll to it (you may be acting elsewhere
+    // with the mouse), and if it's out of sight, let it go.
+    const r = rows()[i].getBoundingClientRect();
+    if (r.bottom > 50 && r.top < innerHeight) select(i, false);
   };
   // When the page can't be swapped (you're mid-answer), still settle the
   // rows you acted on: a closed one goes, the rest show what happened. A row
@@ -227,7 +242,7 @@
       do {
         again = false;
         const start = seq, url = fresh(location.href);
-        const res = await fetch(url, { signal: AbortSignal.timeout(10000) }); // a hung fetch mustn't stop refreshing
+        const res = await fetch(url, { signal: timeout(10000) }); // a hung fetch mustn't stop refreshing
         if (!res.ok) throw new Error(String(res.status));
         const doc = new DOMParser().parseFromString(await res.text(), "text/html");
         if (swap(doc, url)) { for (const [id, n] of leaving) if (n <= start) leaving.delete(id); }
@@ -311,8 +326,13 @@
 
   document.addEventListener("submit", (e) => {
     // An answer posts the plain way; remember it for u all the same.
+    // A double click on Send sends it once.
     const ans = e.target.closest(".answer-form");
-    if (ans) return store.set("docket.last", ans.closest("[data-id]").dataset.id);
+    if (ans) {
+      if (ans.dataset.sent) return e.preventDefault();
+      ans.dataset.sent = "1";
+      return store.set("docket.last", ans.closest("[data-id]").dataset.id);
+    }
     const f = e.target.closest(".noise-form");
     if (!f) return;
     e.preventDefault();
@@ -448,7 +468,12 @@
   // "Not worth my time" from a list without the note box opens it here.
   if (single && location.hash === "#noise") { const r = $(".row[data-id]"); if (r) openNoise(r); }
   // A dashboard restored from the back-forward cache may be stale.
-  window.addEventListener("pageshow", (e) => { if (e.persisted && !single) location.reload(); });
+  // An item's page restored the same way must take actions again.
+  window.addEventListener("pageshow", (e) => {
+    if (!e.persisted) return;
+    navigating = false;
+    if (!single) location.reload();
+  });
 
   // Answer forms post normally; remember where to come back to.
   function backLinks() {

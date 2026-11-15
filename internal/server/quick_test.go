@@ -145,9 +145,10 @@ func TestASecondAnswerIsRefused(t *testing.T) {
 	if err := e.s.Decide("dk-q0000031", Action{Kind: "approve"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, a := range []Action{{Kind: "approve"}, {Kind: "decline"}, {Kind: "choose", Option: 1}, {Kind: "answer", Text: "yes"}} {
+	// A snooze would wake it as open, asking again for an answer it has.
+	for _, a := range []Action{{Kind: "approve"}, {Kind: "decline"}, {Kind: "choose", Option: 1}, {Kind: "answer", Text: "yes"}, {Kind: "snooze", Until: time.Now().Add(time.Hour)}} {
 		if err := e.s.Decide("dk-q0000031", a); err == nil {
-			t.Errorf("a second %s was accepted", a.Kind)
+			t.Errorf("a %s on an answered item was accepted", a.Kind)
 		}
 	}
 	if ds, _ := st.ItemDeliveries("dk-q0000031"); len(ds) != 1 {
