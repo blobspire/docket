@@ -234,6 +234,10 @@ func (s *Server) fetchBlobs(ctx context.Context, m Machine) {
 		data, err := s.remote(ctx, m, nil, "spool", "blob", sha)
 		if err != nil {
 			s.log.Printf("%s: blob %s: %v", m.Name, sha[:12], err)
+			// Gone for good: asking again every pull only repeats this.
+			if strings.Contains(err.Error(), "no such file or directory") {
+				s.st.BlobGone(m.Name, sha)
+			}
 			continue
 		}
 		if err := s.saveBlob(sha, bytes.NewReader(data)); err != nil {

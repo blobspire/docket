@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http/httptest"
 	"regexp"
 	"strings"
@@ -168,5 +169,22 @@ func TestAnAnsweredItemCanBeDismissed(t *testing.T) {
 	ds, _ := st.ItemDeliveries("dk-r4a00001")
 	if it.Status != "dismissed" || len(ds) != 1 || ds[0].Status != "pending" {
 		t.Fatalf("after dismiss: status %s, deliveries %+v", it.Status, ds)
+	}
+}
+
+// A blob its machine no longer has is asked for once, not on every pull.
+func TestAGoneBlobIsNotAskedForAgain(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	st.UpsertItem(store.Item{ID: "dk-r4b00001", Kind: "review", Title: "see the plot", Project: "w", Machine: "box"})
+	sha := strings.Repeat("ab", 32)
+	st.AddEvidence(store.Evidence{SHA256: sha, ItemID: "dk-r4b00001", Name: "plot.png", Mime: "image/png"})
+	m, _ := e.s.cfg.Machine("box")
+	e.s.fetchBlobs(context.Background(), m)
+	if missing, _ := st.MissingBlobs("box"); len(missing) != 0 {
+		t.Fatalf("still asking for a blob that's gone: %v", missing)
+	}
+	if !strings.Contains(get(e, "/item/dk-r4b00001"), "gone from its machine") {
+		t.Error("the item page still says it's being copied")
 	}
 }
