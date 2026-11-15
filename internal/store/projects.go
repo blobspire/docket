@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // ---- projects ---------------------------------------------------------------
@@ -271,7 +272,13 @@ func (s *Store) LatestAlias(itemID string) string {
 // it filed can then defer to the server for exactly those.
 func (s *Store) SeenIDs(machine string, since int64) []string {
 	var out []string
-	rows, err := s.DB.Query(`SELECT id FROM items WHERE machine=? AND created_at>=? UNION SELECT alias FROM item_aliases WHERE machine=? AND created_at>=? ORDER BY 1`, machine, since, machine, since)
+	// Items and re-filing aliases, plus the done and project records the
+	// server has applied, so the machine can drop its own copies of those.
+	ts := time.Unix(since, 0).UTC().Format(time.RFC3339)
+	rows, err := s.DB.Query(`SELECT id FROM items WHERE machine=? AND created_at>=?
+		UNION SELECT alias FROM item_aliases WHERE machine=? AND created_at>=?
+		UNION SELECT id FROM events WHERE machine=? AND event IN ('cli.done','cli.project') AND processed=1 AND ts>=?
+		ORDER BY 1`, machine, since, machine, since, machine, ts)
 	if err != nil {
 		return nil
 	}

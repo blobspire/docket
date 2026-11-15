@@ -17,6 +17,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	_ "time/tzdata" // dates in the human's time zone even where the system has no zoneinfo
 
 	"github.com/blobspire/docket/internal/agentctx"
 	"github.com/blobspire/docket/internal/claudemd"
@@ -59,7 +60,7 @@ The bar is high: file only what needs them and would otherwise be missed.
     --physical                 needs physical action; can never be approved remotely
 
   docket add <dk-id> [--why "<more>"] [--evidence <files>]   add to an item you filed
-  docket done <dk-id> | --key <key> [--why "<what happened>"]  close an item (answered in chat, moot, fixed)
+  docket done <dk-id> | --key <key> [--project <p>] [--why "<what happened>"]  close an item (answered in chat, moot, fixed)
   docket list [--project <p>] [--all]     open items from this machine
   docket projects                         projects, components and places in use
   docket projects add <name> --why "<one-line description>"   create a project
@@ -71,9 +72,10 @@ Long-running jobs (so a stall gets noticed):
 
 Setting up a machine:
   docket init --agent [--machine <name>] [--person <name>] [--no-claude-md]
+  docket init --server --person <name> [--public-url <url>] [--ntfy-topic <t>] [--timezone <tz>] [--install-service]
   docket uninstall                          remove docket's block from ~/.claude/CLAUDE.md
-  docket sync --server <ssh-host>           for laptops: push events to the server, fetch answers
-  docket import md <file> --project <p> [--section "<heading>"] [--lead <name>]   import open tasks from markdown
+  docket sync --server <ssh-host> [--docket <path>] [--quiet]   for laptops: push events to the server, fetch answers
+  docket import md <file> --project <p> [--section "<heading>"] [--lead <name>] [--kind human_task]   import open tasks from markdown
 
 Server:
   docket serve                              run the dashboard (config: ~/.config/docket/docket.toml)
@@ -86,7 +88,7 @@ Used by the server and the plugin:
   docket mailbox put | rules put | context put
   docket sessions --json | quota | usage [--json] [--since 7d]
   docket statusline [-- <your statusline command>]   record quota as Claude Code renders its status line
-  docket session send --pane <%id> | resume --id <id> --cwd <dir> --name <name>
+  docket session send --pane <%id> [--check] | resume --id <id> --cwd <dir> --name <name>
   docket session start --name <n> --cwd <dir> [--lead <l>] [--resume <id>] [-- <claude flags>]
   docket hook <Event>
   docket version

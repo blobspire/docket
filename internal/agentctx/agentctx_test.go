@@ -61,3 +61,55 @@ func TestOverlayDefersToTheServerOnceSeen(t *testing.T) {
 		t.Fatalf("after the server saw it: %+v", m)
 	}
 }
+
+func TestOldEntriesDontComeBackOnAQuietMachine(t *testing.T) {
+	old := time.Now().Add(-4 * 24 * time.Hour).Unix()
+	o := Overlay{
+		Filed:    []Item{{ID: "dk-oldoldol", Title: "Approve the Q3 budget?", CreatedAt: old}},
+		Projects: []NewThing{{Name: "arms", ID: "dk-p", At: old}},
+		Dirs:     []NewThing{{Name: "/w/repo", Project: "arms", ID: "dk-p", At: old}},
+	}
+	// The server's seen window has long passed these, and it no longer lists them.
+	m := Context{Projects: []Project{{Name: "arm-work"}}, Dirs: []Dir{{Dir: "/w/repo", Project: "arm-work"}}}.Merged(o)
+	if len(m.Open) != 0 || m.HasProject("arms") || m.ProjectForDir("/w/repo") != "arm-work" {
+		t.Fatalf("stale entries came back: open=%+v projects=%+v dir=%q", m.Open, m.Projects, m.ProjectForDir("/w/repo"))
+	}
+}
+
+func TestDoneByKeyHidesOnlyWhatTheServerCloses(t *testing.T) {
+	now := time.Now().Unix()
+	c := Context{Open: []Item{
+		{ID: "dk-win", Key: "ci", Project: "windward", SessionID: "s1", CreatedAt: now - 60},
+		{ID: "dk-cwa", Key: "ci", Project: "cwant", SessionID: "s2", CreatedAt: now - 30},
+	}}
+	// Resolved from the folder (windward), not typed: the server closes windward's.
+	tgt, ok := c.KeyTarget("ci", "windward", false, "s9")
+	if !ok || tgt.ID != "dk-win" {
+		t.Fatalf("target = %+v %v", tgt, ok)
+	}
+	m := c.Merged(Overlay{Closed: []Closed{{ID: tgt.ID, RecordID: "r1", At: now}}})
+	if len(m.Open) != 1 || m.Open[0].ID != "dk-cwa" {
+		t.Fatalf("open = %+v", m.Open)
+	}
+	// Once the server has applied the done record, its copy is the truth.
+	m = Context{Open: c.Open, Seen: []string{"r1"}}.Merged(Overlay{Closed: []Closed{{ID: "dk-win", RecordID: "r1", At: now}}})
+	if len(m.Open) != 2 {
+		t.Fatalf("after the server applied it, open = %+v", m.Open)
+	}
+	// An explicit project with no match there hides nothing elsewhere.
+	if _, ok := c.KeyTarget("ci", "ladr", true, "s1"); ok {
+		t.Fatal("an explicit project fell back to another project's item")
+	}
+}
+
+func TestServerFolderMappingWinsATie(t *testing.T) {
+	now := time.Now().Unix()
+	o := Overlay{Dirs: []NewThing{{Name: "/w/repo", Project: "errand", ID: "dk-new", At: now}, {Name: "/w/repo/sub", Project: "deeper", ID: "dk-new2", At: now}}}
+	m := Context{Dirs: []Dir{{Dir: "/w/repo", Project: "established"}}}.Merged(o)
+	if got := m.ProjectForDir("/w/repo"); got != "established" {
+		t.Fatalf("an unprocessed overlay entry beat the server's mapping for the same folder: %q", got)
+	}
+	if got := m.ProjectForDir("/w/repo/sub/x"); got != "deeper" {
+		t.Fatalf("a deeper overlay folder should still apply: %q", got)
+	}
+}

@@ -52,7 +52,7 @@ func (e *env) send(t *testing.T, r record.Record, o ingest.Options) {
 	r.V, r.ID, r.Machine = 1, fmt.Sprintf("01REVIEW%018d", recSeq), "box"
 	r.TS = time.Now().UTC().Format(time.RFC3339Nano)
 	b, _ := json.Marshal(r)
-	if _, err := e.s.st.IngestBatch("box", []store.RawEvent{{ID: r.ID, Event: r.Event, SessionID: r.SessionID, Body: b}}, ""); err != nil {
+	if _, err := e.s.st.IngestBatch("box", []store.RawEvent{{ID: r.ID, TS: r.TS, Event: r.Event, SessionID: r.SessionID, Body: b}}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ingest.ProcessWith(e.s.st, 50, o); err != nil {
@@ -406,5 +406,24 @@ func TestProjectEditRenamesWithDescription(t *testing.T) {
 	e.s.Handler().ServeHTTP(rec, req)
 	if !strings.Contains(rec.Header().Get("Location"), "err=") {
 		t.Fatalf("an unusable name was accepted silently: %q", rec.Header().Get("Location"))
+	}
+}
+
+func TestSeenIncludesAppliedDoneAndProjectRecords(t *testing.T) {
+	e := newEnv(t, "")
+	b, _ := json.Marshal(map[string]string{"name": "robots", "description": "Robot arm work"})
+	e.send(t, record.Record{Event: "cli.project", SessionID: "s", Payload: b}, ingest.Options{})
+	projRec := fmt.Sprintf("01REVIEW%018d", recSeq)
+	e.send(t, record.Record{Event: "cli.done", SessionID: "s", Done: &record.Done{Key: "nothing"}}, ingest.Options{})
+	doneRec := fmt.Sprintf("01REVIEW%018d", recSeq)
+	data, _ := e.s.ContextFor("box")
+	var c agentctx.Context
+	json.Unmarshal(data, &c)
+	seen := strings.Join(c.Seen, ",")
+	if !strings.Contains(seen, projRec) || !strings.Contains(seen, doneRec) {
+		t.Fatalf("seen = %q, want %s and %s", seen, projRec, doneRec)
+	}
+	if p, ok := e.s.st.GetProject("robots"); !ok || p.Description != "Robot arm work" {
+		t.Fatalf("projects add didn't create it: %+v", p)
 	}
 }

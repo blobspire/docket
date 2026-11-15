@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,7 +32,7 @@ type Context struct {
 	Dirs     []Dir             `json:"dirs,omitempty"`  // this machine's folders only
 	Leads    map[string]string `json:"leads,omitempty"` // lead name → project
 	Open     []Item            `json:"open,omitempty"`  // this machine's open items only
-	Seen     []string          `json:"seen,omitempty"`  // ids from this machine the server has processed lately
+	Seen     []string          `json:"seen,omitempty"`  // ids (items, aliases, done/project records) from this machine the server has processed lately
 }
 
 type Project struct {
@@ -156,13 +157,20 @@ type Overlay struct {
 	Dirs     []NewThing `json:"dirs,omitempty"`
 }
 
-// Closed is an item this machine closed with `docket done`.
+// Closed is an item this machine closed with `docket done`: the item's id
+// when the CLI could tell which one, else the key (and project) it gave.
 type Closed struct {
-	ID      string `json:"id,omitempty"`
-	Key     string `json:"key,omitempty"`
-	Project string `json:"project,omitempty"`
-	At      int64  `json:"at"`
+	ID       string `json:"id,omitempty"`
+	Key      string `json:"key,omitempty"`
+	Project  string `json:"project,omitempty"`
+	RecordID string `json:"record"` // the done record; once seen, the server's copy is the truth
+	At       int64  `json:"at"`
 }
+
+// Retention is how long overlay entries count. It is shorter than the window
+// the server reports as seen (at least 48 hours), so an entry never outlives
+// the server's acknowledgement of it.
+const Retention = 36 * time.Hour
 
 // NewThing is a project, or a folder's default project, this machine
 // introduced with a filing.
@@ -197,14 +205,24 @@ func Remember(f func(*Overlay)) error {
 		return err
 	}
 	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
-		return err
+	// Filing must never hang: if another docket holds the lock for long
+	// (stopped mid-write, say), give up on the local record.
+	locked := false
+	for deadline := time.Now().Add(3 * time.Second); !locked && time.Now().Before(deadline); {
+		if syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil {
+			locked = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !locked {
+		return errors.New("another docket process holds the local record")
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 
 	o := LoadOverlay()
 	f(&o)
-	cut := time.Now().Add(-48 * time.Hour).Unix()
+	cut := time.Now().Add(-Retention).Unix()
 	o.Filed = keep(o.Filed, func(it Item) bool { return it.CreatedAt >= cut })
 	o.Closed = keep(o.Closed, func(c Closed) bool { return c.At >= cut })
 	o.Projects = keep(o.Projects, func(p NewThing) bool { return p.At >= cut })
@@ -237,35 +255,46 @@ func keep[T any](xs []T, ok func(T) bool) []T {
 }
 
 // Merged is the context with this machine's not-yet-processed filings,
-// closings, new projects and folder defaults applied on top.
+// closings, new projects and folder defaults applied on top. Entries the
+// server has processed (their id is in Seen) or that are past Retention
+// are ignored: the server's copy is the truth for those.
 func (c Context) Merged(o Overlay) Context {
 	seen := map[string]bool{}
 	for _, id := range c.Seen {
 		seen[id] = true
 	}
+	cut := time.Now().Add(-Retention).Unix()
 	out := c
 	out.Projects = append([]Project(nil), c.Projects...)
 	for _, p := range o.Projects {
-		// Once the server has the filing, its project list is the truth (the
-		// project may have been renamed or archived since).
-		if !seen[p.ID] && !out.HasProject(p.Name) {
+		if p.At >= cut && !seen[p.ID] && !out.HasProject(p.Name) {
 			out.Projects = append(out.Projects, Project{Name: p.Name, Description: p.Description})
 		}
 	}
-	var dirs []Dir
+	// The server's mapping wins a tie on the same folder; an overlay entry
+	// still wins for a deeper folder (ProjectForDir picks the deepest).
+	out.Dirs = append([]Dir(nil), c.Dirs...)
 	for _, d := range o.Dirs {
-		if !seen[d.ID] {
-			dirs = append(dirs, Dir{Dir: d.Name, Project: d.Project})
+		if d.At >= cut && !seen[d.ID] && !c.HasDir(d.Name) {
+			out.Dirs = append(out.Dirs, Dir{Dir: d.Name, Project: d.Project})
 		}
 	}
-	out.Dirs = append(dirs, c.Dirs...)
 
+	var closings []Closed
+	for _, x := range o.Closed {
+		if x.At >= cut && (x.RecordID == "" || !seen[x.RecordID]) {
+			closings = append(closings, x)
+		}
+	}
 	closed := func(it Item) bool {
-		for _, x := range o.Closed {
-			if x.ID != "" && x.ID == it.ID {
-				return true
+		for _, x := range closings {
+			if x.ID != "" {
+				if x.ID == it.ID {
+					return true
+				}
+				continue
 			}
-			if x.Key != "" && x.Key == it.Key && (x.Project == "" || x.Project == it.Project) && it.CreatedAt <= x.At {
+			if x.Key != "" && x.Key == it.Key && (x.Project == "" || x.Project == it.Project) && it.CreatedAt < x.At {
 				return true
 			}
 		}
@@ -280,11 +309,48 @@ func (c Context) Merged(o Overlay) Context {
 		}
 	}
 	for _, it := range o.Filed {
-		if seen[it.ID] || have[it.ID] || closed(it) {
+		if it.CreatedAt < cut || seen[it.ID] || have[it.ID] || closed(it) {
 			continue
 		}
 		open = append(open, it)
 	}
 	out.Open = open
 	return out
+}
+
+// HasDir reports whether this exact folder has a project.
+func (c Context) HasDir(dir string) bool {
+	dir = strings.TrimRight(dir, "/")
+	for _, d := range c.Dirs {
+		if d.Dir == dir {
+			return true
+		}
+	}
+	return false
+}
+
+// KeyTarget is the open item `docket done --key k` will close, as the server
+// will pick it: in the given project first; unless the project was named
+// explicitly, then this session's newest, then the machine's newest.
+func (c Context) KeyTarget(k, project string, explicit bool, session string) (Item, bool) {
+	var best Item
+	found := false
+	pick := func(ok func(Item) bool) bool {
+		for _, it := range c.Open {
+			if it.Key == k && ok(it) && (!found || it.CreatedAt > best.CreatedAt) {
+				best, found = it, true
+			}
+		}
+		return found
+	}
+	if project != "" && pick(func(it Item) bool { return it.Project == project }) {
+		return best, true
+	}
+	if explicit {
+		return Item{}, false
+	}
+	if session != "" && pick(func(it Item) bool { return it.SessionID == session }) {
+		return best, true
+	}
+	return best, pick(func(Item) bool { return true })
 }

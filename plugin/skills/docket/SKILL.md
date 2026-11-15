@@ -64,7 +64,7 @@ Lead with what you need from them and why, in a sentence or two. Then at most ~5
 
 ### Project, component, place
 
-- `--project <name>`: run `docket projects` to see the projects, with descriptions. Reuse one when it fits. If nothing fits, start one: `--project <short-name> --new-project "<one-line description>"`. A project is a body of work, not a repo: several repos can share one. A repository's default project is whatever is named there most; once it has one (`docket projects` tells you), you can leave `--project` out for work that belongs to it.
+- `--project <name>`: run `docket projects` to see the projects, with descriptions. Reuse one when it fits. If nothing fits, start one: `--project <short-name> --new-project "<one-line description>"`. A project is a body of work, not a repo: several repos can share one. A repository's default project is the one named there most often recently; once it has one (`docket projects` tells you), you can leave `--project` out for work that belongs to it.
 - `--component <name>`: optional, the part of the project ("FR5 hardware", "billing", "CI"). Reuse names `docket projects` shows.
 - `--place <name>`: only for things they must physically be somewhere to do ("tealab", "home", "office"). Items are grouped by place so one trip covers them, because a missed physical task can cost a trip back. Reuse existing place names.
 
@@ -81,7 +81,7 @@ Lead with what you need from them and why, in a sentence or two. Then at most ~5
 
 ### Other flags
 
-- `--key <stable-id>`: re-filing with the same key updates the one item instead of adding another: a new title, body or urgency, and answers go to the session that re-filed it. Escalate this way (`--urgency now`): it brings a snoozed item back and pushes their phone. Use it for anything you re-check on a schedule, and close it with `docket done --key <key>`.
+- `--key <stable-id>`: re-filing with the same key updates the one item instead of adding another: a new title, body or urgency, and answers go to the session that re-filed it. Escalate this way (`--urgency now`): raising an item to now brings it back if it was snoozed or answered, and pushes their phone (unless they set its urgency by hand, which wins). Use it for anything you re-check on a schedule, and close it with `docket done --key <key>`.
 - `--blocking`: you're paused until they answer.
 - `--physical`: needs physical action (robots, hardware). It can never be approved remotely; they'll do it in person.
 

@@ -84,8 +84,11 @@ func File(cmd string, args []string, stdout io.Writer, getenv func(string) strin
 	if n := utf8.RuneCountInString(title); n > maxTitle {
 		return fmt.Errorf("the title is %d characters; keep it to %d at most so %s can scan it. Say the decision or action in plain words, no paths, hashes or ids, and put the details in --why", n, maxTitle, person)
 	}
-	if utf8.RuneCountInString(flags["key"]) > 120 {
+	if k := flags["key"]; utf8.RuneCountInString(k) > 120 || len(k) > 200 || (k != "" && strings.TrimSpace(k) == "") {
 		return errors.New("--key is a short stable id (at most 120 characters), like arc-auth or nightly-report")
+	}
+	if flags["new-project"] != "" && flags["project"] == "" {
+		return errors.New("--new-project describes a project you're creating: give its name with --project <short-name>")
 	}
 	urgency := strings.ToLower(flags["urgency"])
 	switch urgency {
@@ -159,18 +162,21 @@ func File(cmd string, args []string, stdout io.Writer, getenv func(string) strin
 	if err := sp.Append(r); err != nil {
 		return fmt.Errorf("could not record the item: %w", err)
 	}
-	agentctx.Remember(func(o *agentctx.Overlay) {
+	rememberErr := agentctx.Remember(func(o *agentctx.Overlay) {
 		at := now.Unix()
 		o.Filed = append(o.Filed, agentctx.Item{ID: it.ID, Title: it.Title, Kind: kind, Project: project, Urgency: firstNonEmpty(urgency, "normal"), Key: it.Key, SessionID: r.SessionID, CreatedAt: at})
 		if it.NewProject != "" && !ctx.HasProject(project) {
 			o.Projects = append(o.Projects, agentctx.NewThing{Name: project, Description: it.NewProject, ID: it.ID, At: at})
 		}
-		if it.Explicit && it.Root != "" && ctx.ProjectForDir(it.Root) == "" {
+		if it.Explicit && it.Root != "" && !ctx.HasDir(it.Root) {
 			o.Dirs = append(o.Dirs, agentctx.NewThing{Name: it.Root, Project: project, ID: it.ID, At: at})
 		}
 	})
 	if warn != "" {
 		fmt.Fprintln(stdout, warn)
+	}
+	if rememberErr != nil {
+		fmt.Fprintf(stdout, "docket: note: this machine's local record wasn't updated (%v); the item is filed, and shows in docket list after the next sync.\n", rememberErr)
 	}
 	where := ""
 	if project != "" {
@@ -235,7 +241,10 @@ func Done(args []string, stdout io.Writer, getenv func(string) string) error {
 	if err != nil {
 		return err
 	}
-	key := flags["key"]
+	key, hasKey := flags["key"]
+	if hasKey && (strings.TrimSpace(key) == "" || len(pos) > 0) {
+		return errors.New(`give either an id or --key, not both: docket done <dk-id> | --key <key> [--project <name>]`)
+	}
 	if (len(pos) != 1 || !strings.HasPrefix(pos[0], "dk-")) && !(len(pos) == 0 && key != "") {
 		return errors.New(`usage: docket done <dk-id> | --key <key> [--project <name>] [--why "<how it was resolved>"]`)
 	}
@@ -245,24 +254,30 @@ func Done(args []string, stdout io.Writer, getenv func(string) string) error {
 	d := &record.Done{Note: firstNonEmpty(flags["why"], flags["details"])}
 	if len(pos) == 1 {
 		d.ItemID = pos[0]
-	} else {
+	}
+	ctx, hasCtx := agentctx.Load()
+	ctx = ctx.Merged(agentctx.LoadOverlay())
+	closing := agentctx.Closed{ID: d.ItemID, RecordID: r.ID, At: time.Now().Unix()}
+	if d.ItemID == "" {
 		d.Key = key
 		d.Explicit = flags["project"] != ""
-		ctx, hasCtx := agentctx.Load()
-		ctx = ctx.Merged(agentctx.LoadOverlay())
 		d.Project, _, _ = resolveProject(flags["project"], "", ctx, hasCtx, RepoRoot(r.Cwd), realPath(r.Cwd), getenv("DOCKET_LEAD"), false)
+		// Hide exactly the item the server will close, when this machine can
+		// tell which; otherwise only that key's items filed before now.
+		if t, ok := ctx.KeyTarget(key, d.Project, d.Explicit, r.SessionID); ok {
+			closing.ID = t.ID
+		} else {
+			closing.Key = key
+			if d.Explicit {
+				closing.Project = d.Project
+			}
+		}
 	}
 	r.Done = d
 	if err := (spool.Spool{Dir: config.SpoolDir()}).Append(r); err != nil {
 		return err
 	}
-	agentctx.Remember(func(o *agentctx.Overlay) {
-		c := agentctx.Closed{ID: d.ItemID, Key: d.Key, At: time.Now().Unix()}
-		if d.Explicit {
-			c.Project = d.Project
-		}
-		o.Closed = append(o.Closed, c)
-	})
+	agentctx.Remember(func(o *agentctx.Overlay) { o.Closed = append(o.Closed, closing) })
 	fmt.Fprintf(stdout, "docket: marked %s done.\n", firstNonEmpty(d.ItemID, "--key "+d.Key))
 	return nil
 }
@@ -275,14 +290,14 @@ func List(args []string, stdout io.Writer, getenv func(string) string) error {
 		return err
 	}
 	ctx, hasCtx := agentctx.Load()
-	if !hasCtx {
+	ctx = ctx.Merged(agentctx.LoadOverlay())
+	if !hasCtx && len(ctx.Open) == 0 {
 		fmt.Fprintln(stdout, "docket: this machine has no copy of the queue yet; it arrives with the next sync.")
 		return nil
 	}
-	ctx = ctx.Merged(agentctx.LoadOverlay())
 	cwd, _ := os.Getwd()
 	project := ""
-	if flags["all"] == "" {
+	if flags["all"] != "true" {
 		project, _, _ = resolveProject(flags["project"], "", ctx, true, RepoRoot(cwd), realPath(cwd), getenv("DOCKET_LEAD"), false)
 	}
 	me := sessionID(getenv)
@@ -316,7 +331,11 @@ func List(args []string, stdout io.Writer, getenv func(string) string) error {
 		if asOf.Format("2006-01-02") != time.Now().In(ctx.Location()).Format("2006-01-02") {
 			when = asOf.Format("Jan 2 15:04")
 		}
-		fmt.Fprintf(stdout, "docket: %d open %s; * = filed by this session. Server copy as of %s. Close one with `docket done <id>`.\n", n, scope, when)
+		last := "last change on the server " + when
+		if !hasCtx {
+			last = "only what this machine filed; the server's copy arrives with the next sync"
+		}
+		fmt.Fprintf(stdout, "docket: %d open %s; * = filed by this session (%s). Close one with `docket done <id>`.\n", n, scope, last)
 	}
 	return nil
 }
@@ -382,7 +401,7 @@ func addProject(args []string, stdout io.Writer, getenv func(string) string) err
 	agentctx.Remember(func(o *agentctx.Overlay) {
 		o.Projects = append(o.Projects, agentctx.NewThing{Name: name, Description: desc, ID: r.ID, At: time.Now().Unix()})
 	})
-	fmt.Fprintf(stdout, "docket: project %s added; it shows on the dashboard and in docket projects after the next sync.\n", name)
+	fmt.Fprintf(stdout, "docket: project %s added (docket projects shows it now; the dashboard after the next sync). If it already exists, its description is only filled in when it had none.\n", name)
 	return nil
 }
 
@@ -490,7 +509,7 @@ func parseExpires(s string, now time.Time) (int64, error) {
 		var n int
 		fmt.Sscanf(m[1], "%d", &n)
 		unit := map[string]time.Duration{"m": time.Minute, "h": time.Hour, "d": 24 * time.Hour}[m[2]]
-		if time.Duration(n)*unit > 3650*24*time.Hour || n < 0 {
+		if _, err := fmt.Sscanf(m[1], "%d", &n); err != nil || n < 0 || time.Duration(n) > 3650*24*time.Hour/unit {
 			return 0, fmt.Errorf("--expires %q is too far off; use a date", s)
 		}
 		at = now.Add(time.Duration(n) * unit).Unix()
@@ -529,9 +548,10 @@ func parse(args []string, allowed map[string]bool) ([]string, map[string]string,
 			break
 		}
 		if !strings.HasPrefix(a, "--") {
-			// "-p x" or "-urgency now" is a mistyped flag, not title words.
-			if dashWord.MatchString(a) {
-				return nil, nil, fmt.Errorf("unknown flag %s (flags take two dashes, like --project)", a)
+			// "-p x" or "-urgency now" is a mistyped flag, not title words (a
+			// quoted title with spaces can't be a flag).
+			if dashWord.MatchString(a) && !strings.ContainsAny(a, " \t") {
+				return nil, nil, fmt.Errorf("unknown flag %s (flags take two dashes, like --project; to start a title with a dash, put -- before it, after the flags)", a)
 			}
 			pos = append(pos, a)
 			continue

@@ -61,7 +61,7 @@ Install the [ntfy](https://ntfy.sh) app and subscribe to the topic in your confi
 Pushes go out only for **act-now** items: an agent marked something `--urgency now`, or a Claude login failed. Each goes out once, 90 seconds after it became urgent, at any hour. Everything else waits on the dashboard.
 
 Other programs can use the same path:
-- `docket issue "<what broke>" --project <p> --new-project "<description>" --urgency now --key <id>` raises an alert. `--new-project` makes it work even before the project exists; it is ignored once it does.
+- `docket issue "<what broke>" --project <p> --new-project "<description>" --urgency now --key <id>` raises an alert. `--new-project` makes it work even before the project exists; once it does, it only fills in a missing description.
 - `docket done --key <id> --project <p>` clears it.
 - An alert that clears within the grace period never buzzes.
 

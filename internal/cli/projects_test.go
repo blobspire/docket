@@ -138,3 +138,28 @@ func TestDoneByKeyAndList(t *testing.T) {
 		t.Fatalf("a closed item is still listed: %q", out.String())
 	}
 }
+
+func TestMoreFilingChecks(t *testing.T) {
+	getenv := env(t)
+	// The lead's project would place a project-less filing, so only the
+	// --new-project check can refuse the first case.
+	writeContext(t, agentctx.Context{AsOf: time.Now().Unix(), Projects: []agentctx.Project{{Name: "windward"}}, Leads: map[string]string{"website": "windward"}})
+	bad := [][]string{
+		{"Start robots", "--new-project", "Robot arm work"},
+		{"x", "--project", "windward", "--expires", "213504d"},
+		{"x", "--project", "windward", "--expires", "307445735m"},
+		{"x", "--project", "windward", "--key", strings.Repeat("键", 100)},
+		{"x", "--project", "windward", "--key", "   "},
+	}
+	for _, args := range bad {
+		if err := File("ask", args, &bytes.Buffer{}, getenv); err == nil {
+			t.Errorf("accepted %q", args)
+		}
+	}
+	if err := File("ask", []string{"-Werror breaks the build: approve dropping it?", "--project", "windward"}, &bytes.Buffer{}, getenv); err != nil {
+		t.Errorf("a quoted title starting with a dash was refused: %v", err)
+	}
+	if err := Done([]string{"dk-12345678", "--key", "x"}, &bytes.Buffer{}, getenv); err == nil {
+		t.Error("done with both an id and --key was accepted")
+	}
+}
