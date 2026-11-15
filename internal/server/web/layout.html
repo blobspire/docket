@@ -75,13 +75,22 @@
 {{else if .Options}}
   {{$rec := .Recommend}}{{range $i, $o := .Options}}<button data-act="choose" data-option="{{$i}}" data-key="{{add $i 1}}"{{if recommended $o $rec}} class="primary" title="The agent recommends this"{{end}}>{{add $i 1}}. {{$o}}{{if recommended $o $rec}} <span class="rec-tag">recommended</span>{{end}}</button>{{end}}
 {{end}}
-{{if or (eq .Kind "human_task") (eq .Kind "health") (eq .Kind "issue") (eq .Kind "fyi") (eq .Kind "blocker") (eq .Kind "ask")}}
+{{if and (ne .Kind "approval") (ne .Kind "rule")}}
   <button data-act="done" data-key="d" {{if or (eq .Kind "human_task") (eq .Kind "health")}}class="primary"{{end}}>Done</button>
 {{end}}
 <button data-act="snooze" data-key="s" class="quiet">Snooze</button>
 {{if ne .Kind "rule"}}<button data-noise data-key="w" class="quiet" title="Close it and tell the agents why it didn't need you">Not worth my time</button>{{end}}
 <button data-act="dismiss" data-key="x" class="quiet">Dismiss</button>
 {{end}}
+
+{{/* One-tap closes on a collapsed row, so the list can be cleared while
+     scrolling it. The expanded card has the full set (and the keys). */}}
+{{define "quick"}}{{if and (not (closed .Status)) (ne .Status "delivered")}}
+<div class="quick" role="group" aria-label="Quick actions">
+  {{if and (ne .Status "answered") (ne .Kind "approval") (ne .Kind "rule")}}<button type="button" data-act="done" title="Done" aria-label="Done"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12.5l5 5 10-11"/></svg></button>{{end}}
+  {{if and (ne .Status "answered") (ne .Kind "rule")}}<button type="button" data-noise title="Not worth my time" aria-label="Not worth my time"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3.5h3.5v10H3z"/><path d="M6.5 13.5l3.7 6.6a1.9 1.9 0 0 0 3.5-1.3l-.8-4.3h5.4a2 2 0 0 0 2-2.4l-1.3-6.8a2 2 0 0 0-2-1.6H6.5"/></svg></button>{{end}}
+  <button type="button" data-act="dismiss" title="Dismiss" aria-label="Dismiss"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+</div>{{end}}{{end}}
 
 {{define "row"}}{{$it := .Item}}
 <li class="row u-{{.Urgency}}{{if .Expanded}} open{{end}}{{if .Stale}} stale{{end}}" data-id="{{.ID}}" data-href="/item/{{.ID}}"{{with .Session.BridgeID}} data-session="{{rcURL .}}"{{end}}{{if closed .Status}} data-closed="1"{{end}}>
@@ -101,7 +110,15 @@
         <span class="m-age" title="Filed {{clock .CreatedAt}}">{{age .CreatedAt}}</span>
       </div>
     </div>
+    {{template "quick" $it}}
   </div>
+  {{if and (not (closed .Status)) (ne .Kind "rule")}}
+  <form class="noise-form" hidden>
+    <label>Why didn't this need you? <span class="muted">Optional. It goes to the agent and shapes what every agent files.</span>
+    <textarea name="text" rows="2" placeholder="e.g. Post-merge reports don't need me; only send results I asked for."></textarea></label>
+    <div class="actions"><button class="primary" type="submit">Close it</button><button type="button" class="quiet" data-noise-cancel>Cancel</button></div>
+  </form>
+  {{end}}
   <div class="detail"{{if not .Expanded}} hidden{{end}}>
     {{if .Recommend}}{{if not .Options}}<p class="recommend"><b>Recommends:</b> {{.Recommend}}</p>{{end}}{{end}}
     {{if .Blocks}}<p class="blocks"><b>Blocks:</b> {{.Blocks}}</p>{{end}}
@@ -111,11 +128,6 @@
     {{else}}
     {{if eq .Status "answered"}}<div class="actions"><button data-act="dismiss" data-key="x" class="quiet" title="Take it off the dashboard; the answer still goes to the agent">Dismiss</button></div>
     {{else if ne .Status "delivered"}}<div class="actions">{{template "actions" $it}}</div>{{end}}
-    <form class="noise-form" hidden>
-      <label>Why didn't this need you? <span class="muted">Optional. It goes to the agent and shapes what every agent files.</span>
-      <textarea name="text" rows="2" placeholder="e.g. Post-merge reports don't need me; only send results I asked for."></textarea></label>
-      <div class="actions"><button class="primary" type="submit">Close it</button><button type="button" class="quiet" data-noise-cancel>Cancel</button></div>
-    </form>
     {{if and .SessionID (ne .Status "answered") (ne .Kind "rule")}}
     <form class="answer-form" method="post" action="/item/{{.ID}}/act">
       <input type="hidden" name="action" value="answer"><input type="hidden" name="back" value="{{.Back}}">

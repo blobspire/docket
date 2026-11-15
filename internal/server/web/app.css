@@ -137,6 +137,21 @@ body.kbd .row.sel::after { content: ""; position: absolute; inset: 0; box-shadow
 .due-today { color: var(--now); font-weight: 600; }
 .due-soon { color: var(--soon); font-weight: 600; }
 .m-age { font-variant-numeric: tabular-nums; }
+
+/* one-tap actions on a collapsed row */
+.quick { display: flex; gap: 2px; flex: none; align-self: center; margin: -4px -6px -4px 0; }
+.quick button { width: 30px; height: 30px; padding: 0; display: grid; place-items: center; border: 1px solid transparent; background: transparent; color: var(--muted); border-radius: 7px; }
+.quick svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.quick button:hover, .quick button:focus-visible { background: var(--line2); border-color: var(--line); color: var(--fg); }
+.quick [data-act=done]:hover { color: var(--ok); }
+.quick [data-noise]:hover { color: var(--accent); }
+.row.open .quick { display: none; } /* the expanded card has the full set */
+@media (hover: hover) and (pointer: fine) {
+  .quick { opacity: 0; transition: opacity .12s; }
+  .row:hover .quick, .row:focus-within .quick, body.kbd .row.sel .quick { opacity: 1; }
+}
+.row.leaving { opacity: .35; pointer-events: none; transition: opacity .15s; }
+.row > .noise-form { padding: 0 16px 14px 91px; }
 .st-dismissed, .st-expired { color: var(--muted); }
 .st-done, .st-delivered { color: var(--ok); }
 
@@ -232,7 +247,8 @@ figcaption a { text-decoration: none; font-weight: 600; color: var(--fg); }
 .help dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 18px; margin: 0 0 10px; }
 .help dt { font-family: ui-monospace, Menlo, monospace; color: var(--accent); }
 .help dd { margin: 0; }
-.toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 14px; z-index: 6; }
+.toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 14px; z-index: 6; display: flex; align-items: center; gap: 14px; max-width: calc(100vw - 32px); }
+.toast button { border: none; background: none; color: inherit; font-weight: 700; text-decoration: underline; padding: 0; font-size: 14px; }
 .updated { position: fixed; bottom: 18px; right: 18px; background: var(--panel); border: 1px solid var(--line); box-shadow: 0 4px 16px rgba(0, 0, 0, .12); padding: 8px 10px 8px 14px; border-radius: 10px; font-size: 14px; z-index: 6; display: flex; align-items: center; gap: 10px; }
 
 /* ---- phone -------------------------------------------------------------------- */
@@ -250,7 +266,15 @@ figcaption a { text-decoration: none; font-weight: 600; color: var(--fg); }
   .view-head { flex-direction: column; align-items: flex-start; gap: 10px; }
   .row-head { padding: 11px 12px 11px 14px; gap: 9px; }
   .kind { min-width: 58px; padding: 2px 5px; }
-  .detail, .row > .actions, .rows.single .detail { padding: 0 12px 14px 14px; }
+  .detail, .row > .actions, .rows.single .detail, .row > .noise-form { padding: 0 12px 14px 14px; }
+  /* Titles keep the full width; the one-tap actions share the meta line. */
+  .main .row-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 9px; row-gap: 0; }
+  .main .row-text { display: contents; }
+  .main .row-head .kind { grid-column: 1; grid-row: 1 / span 2; align-self: start; }
+  .main .row-head .title { grid-column: 2 / span 2; grid-row: 1; }
+  .main .row-head .meta { grid-column: 2; grid-row: 2; align-self: center; }
+  .main .row-head .quick { grid-column: 3; grid-row: 2; align-self: end; margin: 0 -6px -7px 0; gap: 4px; }
+  .quick button { width: 36px; height: 34px; }
   .actions button { padding: 8px 12px; font-size: 14px; }
   .evidence { grid-template-columns: 1fr; }
   table { display: block; overflow-x: auto; }
