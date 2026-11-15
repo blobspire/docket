@@ -121,6 +121,14 @@ func (s *Server) Decide(id string, a Action) error {
 		if err != nil {
 			return err
 		}
+		// A rule's approval (or rejection) wrote its row in the rules table;
+		// undoing it makes it a proposal again, so agents stop getting it.
+		if it.Kind == "rule" && (action == "approve" || action == "answer" || action == "decline") {
+			if err := s.st.DeleteRule(id); err != nil {
+				return err
+			}
+			s.rulesChanged()
+		}
 		if action == "noise" {
 			s.rulesChanged()
 			if sentNoise {

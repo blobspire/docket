@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/blobspire/docket/internal/store"
 )
@@ -64,9 +65,63 @@ func TestRowsOfferOneTapCloses(t *testing.T) {
 			}
 		}
 	}
-	// A review's card offers Done too, so d works on it.
+	// A review's card offers Done too, so d works on it; an approval's never
+	// does (d would close it without the yes or no its agent waits on).
 	if !strings.Contains(rowHTML(t, page, "dk-q0000002"), `data-act="done" data-key="d"`) {
 		t.Error("a review's card doesn't offer Done")
+	}
+	if strings.Contains(rowHTML(t, page, "dk-q0000003"), `data-act="done"`) {
+		t.Error("an approval offers Done")
+	}
+}
+
+// Delivered answers and rules get no one-tap closes; a snoozed row keeps
+// its note box.
+func TestQuickActionsEdgeRows(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	st.UpsertItem(store.Item{ID: "dk-q0000011", Kind: "ask", Title: "which GPU?", Project: "w", SessionID: "s", Machine: "box", Source: "cli"})
+	st.SetStatus("dk-q0000011", "delivered", "", "")
+	st.UpsertItem(store.Item{ID: "dk-q0000012", Kind: "rule", Title: "Don't file merged-PR reports", Project: "w"})
+	st.UpsertItem(store.Item{ID: "dk-q0000013", Kind: "issue", Title: "flaky CI", Project: "w"})
+	st.Snooze("dk-q0000013", time.Now().Add(time.Hour).Unix())
+
+	if q := quickHTML(rowHTML(t, get(e, "/item/dk-q0000011"), "dk-q0000011")); q != "" {
+		t.Errorf("a delivered row offers quick actions: %s", q)
+	}
+	rule := rowHTML(t, get(e, "/item/dk-q0000012"), "dk-q0000012")
+	if q := quickHTML(rule); strings.Contains(q, `data-act="done"`) || strings.Contains(q, "data-noise") || strings.Contains(rule, "noise-form") {
+		t.Errorf("a rule offers Done or a note: %s", rule)
+	}
+	snoozed := rowHTML(t, get(e, "/?p=w"), "dk-q0000013")
+	if !strings.Contains(quickHTML(snoozed), "data-noise") || !strings.Contains(snoozed, `class="noise-form"`) {
+		t.Errorf("a snoozed row lost its note box: %s", snoozed)
+	}
+}
+
+// Undoing a rule's approval (one click from the toast) makes it a proposal
+// again: agents stop getting it.
+func TestUndoingARuleApprovalRetractsIt(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	st.UpsertItem(store.Item{ID: "dk-q0000021", Kind: "rule", Title: "Don't file merged-PR reports", Project: "w"})
+	if err := e.s.Decide("dk-q0000021", Action{Kind: "approve"}); err != nil {
+		t.Fatal(err)
+	}
+	if rs, _ := st.Rules("approved"); len(rs) != 1 {
+		t.Fatalf("approval didn't land: %+v", rs)
+	}
+	if err := e.s.Decide("dk-q0000021", Action{Kind: "undo"}); err != nil {
+		t.Fatal(err)
+	}
+	if rs, _ := st.Rules(""); len(rs) != 0 {
+		t.Fatalf("the undone rule is still recorded: %+v", rs)
+	}
+	if it, _, _ := st.GetItem("dk-q0000021"); it.Status != "open" {
+		t.Fatalf("the rule isn't a proposal again: %s", it.Status)
+	}
+	if md := e.s.RulesMarkdown(); strings.Contains(md, "merged-PR") {
+		t.Fatalf("rules.md still carries the undone rule:\n%s", md)
 	}
 }
 
