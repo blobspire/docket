@@ -149,9 +149,9 @@ func TestSnoozeAndWake(t *testing.T) {
 func TestPatchSession(t *testing.T) {
 	s := open(t)
 	s.PatchSession("s1", SessionPatch{Machine: Str("lab"), State: Str("busy"), HasPlugin: Bool(true)})
-	s.PatchSession("s1", SessionPatch{State: Str("idle"), AddNudge: true})
+	s.PatchSession("s1", SessionPatch{State: Str("idle")})
 	x, ok, err := s.GetSession("s1")
-	if !ok || err != nil || x.Machine != "lab" || x.State != "idle" || !x.HasPlugin || x.Nudges != 1 {
+	if !ok || err != nil || x.Machine != "lab" || x.State != "idle" || !x.HasPlugin {
 		t.Fatalf("session = %+v ok=%v err=%v", x, ok, err)
 	}
 }

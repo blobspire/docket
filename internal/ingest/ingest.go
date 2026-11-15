@@ -1,18 +1,16 @@
 // Package ingest turns raw spool records into sessions and queue items.
 //
-// Rules are deterministic: no model reads anything here.
-//   - cli.file / cli.done: items an agent filed or resolved itself
-//   - PermissionDenied: auto mode refused an action; the agent may need the human
-//   - Notification permission_prompt / agent_needs_input: a session is waiting on the human
-//   - StopFailure: login, billing or API errors (health)
-//   - Stop / UserPromptSubmit / SessionEnd: session state, and closing the
-//     notification-based items once the session has moved on
+// Agents decide what reaches the human: nothing here guesses from chat text.
+// Rules are deterministic and no model reads anything.
+//   - cli.file / cli.add / cli.done: items an agent filed, added to or resolved
+//   - StopFailure / auth notifications: Claude login or billing failures, which
+//     an agent can't file itself because it can't run (one item per machine)
+//   - Notification / Stop / UserPromptSubmit / SessionEnd: session state (the
+//     server raises a lead stuck on a dialog; see the server's health checks)
 //   - docket.receipt: an answer reached its session
 package ingest
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -30,9 +28,7 @@ import (
 const (
 	SrcCLI          = "cli"
 	SrcNotification = "notification"
-	SrcDenied       = "permission_denied"
 	SrcFailure      = "stop_failure"
-	SrcBackfill     = "backfill"
 	SrcWatchdog     = "watchdog"
 )
 
@@ -48,9 +44,18 @@ var correctionRe = regexp.MustCompile(`(?i)^\s*(no[,.! ]|nope|don'?t|do not|stop
 
 var nonceRe = regexp.MustCompile(`\[docket (dk-[0-9a-z]{8} )?#([0-9a-z]{6,16})\]`)
 
+// Options carry what ingest needs to know from the server's config.
+type Options struct {
+	// LeadProject maps a lead name to its project ("" if unknown).
+	LeadProject func(lead string) string
+}
+
 // Process applies every unprocessed event, oldest first. It returns how many
 // events it handled.
-func Process(s *store.Store, batch int) (int, error) {
+func Process(s *store.Store, batch int) (int, error) { return ProcessWith(s, batch, Options{}) }
+
+// ProcessWith is Process with server configuration.
+func ProcessWith(s *store.Store, batch int, o Options) (int, error) {
 	total := 0
 	for {
 		evs, err := s.Unprocessed(batch)
@@ -61,7 +66,7 @@ func Process(s *store.Store, batch int) (int, error) {
 			return total, nil
 		}
 		for _, e := range evs {
-			if err := apply(s, e); err != nil {
+			if err := apply(s, e, o); err != nil {
 				return total, fmt.Errorf("ingest %s: %w", e.ID, err)
 			}
 			if err := s.MarkProcessed(e.ID); err != nil {
@@ -99,20 +104,7 @@ type payload struct {
 	StopHookActive   bool            `json:"stop_hook_active"`
 }
 
-// Nudge and receipt details written by docket's own hooks.
-type nudge struct {
-	Sentence string `json:"sentence"`
-	Pattern  string `json:"pattern"`
-	Outcome  string `json:"outcome"` // "" when nudging, "hit" or "miss" when scored
-}
-
-type candidate struct {
-	Sentence string `json:"sentence"`
-	Pattern  string `json:"pattern"`
-	At       string `json:"at"`
-}
-
-func apply(s *store.Store, e store.RawEvent) error {
+func apply(s *store.Store, e store.RawEvent, o Options) error {
 	var r record.Record
 	if err := json.Unmarshal(e.Body, &r); err != nil {
 		return nil // unreadable record: keep it in events, skip it here
@@ -161,7 +153,7 @@ func apply(s *store.Store, e store.RawEvent) error {
 
 	switch r.Event {
 	case "cli.file":
-		return fileItem(s, r, base)
+		return fileItem(s, r, base, o)
 
 	case "cli.add":
 		var a struct {
@@ -170,33 +162,50 @@ func apply(s *store.Store, e store.RawEvent) error {
 			Evidence []record.Evidence `json:"evidence"`
 		}
 		_ = json.Unmarshal(r.Payload, &a)
-		if _, ok, _ := s.GetItem(a.ItemID); !ok {
+		it, ok, _ := s.ResolveItem(a.ItemID)
+		if !ok {
 			return nil
 		}
 		if a.Text != "" {
-			if err := s.AppendToItem(a.ItemID, clip(a.Text, 20000)); err != nil {
+			if err := s.AppendToItem(it.ID, clip(a.Text, 20000)); err != nil {
 				return err
 			}
 		}
 		for _, ev := range a.Evidence {
-			s.AddEvidence(store.Evidence{SHA256: ev.SHA256, ItemID: a.ItemID, Name: ev.Name, Mime: ev.Mime, Size: ev.Size})
+			s.AddEvidence(store.Evidence{SHA256: ev.SHA256, ItemID: it.ID, Name: ev.Name, Mime: ev.Mime, Size: ev.Size})
 		}
-		return s.SetChiefNote(a.ItemID, "")
+		return nil
 
 	case "cli.done":
-		if r.Done == nil {
+		d := r.Done
+		if d == nil {
 			return nil
 		}
-		if _, ok, _ := s.GetItem(r.Done.ItemID); !ok {
+		var it store.Item
+		var ok bool
+		switch {
+		case d.ItemID != "":
+			it, ok, _ = s.ResolveItem(d.ItemID)
+		case d.Key != "":
+			if p := store.Slug(d.Project); p != "" {
+				it, ok = s.ActiveByKey("key:" + p + ":" + d.Key)
+			}
+			if !ok {
+				it, ok = s.ActiveByAgentKey(d.Key, sid, r.Machine)
+			}
+		}
+		// Only an item that still needs someone: an agent's "done" must never
+		// overwrite the human's dismissal or "not worth my time".
+		if !ok || !active(it.Status) {
 			return nil
 		}
-		return s.SetStatus(r.Done.ItemID, "done", firstNonEmpty(r.Done.Note, "resolved by the agent"), "")
+		return s.SetStatus(it.ID, "done", firstNonEmpty(d.Note, "resolved by the agent"), "")
 
 	case "SessionStart":
 		return s.PatchSession(sid, store.SessionPatch{State: store.Str("idle"), StartedAt: store.Int(at), EndedAt: store.Int(0)})
 
 	case "UserPromptSubmit":
-		if err := s.PatchSession(sid, store.SessionPatch{State: store.Str("busy"), WaitingFor: store.Str("")}); err != nil {
+		if err := s.PatchSession(sid, store.SessionPatch{State: store.Str("busy"), WaitingFor: store.Str(""), WaitingSince: store.Int(0)}); err != nil {
 			return err
 		}
 		if err := confirmReceipts(s, p.Prompt); err != nil {
@@ -214,37 +223,32 @@ func apply(s *store.Store, e store.RawEvent) error {
 		return s.PatchSession(sid, store.SessionPatch{PendingPermission: store.Str(describeTool(p.ToolName, p.ToolInput))})
 
 	case "Notification":
-		return notification(s, sid, p, base)
-
-	case "PermissionDenied":
-		it := base
-		cmd := describeTool(p.ToolName, p.ToolInput)
-		it.ID = ulid.ItemID()
-		it.Kind = "approval"
-		it.Source = SrcDenied
-		it.Title = "Auto mode refused: " + oneLine(cmd, 160)
-		it.Body = "Auto mode blocked this action" + reasonSuffix(p.Reason) + ". The agent may be waiting for your decision.\n\n" + cmd
-		it.DedupeKey = "perm:" + sid + ":" + hash(p.ToolName+string(p.ToolInput))
-		_, _, err := s.UpsertItem(it)
-		return err
+		return notification(s, sid, p, base, at)
 
 	case "StopFailure":
+		if err := s.PatchSession(sid, store.SessionPatch{State: store.Str("waiting"), WaitingFor: store.Str("error: " + p.Error)}); err != nil {
+			return err
+		}
+		// Only a failure no agent can recover from is the human's business:
+		// a usage limit or a flaky API call clears on its own.
+		if !criticalErrors[p.Error] {
+			return nil
+		}
 		it := base
 		it.ID = ulid.ItemID()
 		it.Kind = "health"
 		it.Source = SrcFailure
-		it.Blocking = criticalErrors[p.Error]
-		it.Title = failureTitle(p.Error)
+		it.Blocking = true
+		it.Urgency = "now"
+		it.SessionID = "" // one item per machine, not per session
+		it.Title = failureTitle(p.Error) + " on " + base.Machine
 		it.Body = strings.TrimSpace(firstNonEmpty(p.ErrorDetails, p.LastMessage))
-		it.DedupeKey = "stopfail:" + sid + ":" + p.Error
-		if err := s.PatchSession(sid, store.SessionPatch{State: store.Str("waiting"), WaitingFor: store.Str("error: " + p.Error)}); err != nil {
-			return err
-		}
+		it.DedupeKey = "stopfail:" + base.Machine + ":" + p.Error
 		_, _, err := s.UpsertItem(it)
 		return err
 
 	case "Stop":
-		patch := store.SessionPatch{State: store.Str("idle"), WaitingFor: store.Str("")}
+		patch := store.SessionPatch{State: store.Str("idle"), WaitingFor: store.Str(""), WaitingSince: store.Int(0)}
 		if p.LastMessage != "" {
 			patch.LastMessage = store.Str(clip(p.LastMessage, 4000))
 		}
@@ -254,10 +258,20 @@ func apply(s *store.Store, e store.RawEvent) error {
 		if err := confirmReceipts(s, p.LastMessage); err != nil {
 			return err
 		}
-		// A turn that finished means any earlier failure (a usage limit, an
-		// expired login) has cleared for this session.
-		_, err := s.ResolveBySession(sid, "the session continued", SrcNotification, SrcFailure)
-		return err
+		// A turn that finished means any earlier failure (an expired login, a
+		// billing hold) has cleared on this machine.
+		if _, err := s.ResolveBySession(sid, "the session continued", SrcNotification, SrcFailure); err != nil {
+			return err
+		}
+		if r.Machine != "" {
+			if _, err := s.ResolveKeyPrefix("stopfail:"+r.Machine+":", "a turn on "+r.Machine+" finished normally"); err != nil {
+				return err
+			}
+			if _, err := s.ResolveKeyPrefix("auth:"+r.Machine+":", "a turn on "+r.Machine+" finished normally"); err != nil {
+				return err
+			}
+		}
+		return nil
 
 	case "SessionEnd":
 		if err := s.PatchSession(sid, store.SessionPatch{State: store.Str("ended"), EndedAt: store.Int(at)}); err != nil {
@@ -266,29 +280,8 @@ func apply(s *store.Store, e store.RawEvent) error {
 		_, err := s.ResolveBySession(sid, "the session ended", SrcNotification)
 		return err
 
-	case "docket.nudge":
-		var n nudge
-		_ = json.Unmarshal(r.Payload, &n)
-		switch n.Outcome {
-		case "":
-			return s.PatchSession(sid, store.SessionPatch{AddNudge: true})
-		case "hit":
-			return s.PatchSession(sid, store.SessionPatch{AddNudgeHit: true})
-		case "miss":
-			// The agent was nudged and filed nothing: keep the sentence as a
-			// low-priority "maybe" so a real ask can't vanish silently.
-			it := base
-			it.ID = ulid.ItemID()
-			it.Kind = "ask"
-			it.Status = "maybe"
-			it.Source = SrcBackfill
-			it.Title = oneLine(n.Sentence, 200)
-			it.Quote = n.Sentence
-			it.DedupeKey = "nudge:" + sid + ":" + hash(n.Sentence)
-			_, _, err := s.UpsertItem(it)
-			return err
-		}
-		return nil
+	case "docket.nudge", "backfill.candidate", "PermissionDenied":
+		return nil // older versions guessed asks from chat text; ignored now
 
 	case "docket.receipt":
 		var rc struct {
@@ -322,30 +315,11 @@ func apply(s *store.Store, e store.RawEvent) error {
 			return s.JobDone(scope, j.Name, j.Note, j.Failed, at)
 		}
 
-	case "backfill.candidate":
-		var c candidate
-		_ = json.Unmarshal(r.Payload, &c)
-		if c.Sentence == "" {
-			return nil
-		}
-		it := base
-		it.ID = ulid.ItemID()
-		it.Kind = "ask"
-		it.Status = "maybe"
-		it.Source = SrcBackfill
-		it.Title = oneLine(c.Sentence, 200)
-		it.Quote = c.Sentence
-		it.DedupeKey = "backfill:" + sid + ":" + hash(c.Sentence)
-		if t := parseTS(c.At); t > 0 {
-			it.CreatedAt = t
-		}
-		_, _, err := s.UpsertItem(it)
-		return err
 	}
 	return nil
 }
 
-func fileItem(s *store.Store, r record.Record, base store.Item) error {
+func fileItem(s *store.Store, r record.Record, base store.Item, o Options) error {
 	if r.Item == nil || r.Item.ID == "" || strings.TrimSpace(r.Item.Title) == "" {
 		return nil
 	}
@@ -354,7 +328,7 @@ func fileItem(s *store.Store, r record.Record, base store.Item) error {
 	it.ID = in.ID
 	it.Kind = in.Kind
 	it.Source = SrcCLI
-	it.Title = clip(in.Title, 500)
+	it.Title = clip(oneLine(in.Title, 500), 500)
 	it.Body = clip(in.Body, 20000)
 	it.Options = in.Options
 	it.Recommend = in.Recommend
@@ -362,13 +336,40 @@ func fileItem(s *store.Store, r record.Record, base store.Item) error {
 	it.Blocks = in.Blocks
 	it.Physical = in.Physical
 	it.Due = in.Due
+	it.Component = clip(strings.TrimSpace(in.Component), 60)
+	it.Place = store.Slug(in.Place)
+	it.ExpiresAt = in.Expires
+	switch in.Urgency {
+	case "now", "soon", "normal":
+		it.Urgency = in.Urgency
+	}
+	explicit := store.Slug(in.Project)
+	it.Project = explicit
+	if it.Project == "" {
+		it.Project = projectFor(s, o, r.Lead, base.Machine, firstNonEmpty(in.Root, base.Cwd))
+	}
 	if in.Key != "" {
-		scope := firstNonEmpty(r.Lead, filepath.Base(base.Cwd), base.Machine)
-		it.DedupeKey = "key:" + scope + ":" + in.Key
+		it.DedupeKey = "key:" + it.Project + ":" + in.Key
+		// The human said items like this aren't worth their time: a re-file
+		// within the week is kept for the record but stays out of the queue.
+		if when, ok := s.RecentlyNoised(it.DedupeKey, time.Now().Add(-7*24*time.Hour).Unix()); ok {
+			it.Status = "dismissed"
+			it.Resolution = "suppressed: an item with this key was marked not worth the time on " + time.Unix(when, 0).Format("2006-01-02")
+		}
 	}
 	id, _, err := s.UpsertItem(it)
 	if err != nil {
 		return err
+	}
+	// Bookkeeping is best effort: a failure here must never stop ingest.
+	if id != in.ID {
+		_ = s.AddAlias(in.ID, id) // the agent was told in.ID
+	}
+	if explicit != "" {
+		_ = s.EnsureProject(explicit, clip(oneLine(in.NewProject, 200), 200))
+		if in.Root != "" {
+			_ = s.LearnDir(base.Machine, in.Root, explicit)
+		}
 	}
 	for _, ev := range in.Evidence {
 		if err := s.AddEvidence(store.Evidence{SHA256: ev.SHA256, ItemID: id, Name: ev.Name, Mime: ev.Mime, Size: ev.Size}); err != nil {
@@ -378,33 +379,47 @@ func fileItem(s *store.Store, r record.Record, base store.Item) error {
 	return nil
 }
 
-func notification(s *store.Store, sid string, p payload, base store.Item) error {
+// projectFor picks a project for an item that didn't name one (older
+// clients, the shim's fallback records): the lead's project, then the
+// deepest mapped folder, then a project named like the folder.
+func projectFor(s *store.Store, o Options, lead, machine, dir string) string {
+	if lead != "" && o.LeadProject != nil {
+		if p := o.LeadProject(lead); p != "" {
+			return p
+		}
+	}
+	if dirs, err := s.ProjectDirs(machine); err == nil {
+		if p := store.ProjectForDir(dirs, dir); p != "" {
+			return p
+		}
+	}
+	if b := store.Slug(filepath.Base(dir)); b != "" {
+		if _, ok := s.GetProject(b); ok {
+			return b
+		}
+	}
+	return store.Unsorted
+}
+
+func active(status string) bool {
+	return status == "maybe" || status == "open" || status == "snoozed" || status == "answered"
+}
+
+func notification(s *store.Store, sid string, p payload, base store.Item, at int64) error {
 	switch p.NotificationType {
-	case "idle_prompt":
-		return s.PatchSession(sid, store.SessionPatch{State: store.Str("waiting"), WaitingFor: store.Str("your input")})
-	case "permission_prompt", "agent_needs_input", "elicitation_dialog", "elicitation_url_dialog":
+	case "idle_prompt", "permission_prompt", "agent_needs_input", "elicitation_dialog", "elicitation_url_dialog":
 		what := "your input"
-		title := "Waiting for your input"
 		if p.NotificationType == "permission_prompt" {
 			what = "permission"
-			title = "Waiting for your permission"
 			if sess, ok, _ := s.GetSession(sid); ok && sess.PendingPermission != "" {
-				title += ": " + oneLine(sess.PendingPermission, 160)
+				what = "permission: " + oneLine(sess.PendingPermission, 160)
 			}
 		}
-		if err := s.PatchSession(sid, store.SessionPatch{State: store.Str("waiting"), WaitingFor: store.Str(what)}); err != nil {
-			return err
+		patch := store.SessionPatch{State: store.Str("waiting"), WaitingFor: store.Str(what)}
+		if sess, _, _ := s.GetSession(sid); sess.WaitingSince == 0 {
+			patch.WaitingSince = store.Int(at)
 		}
-		it := base
-		it.ID = ulid.ItemID()
-		it.Kind = "blocker"
-		it.Source = SrcNotification
-		it.Blocking = true
-		it.Title = title
-		it.Body = p.Message
-		it.DedupeKey = "notif:" + sid + ":" + p.NotificationType
-		_, _, err := s.UpsertItem(it)
-		return err
+		return s.PatchSession(sid, patch)
 	}
 	if strings.HasPrefix(p.NotificationType, "auth_") && strings.Contains(p.NotificationType, "fail") {
 		it := base
@@ -412,7 +427,8 @@ func notification(s *store.Store, sid string, p payload, base store.Item) error 
 		it.Kind = "health"
 		it.Source = SrcFailure
 		it.Blocking = true
-		it.Title = "Claude Code sign-in problem on " + base.Machine
+		it.Urgency = "now"
+		it.Title = "Claude Code is signed out on " + base.Machine
 		it.Body = p.Message
 		it.DedupeKey = "auth:" + base.Machine + ":" + p.NotificationType
 		_, _, err := s.UpsertItem(it)
@@ -463,23 +479,11 @@ func failureTitle(code string) string {
 	return "A turn failed: " + strings.ReplaceAll(code, "_", " ")
 }
 
-func reasonSuffix(r string) string {
-	if r = strings.TrimSpace(r); r == "" {
-		return ""
-	}
-	return " (" + oneLine(r, 200) + ")"
-}
-
 func parseTS(ts string) int64 {
 	if t, err := time.Parse(time.RFC3339Nano, ts); err == nil {
 		return t.Unix()
 	}
 	return time.Now().Unix()
-}
-
-func hash(s string) string {
-	h := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(h[:8])
 }
 
 func oneLine(s string, n int) string {

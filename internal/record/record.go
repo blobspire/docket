@@ -55,6 +55,16 @@ type Item struct {
 	Due       string     `json:"due,omitempty"`
 	Key       string     `json:"key,omitempty"`
 	Evidence  []Evidence `json:"evidence,omitempty"`
+
+	// Where it belongs and how soon it matters, chosen by the agent. Empty
+	// fields mean "not given": a re-file with the same key keeps the old value.
+	Project    string `json:"project,omitempty"`
+	NewProject string `json:"new_project,omitempty"` // one-line description when creating a project
+	Component  string `json:"component,omitempty"`
+	Place      string `json:"place,omitempty"`   // where the human must be to do it
+	Urgency    string `json:"urgency,omitempty"` // now | soon | normal
+	Expires    int64  `json:"expires,omitempty"` // unix; the item closes on its own after this
+	Root       string `json:"root,omitempty"`    // the filing folder's main repository root
 }
 
 type Evidence struct {
@@ -66,8 +76,10 @@ type Evidence struct {
 
 // Done marks a previously filed item resolved by the agent.
 type Done struct {
-	ItemID string `json:"item_id"`
-	Note   string `json:"note,omitempty"`
+	ItemID  string `json:"item_id,omitempty"`
+	Key     string `json:"key,omitempty"` // resolve by the --key it was filed with instead of its id
+	Project string `json:"project,omitempty"`
+	Note    string `json:"note,omitempty"`
 }
 
 // New starts a record for event with the fields every record shares.

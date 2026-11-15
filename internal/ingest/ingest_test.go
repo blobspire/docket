@@ -96,70 +96,53 @@ func TestFilingWithKeyUpdatesOneItem(t *testing.T) {
 	}
 }
 
-func TestPermissionPromptLifecycle(t *testing.T) {
+func TestPermissionPromptIsSessionStateOnly(t *testing.T) {
 	h := newHarness(t)
 	h.send(hookRec("SessionStart", "s1", map[string]any{"source": "startup"}))
 	h.send(hookRec("PermissionRequest", "s1", map[string]any{"tool_name": "Bash", "tool_input": map[string]any{"command": "git push origin main"}}))
 	h.send(hookRec("Notification", "s1", map[string]any{"notification_type": "permission_prompt", "message": "Claude needs your permission"}))
-	items := h.active()
-	if len(items) != 1 || items[0].Kind != "blocker" || items[0].Title != "Waiting for your permission: git push origin main" {
-		t.Fatalf("items = %+v", items)
+	if items := h.active(); len(items) != 0 {
+		t.Fatalf("a permission prompt became an item: %+v", items)
 	}
 	sess, _, _ := h.s.GetSession("s1")
-	if sess.State != "waiting" || sess.WaitingFor != "permission" {
+	if sess.State != "waiting" || sess.WaitingFor != "permission: git push origin main" || sess.WaitingSince == 0 {
 		t.Fatalf("session = %+v", sess)
 	}
-	// The human answered at the terminal; the turn finished.
 	h.send(hookRec("Stop", "s1", map[string]any{"last_assistant_message": "Pushed."}))
-	if n := len(h.active()); n != 0 {
-		t.Fatalf("permission item still open after the session continued")
-	}
 	sess, _, _ = h.s.GetSession("s1")
-	if sess.State != "idle" || sess.LastMessage != "Pushed." {
+	if sess.State != "idle" || sess.LastMessage != "Pushed." || sess.WaitingSince != 0 {
 		t.Fatalf("session = %+v", sess)
 	}
 }
 
-func TestPermissionDeniedIsAnApprovalThatStaysOpen(t *testing.T) {
+func TestPermissionDeniedFilesNothing(t *testing.T) {
 	h := newHarness(t)
-	in := map[string]any{"tool_name": "Bash", "tool_input": map[string]any{"command": "rm -rf build"}, "reason": "[Irreversible Local Destruction]"}
-	h.send(hookRec("PermissionDenied", "s1", in))
 	h.send(hookRec("PermissionDenied", "s1", map[string]any{"tool_name": "Bash", "tool_input": map[string]any{"command": "rm -rf build"}, "reason": "[Irreversible Local Destruction]"}))
-	h.send(hookRec("Stop", "s1", map[string]any{"last_assistant_message": "I couldn't clean the build directory."}))
-	items := h.active()
-	if len(items) != 1 || items[0].Kind != "approval" || items[0].MentionCount != 2 {
+	if items := h.active(); len(items) != 0 {
 		t.Fatalf("items = %+v", items)
 	}
-	if items[0].Title != "Auto mode refused: rm -rf build" {
-		t.Fatalf("title = %q", items[0].Title)
-	}
 }
 
-func TestLoginFailureIsCriticalHealth(t *testing.T) {
+func TestLoginFailureIsOneUrgentItemPerMachine(t *testing.T) {
 	h := newHarness(t)
 	h.send(hookRec("StopFailure", "s1", map[string]any{"error": "authentication_failed", "last_assistant_message": "API Error: 401"}))
+	h.send(hookRec("StopFailure", "s2", map[string]any{"error": "authentication_failed", "last_assistant_message": "API Error: 401"}))
 	items := h.active()
-	if len(items) != 1 || items[0].Kind != "health" || !items[0].Blocking {
+	if len(items) != 1 || items[0].Kind != "health" || !items[0].Blocking || items[0].Urgency != "now" || items[0].UrgentSince == 0 {
 		t.Fatalf("items = %+v", items)
+	}
+	// Any session on that machine finishing a turn means the login works again.
+	h.send(hookRec("Stop", "s3", map[string]any{"last_assistant_message": "Done."}))
+	if n := len(h.active()); n != 0 {
+		t.Fatalf("login failure still open after a turn finished on the machine")
 	}
 }
 
-func TestFailureClosesWhenATurnFinishes(t *testing.T) {
+func TestPassingFailuresFileNothing(t *testing.T) {
 	h := newHarness(t)
 	h.send(hookRec("StopFailure", "s1", map[string]any{"error": "rate_limit", "last_assistant_message": "You've hit your 5-hour limit"}))
-	h.send(hookRec("StopFailure", "s1", map[string]any{"error": "rate_limit", "last_assistant_message": "You've hit your 5-hour limit"}))
-	if items := h.active(); len(items) != 1 || items[0].Kind != "health" {
+	if items := h.active(); len(items) != 0 {
 		t.Fatalf("items = %+v", items)
-	}
-	// Another session's turn doesn't clear it.
-	h.send(hookRec("Stop", "s2", map[string]any{"last_assistant_message": "Done."}))
-	if n := len(h.active()); n != 1 {
-		t.Fatalf("another session's Stop closed the failure")
-	}
-	// The limit reset and this session finished a turn.
-	h.send(hookRec("Stop", "s1", map[string]any{"last_assistant_message": "Picked up where I left off."}))
-	if n := len(h.active()); n != 0 {
-		t.Fatalf("failure still open after the session finished a turn")
 	}
 }
 
@@ -183,19 +166,82 @@ func TestLegacyRawRecordsAreUnderstood(t *testing.T) {
 	if _, err := Process(h.s, 10); err != nil {
 		t.Fatal(err)
 	}
-	items := h.active()
-	if len(items) != 1 || items[0].SessionID != "s9" || items[0].Kind != "blocker" {
+	if sess, _, _ := h.s.GetSession("s9"); sess.State != "waiting" {
+		t.Fatalf("session = %+v", sess)
+	}
+}
+
+func TestOldScrapedRecordsAreIgnored(t *testing.T) {
+	h := newHarness(t)
+	b, _ := json.Marshal(map[string]string{"sentence": "You'll need to log in to the vendor portal.", "outcome": "miss"})
+	h.send(record.Record{Event: "docket.nudge", SessionID: "s1", Payload: b})
+	h.send(record.Record{Event: "backfill.candidate", SessionID: "s1", Payload: b})
+	if items := h.active(); len(items) != 0 {
 		t.Fatalf("items = %+v", items)
 	}
 }
 
-func TestNudgeMissBecomesMaybe(t *testing.T) {
+func TestProjectsKeysAndAliases(t *testing.T) {
 	h := newHarness(t)
-	b, _ := json.Marshal(map[string]string{"sentence": "You'll need to log in to the vendor portal.", "outcome": "miss"})
-	h.send(record.Record{Event: "docket.nudge", SessionID: "s1", Payload: b})
+	file := func(id, title string, it record.Item) {
+		it.ID, it.Kind, it.Title = id, "ask", title
+		h.send(record.Record{Event: "cli.file", SessionID: "s1", Cwd: "/w/robot/sub", Item: &it})
+	}
+	file("dk-00000001", "Which arm first?", record.Item{Project: "VLM Teacher", NewProject: "Robot learning", Root: "/w/robot", Key: "arm", Urgency: "now", Component: "FR5"})
 	items := h.active()
-	if len(items) != 1 || items[0].Status != "maybe" {
+	if len(items) != 1 || items[0].Project != "vlm-teacher" || items[0].Urgency != "now" || items[0].DedupeKey != "key:vlm-teacher:arm" {
 		t.Fatalf("items = %+v", items)
+	}
+	if p, ok := h.s.GetProject("vlm-teacher"); !ok || p.Description != "Robot learning" {
+		t.Fatalf("project = %+v %v", p, ok)
+	}
+	// A re-file without --urgency or --project keeps both, and its new id is an alias.
+	file("dk-00000002", "Which arm should be measured first?", record.Item{Key: "arm", Root: "/w/robot"})
+	it, _, _ := h.s.GetItem("dk-00000001")
+	if it.Urgency != "now" || it.Project != "vlm-teacher" || it.Title != "Which arm should be measured first?" || it.Component != "FR5" {
+		t.Fatalf("re-file changed what it shouldn't: %+v", it)
+	}
+	// The learned folder now places project-less filings from below it.
+	h.send(record.Record{Event: "cli.file", SessionID: "s2", Cwd: "/w/robot/worktrees/x", Item: &record.Item{ID: "dk-00000003", Kind: "issue", Title: "Guard bug"}})
+	if it, _, _ := h.s.GetItem("dk-00000003"); it.Project != "vlm-teacher" {
+		t.Fatalf("project = %q", it.Project)
+	}
+	// done with the id the agent was told after the re-file works.
+	h.send(record.Record{Event: "cli.done", SessionID: "s1", Done: &record.Done{ItemID: "dk-00000002"}})
+	if it, _, _ := h.s.GetItem("dk-00000001"); it.Status != "done" {
+		t.Fatalf("status = %s", it.Status)
+	}
+}
+
+func TestDoneByKeyAndNeverOverDismissal(t *testing.T) {
+	h := newHarness(t)
+	h.send(record.Record{Event: "cli.file", SessionID: "w1", Item: &record.Item{ID: "dk-0000000a", Kind: "issue", Title: "cw-live killed", Key: "cw-live", Project: "cwant", Urgency: "now"}})
+	h.send(record.Record{Event: "cli.done", SessionID: "w1", Done: &record.Done{Key: "cw-live", Project: "cwant", Note: "recovered"}})
+	if it, _, _ := h.s.GetItem("dk-0000000a"); it.Status != "done" {
+		t.Fatalf("done --key: status = %s", it.Status)
+	}
+	// Without a project, the same session's key still resolves.
+	h.send(record.Record{Event: "cli.file", SessionID: "w1", Item: &record.Item{ID: "dk-0000000b", Kind: "issue", Title: "cw-live killed", Key: "cw-live", Project: "cwant"}})
+	h.send(record.Record{Event: "cli.done", SessionID: "w1", Done: &record.Done{Key: "cw-live"}})
+	if it, _, _ := h.s.GetItem("dk-0000000b"); it.Status != "done" {
+		t.Fatalf("session fallback: status = %s", it.Status)
+	}
+	// An agent's done never overwrites the human's dismissal.
+	h.s.UpsertItem(store.Item{ID: "dk-0000000c", Kind: "ask", Title: "q", SessionID: "w1"})
+	h.s.SetStatusWith("dk-0000000c", "dismissed", "Not worth Cole's time", "noise", "too small")
+	h.send(record.Record{Event: "cli.done", SessionID: "w1", Done: &record.Done{ItemID: "dk-0000000c"}})
+	if it, _, _ := h.s.GetItem("dk-0000000c"); it.Status != "dismissed" {
+		t.Fatalf("status = %s", it.Status)
+	}
+}
+
+func TestNoisedKeyIsSuppressedForAWeek(t *testing.T) {
+	h := newHarness(t)
+	h.send(record.Record{Event: "cli.file", SessionID: "l1", Item: &record.Item{ID: "dk-0000000d", Kind: "fyi", Title: "Heartbeat ok", Key: "hb", Project: "cwant"}})
+	h.s.SetStatusWith("dk-0000000d", "dismissed", "Not worth Cole's time", "noise", "")
+	h.send(record.Record{Event: "cli.file", SessionID: "l1", Item: &record.Item{ID: "dk-0000000e", Kind: "fyi", Title: "Heartbeat ok", Key: "hb", Project: "cwant"}})
+	if items := h.active(); len(items) != 0 {
+		t.Fatalf("a re-file of a noised key reached the queue: %+v", items)
 	}
 }
 

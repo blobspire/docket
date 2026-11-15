@@ -87,7 +87,14 @@ CREATE TABLE IF NOT EXISTS items (
   answer TEXT NOT NULL DEFAULT '',
   answered_at INTEGER,
   pushed_at INTEGER,
-  chief_note TEXT NOT NULL DEFAULT ''
+  chief_note TEXT NOT NULL DEFAULT '',
+  project TEXT NOT NULL DEFAULT '',
+  component TEXT NOT NULL DEFAULT '',
+  place TEXT NOT NULL DEFAULT '',
+  urgency TEXT NOT NULL DEFAULT 'normal',
+  urgent_since INTEGER NOT NULL DEFAULT 0,
+  expires_at INTEGER NOT NULL DEFAULT 0,
+  pinned TEXT NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX IF NOT EXISTS items_active_dedupe ON items(dedupe_key)
   WHERE dedupe_key IS NOT NULL AND status IN ('maybe','open','snoozed','answered');
@@ -115,7 +122,9 @@ CREATE TABLE IF NOT EXISTS deliveries (
   sent_at INTEGER,
   confirmed_at INTEGER,
   attempts INTEGER NOT NULL DEFAULT 0,
-  error TEXT NOT NULL DEFAULT ''
+  error TEXT NOT NULL DEFAULT '',
+  live_only INTEGER NOT NULL DEFAULT 0,
+  quiet INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS deliveries_status ON deliveries(status);
 CREATE TABLE IF NOT EXISTS decisions (
@@ -182,6 +191,24 @@ CREATE TABLE IF NOT EXISTS rules (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS projects (
+  name TEXT PRIMARY KEY,
+  description TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  archived INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS project_dirs (
+  machine TEXT NOT NULL,
+  dir TEXT NOT NULL,
+  project TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (machine, dir)
+);
+CREATE TABLE IF NOT EXISTS item_aliases (
+  alias TEXT PRIMARY KEY,
+  item_id TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS kv (
   k TEXT PRIMARY KEY,
   v TEXT NOT NULL
@@ -227,6 +254,15 @@ var added = []struct{ table, column, ddl string }{
 	{"sessions", "waiting_since", "INTEGER NOT NULL DEFAULT 0"},
 	{"decisions", "context", "TEXT NOT NULL DEFAULT ''"},
 	{"items", "chief_note", "TEXT NOT NULL DEFAULT ''"},
+	{"items", "project", "TEXT NOT NULL DEFAULT ''"},
+	{"items", "component", "TEXT NOT NULL DEFAULT ''"},
+	{"items", "place", "TEXT NOT NULL DEFAULT ''"},
+	{"items", "urgency", "TEXT NOT NULL DEFAULT 'normal'"},
+	{"items", "urgent_since", "INTEGER NOT NULL DEFAULT 0"},
+	{"items", "expires_at", "INTEGER NOT NULL DEFAULT 0"},
+	{"items", "pinned", "TEXT NOT NULL DEFAULT ''"},
+	{"deliveries", "live_only", "INTEGER NOT NULL DEFAULT 0"},
+	{"deliveries", "quiet", "INTEGER NOT NULL DEFAULT 0"},
 }
 
 func migrate(db *sql.DB) error {
@@ -245,7 +281,9 @@ func migrate(db *sql.DB) error {
 		}
 		rows.Close()
 		if !have {
-			if _, err := db.Exec(`ALTER TABLE ` + a.table + ` ADD COLUMN ` + a.column + ` ` + a.ddl); err != nil {
+			// Another docket process (a laptop's `server receive` next to
+			// `serve`) may add the same column at the same moment.
+			if _, err := db.Exec(`ALTER TABLE ` + a.table + ` ADD COLUMN ` + a.column + ` ` + a.ddl); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 				return fmt.Errorf("add %s.%s: %w", a.table, a.column, err)
 			}
 		}
@@ -513,16 +551,14 @@ type Session struct {
 	HasPlugin         bool
 	Kind              string // interactive | bg | … (from the session registry)
 	WaitingSince      int64
-	Nudges            int
-	NudgeHits         int
 }
 
-const sessionCols = `id, COALESCE(machine,''), COALESCE(cwd,''), COALESCE(lead,''), COALESCE(name,''), COALESCE(tmux,''), COALESCE(bridge_id,''), COALESCE(pid,0), COALESCE(state,''), COALESCE(waiting_for,''), COALESCE(transcript_path,''), COALESCE(started_at,0), COALESCE(last_event_at,0), COALESCE(ended_at,0), COALESCE(pending_permission,''), COALESCE(last_message,''), has_plugin, kind, waiting_since, nudges, nudge_hits`
+const sessionCols = `id, COALESCE(machine,''), COALESCE(cwd,''), COALESCE(lead,''), COALESCE(name,''), COALESCE(tmux,''), COALESCE(bridge_id,''), COALESCE(pid,0), COALESCE(state,''), COALESCE(waiting_for,''), COALESCE(transcript_path,''), COALESCE(started_at,0), COALESCE(last_event_at,0), COALESCE(ended_at,0), COALESCE(pending_permission,''), COALESCE(last_message,''), has_plugin, kind, waiting_since`
 
 func scanSession(sc interface{ Scan(...any) error }) (Session, error) {
 	var x Session
 	var plugin int
-	err := sc.Scan(&x.ID, &x.Machine, &x.Cwd, &x.Lead, &x.Name, &x.Tmux, &x.BridgeID, &x.PID, &x.State, &x.WaitingFor, &x.TranscriptPath, &x.StartedAt, &x.LastEventAt, &x.EndedAt, &x.PendingPermission, &x.LastMessage, &plugin, &x.Kind, &x.WaitingSince, &x.Nudges, &x.NudgeHits)
+	err := sc.Scan(&x.ID, &x.Machine, &x.Cwd, &x.Lead, &x.Name, &x.Tmux, &x.BridgeID, &x.PID, &x.State, &x.WaitingFor, &x.TranscriptPath, &x.StartedAt, &x.LastEventAt, &x.EndedAt, &x.PendingPermission, &x.LastMessage, &plugin, &x.Kind, &x.WaitingSince)
 	x.HasPlugin = plugin != 0
 	return x, err
 }
@@ -541,7 +577,6 @@ type SessionPatch struct {
 	Machine, Cwd, Lead, Name, Tmux, BridgeID, State, WaitingFor, TranscriptPath, PendingPermission, LastMessage, Kind *string
 	PID, StartedAt, LastEventAt, EndedAt, WaitingSince                                                                *int64
 	HasPlugin                                                                                                         *bool
-	AddNudge, AddNudgeHit                                                                                             bool
 }
 
 func Str(s string) *string { return &s }
@@ -571,12 +606,6 @@ func (s *Store) PatchSession(id string, p SessionPatch) error {
 	}
 	if p.HasPlugin != nil {
 		add("has_plugin", boolInt(*p.HasPlugin))
-	}
-	if p.AddNudge {
-		sets = append(sets, "nudges=nudges+1")
-	}
-	if p.AddNudgeHit {
-		sets = append(sets, "nudge_hits=nudge_hits+1")
 	}
 	if len(sets) == 0 {
 		return nil
@@ -641,6 +670,13 @@ type Item struct {
 	AnsweredAt   int64
 	PushedAt     int64
 	ChiefNote    string
+	Project      string
+	Component    string
+	Place        string
+	Urgency      string // now | soon | normal
+	UrgentSince  int64  // when urgency last became "now"
+	ExpiresAt    int64  // the item closes on its own after this (0: never)
+	Pinned       string // comma-separated fields the human set by hand
 
 	// Ongoing marks an upsert that re-checks a standing condition (a session
 	// still waiting, a machine still down). It refreshes the item without
@@ -648,13 +684,13 @@ type Item struct {
 	Ongoing bool
 }
 
-const itemCols = `id, kind, status, title, body, options, recommend, blocking, blocks, physical, due, COALESCE(dedupe_key,''), source, machine, session_id, lead, cwd, quote, created_at, updated_at, last_seen_at, mention_count, COALESCE(snoozed_until,0), COALESCE(resolved_at,0), resolution, answer, COALESCE(answered_at,0), COALESCE(pushed_at,0), chief_note`
+const itemCols = `id, kind, status, title, body, options, recommend, blocking, blocks, physical, due, COALESCE(dedupe_key,''), source, machine, session_id, lead, cwd, quote, created_at, updated_at, last_seen_at, mention_count, COALESCE(snoozed_until,0), COALESCE(resolved_at,0), resolution, answer, COALESCE(answered_at,0), COALESCE(pushed_at,0), chief_note, project, component, place, urgency, urgent_since, expires_at, pinned`
 
 func scanItem(sc interface{ Scan(...any) error }) (Item, error) {
 	var it Item
 	var opts string
 	var blocking, physical int
-	err := sc.Scan(&it.ID, &it.Kind, &it.Status, &it.Title, &it.Body, &opts, &it.Recommend, &blocking, &it.Blocks, &physical, &it.Due, &it.DedupeKey, &it.Source, &it.Machine, &it.SessionID, &it.Lead, &it.Cwd, &it.Quote, &it.CreatedAt, &it.UpdatedAt, &it.LastSeenAt, &it.MentionCount, &it.SnoozedUntil, &it.ResolvedAt, &it.Resolution, &it.Answer, &it.AnsweredAt, &it.PushedAt, &it.ChiefNote)
+	err := sc.Scan(&it.ID, &it.Kind, &it.Status, &it.Title, &it.Body, &opts, &it.Recommend, &blocking, &it.Blocks, &physical, &it.Due, &it.DedupeKey, &it.Source, &it.Machine, &it.SessionID, &it.Lead, &it.Cwd, &it.Quote, &it.CreatedAt, &it.UpdatedAt, &it.LastSeenAt, &it.MentionCount, &it.SnoozedUntil, &it.ResolvedAt, &it.Resolution, &it.Answer, &it.AnsweredAt, &it.PushedAt, &it.ChiefNote, &it.Project, &it.Component, &it.Place, &it.Urgency, &it.UrgentSince, &it.ExpiresAt, &it.Pinned)
 	it.Blocking, it.Physical = blocking != 0, physical != 0
 	_ = json.Unmarshal([]byte(opts), &it.Options)
 	return it, err
@@ -670,6 +706,12 @@ func boolInt(b bool) int {
 // UpsertItem inserts it, or, when an active item already has the same
 // dedupe key, records another mention of that item instead. It returns the
 // stored item's id and whether it was newly created.
+//
+// On a key match only what the filer actually gave is changed (empty means
+// "keep"): an agent re-filing to add detail can't accidentally lower its
+// urgency. The project never changes on a re-file, fields the human set by
+// hand (Pinned) are never overwritten, and an ongoing watchdog re-check
+// never touches urgency.
 func (s *Store) UpsertItem(it Item) (string, bool, error) {
 	t := now()
 	if it.CreatedAt == 0 {
@@ -682,26 +724,63 @@ func (s *Store) UpsertItem(it Item) (string, bool, error) {
 		var id string
 		err := s.DB.QueryRow(`SELECT id FROM items WHERE dedupe_key=? AND status IN ('maybe','open','snoozed','answered')`, it.DedupeKey).Scan(&id)
 		if err == nil {
-			// Same thing again: count the mention and refresh the wording.
+			urg := it.Urgency
+			if it.Ongoing {
+				urg = ""
+			}
+			opts := ""
+			if len(it.Options) > 0 {
+				b, _ := json.Marshal(it.Options)
+				opts = string(b)
+			}
+			// SQLite evaluates every SET expression against the old row, so
+			// the urgency comparisons below see the previous value.
 			_, err = s.DB.Exec(`UPDATE items SET mention_count=CASE WHEN ? THEN 1 ELSE mention_count+1 END, last_seen_at=?, updated_at=?,
 				title=CASE WHEN ?<>'' THEN ? ELSE title END,
 				body=CASE WHEN ?<>'' THEN ? ELSE body END,
-				status=CASE WHEN status='maybe' AND ?='open' THEN 'open' ELSE status END
-				WHERE id=?`, boolInt(it.Ongoing), t, t, it.Title, it.Title, it.Body, it.Body, it.Status, id)
+				status=CASE WHEN status='maybe' AND ?='open' THEN 'open' ELSE status END,
+				component=CASE WHEN ?<>'' AND instr(pinned,'component')=0 THEN ? ELSE component END,
+				place=CASE WHEN ?<>'' AND instr(pinned,'place')=0 THEN ? ELSE place END,
+				due=CASE WHEN ?<>'' THEN ? ELSE due END,
+				recommend=CASE WHEN ?<>'' THEN ? ELSE recommend END,
+				options=CASE WHEN ?<>'' THEN ? ELSE options END,
+				blocking=CASE WHEN ? THEN 1 ELSE blocking END,
+				expires_at=CASE WHEN ?>0 THEN ? ELSE expires_at END,
+				urgent_since=CASE WHEN ?='now' AND urgency<>'now' AND instr(pinned,'urgency')=0 THEN ? ELSE urgent_since END,
+				pushed_at=CASE WHEN ?='now' AND urgency<>'now' AND instr(pinned,'urgency')=0 THEN NULL ELSE pushed_at END,
+				urgency=CASE WHEN ?<>'' AND instr(pinned,'urgency')=0 THEN ? ELSE urgency END
+				WHERE id=?`,
+				boolInt(it.Ongoing), t, t,
+				it.Title, it.Title, it.Body, it.Body, it.Status,
+				it.Component, it.Component, it.Place, it.Place, it.Due, it.Due, it.Recommend, it.Recommend, opts, opts,
+				boolInt(it.Blocking), it.ExpiresAt, it.ExpiresAt,
+				urg, t, urg, urg, urg, id)
 			return id, false, err
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return "", false, err
 		}
 	}
+	if it.Urgency == "" {
+		it.Urgency = "normal"
+	}
+	if it.Urgency == "now" && it.UrgentSince == 0 {
+		it.UrgentSince = t
+	}
 	opts, _ := json.Marshal(nonNil(it.Options))
 	var dedupe any
 	if it.DedupeKey != "" {
 		dedupe = it.DedupeKey
 	}
-	res, err := s.DB.Exec(`INSERT OR IGNORE INTO items(id, kind, status, title, body, options, recommend, blocking, blocks, physical, due, dedupe_key, source, machine, session_id, lead, cwd, quote, created_at, updated_at, last_seen_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		it.ID, it.Kind, it.Status, it.Title, it.Body, string(opts), it.Recommend, boolInt(it.Blocking), it.Blocks, boolInt(it.Physical), it.Due, dedupe, it.Source, it.Machine, it.SessionID, it.Lead, it.Cwd, it.Quote, it.CreatedAt, t, t)
+	var resolvedAt any
+	if it.Status == "dismissed" || it.Status == "done" {
+		resolvedAt = t
+	}
+	res, err := s.DB.Exec(`INSERT OR IGNORE INTO items(id, kind, status, title, body, options, recommend, blocking, blocks, physical, due, dedupe_key, source, machine, session_id, lead, cwd, quote, created_at, updated_at, last_seen_at,
+		project, component, place, urgency, urgent_since, expires_at, resolution, resolved_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?)`,
+		it.ID, it.Kind, it.Status, it.Title, it.Body, string(opts), it.Recommend, boolInt(it.Blocking), it.Blocks, boolInt(it.Physical), it.Due, dedupe, it.Source, it.Machine, it.SessionID, it.Lead, it.Cwd, it.Quote, it.CreatedAt, t, t,
+		it.Project, it.Component, it.Place, it.Urgency, it.UrgentSince, it.ExpiresAt, it.Resolution, resolvedAt)
 	if err != nil {
 		return "", false, err
 	}
@@ -753,7 +832,7 @@ func (s *Store) Items(statuses ...string) ([]Item, error) {
 
 // RecentlyClosed lists items resolved since `since`.
 func (s *Store) RecentlyClosed(since int64, limit int) ([]Item, error) {
-	rows, err := s.DB.Query(`SELECT `+itemCols+` FROM items WHERE status IN ('done','dismissed','delivered') AND COALESCE(resolved_at, answered_at, updated_at) >= ? ORDER BY updated_at DESC LIMIT ?`, since, limit)
+	rows, err := s.DB.Query(`SELECT `+itemCols+` FROM items WHERE status IN ('done','dismissed','delivered','expired') AND COALESCE(resolved_at, answered_at, updated_at) >= ? ORDER BY updated_at DESC LIMIT ?`, since, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -771,6 +850,15 @@ func (s *Store) RecentlyClosed(since int64, limit int) ([]Item, error) {
 
 // SetStatus changes an item's status, logging the change so it can be undone.
 func (s *Store) SetStatus(id, status, resolution, action string) error {
+	return s.SetStatusWith(id, status, resolution, action, "")
+}
+
+// Closed statuses: the item no longer needs anyone.
+func closedStatus(st string) bool { return st == "done" || st == "dismissed" || st == "expired" }
+
+// SetStatusWith is SetStatus that also keeps a note in the decision log (the
+// human's reason for a "not worth my time", for example).
+func (s *Store) SetStatusWith(id, status, resolution, action, answer string) error {
 	tx, err := s.DB.Begin()
 	if err != nil {
 		return err
@@ -782,7 +870,7 @@ func (s *Store) SetStatus(id, status, resolution, action string) error {
 	}
 	t := now()
 	var resolvedAt any
-	if status == "done" || status == "dismissed" {
+	if closedStatus(status) {
 		resolvedAt = t
 	}
 	if _, err := tx.Exec(`UPDATE items SET status=?, resolution=CASE WHEN ?<>'' THEN ? ELSE resolution END, resolved_at=?, updated_at=?, snoozed_until=CASE WHEN ?='snoozed' THEN snoozed_until ELSE NULL END WHERE id=?`,
@@ -793,7 +881,7 @@ func (s *Store) SetStatus(id, status, resolution, action string) error {
 		return err
 	}
 	if action != "" {
-		if _, err := tx.Exec(`INSERT INTO decisions(item_id, ts, action, prev_status) VALUES (?,?,?,?)`, id, t, action, prev); err != nil {
+		if _, err := tx.Exec(`INSERT INTO decisions(item_id, ts, action, answer, prev_status) VALUES (?,?,?,?,?)`, id, t, action, answer, prev); err != nil {
 			return err
 		}
 	}
@@ -852,8 +940,8 @@ func (s *Store) Undo(id string) (string, error) {
 	}
 	defer tx.Rollback()
 	var did int64
-	var action, prev string
-	err = tx.QueryRow(`SELECT id, action, prev_status FROM decisions WHERE item_id=? ORDER BY id DESC LIMIT 1`, id).Scan(&did, &action, &prev)
+	var action, prev, answer string
+	err = tx.QueryRow(`SELECT id, action, prev_status, answer FROM decisions WHERE item_id=? ORDER BY id DESC LIMIT 1`, id).Scan(&did, &action, &prev, &answer)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", errors.New("nothing to undo")
 	}
@@ -864,6 +952,15 @@ func (s *Store) Undo(id string) (string, error) {
 	tx.QueryRow(`SELECT COUNT(*) FROM deliveries WHERE item_id=? AND status IN ('sent','confirmed')`, id).Scan(&undeliverable)
 	if undeliverable > 0 && (action == "answer" || action == "approve" || action == "decline" || action == "choose") {
 		return "", errors.New("the answer has already been delivered to the agent; send a correction instead")
+	}
+	if action == "reclassify" {
+		if err := undoReclassify(tx, id, answer); err != nil {
+			return "", err
+		}
+		if _, err := tx.Exec(`DELETE FROM decisions WHERE id=?`, did); err != nil {
+			return "", err
+		}
+		return action, tx.Commit()
 	}
 	if _, err := tx.Exec(`UPDATE items SET status=?, resolved_at=NULL, snoozed_until=NULL, updated_at=?, answer=CASE WHEN ? IN ('answer','approve','decline','choose') THEN '' ELSE answer END WHERE id=?`, prev, now(), action, id); err != nil {
 		return "", err
@@ -965,19 +1062,32 @@ type Delivery struct {
 	ID, ItemID, Machine, SessionID, Text, Nonce, Method, Status, Error string
 	CreatedAt, SentAt, ConfirmedAt                                     int64
 	Attempts                                                           int
+	// LiveOnly deliveries go to a running session's mailbox or nowhere: never
+	// pasted into tmux, never resuming an ended session.
+	LiveOnly bool
+	// Quiet deliveries never wake an idle session (see mailbox.Delivery).
+	Quiet bool
 }
 
-const deliveryCols = `id, item_id, machine, session_id, text, nonce, method, status, error, created_at, COALESCE(sent_at,0), COALESCE(confirmed_at,0), attempts`
+const deliveryCols = `id, item_id, machine, session_id, text, nonce, method, status, error, created_at, COALESCE(sent_at,0), COALESCE(confirmed_at,0), attempts, live_only, quiet`
 
 func scanDelivery(sc interface{ Scan(...any) error }) (Delivery, error) {
 	var d Delivery
-	err := sc.Scan(&d.ID, &d.ItemID, &d.Machine, &d.SessionID, &d.Text, &d.Nonce, &d.Method, &d.Status, &d.Error, &d.CreatedAt, &d.SentAt, &d.ConfirmedAt, &d.Attempts)
+	var live, quiet int
+	err := sc.Scan(&d.ID, &d.ItemID, &d.Machine, &d.SessionID, &d.Text, &d.Nonce, &d.Method, &d.Status, &d.Error, &d.CreatedAt, &d.SentAt, &d.ConfirmedAt, &d.Attempts, &live, &quiet)
+	d.LiveOnly, d.Quiet = live != 0, quiet != 0
 	return d, err
 }
 
 func (s *Store) AddDelivery(d Delivery) error {
-	_, err := s.DB.Exec(`INSERT INTO deliveries(id, item_id, machine, session_id, text, nonce, status, created_at) VALUES (?,?,?,?,?,?,'pending',?)`,
-		d.ID, d.ItemID, d.Machine, d.SessionID, d.Text, d.Nonce, now())
+	_, err := s.DB.Exec(`INSERT INTO deliveries(id, item_id, machine, session_id, text, nonce, status, created_at, live_only, quiet) VALUES (?,?,?,?,?,?,'pending',?,?,?)`,
+		d.ID, d.ItemID, d.Machine, d.SessionID, d.Text, d.Nonce, now(), boolInt(d.LiveOnly), boolInt(d.Quiet))
+	return err
+}
+
+// DeliveryDropped gives up on a live-only delivery whose session is gone.
+func (s *Store) DeliveryDropped(id, why string) error {
+	_, err := s.DB.Exec(`UPDATE deliveries SET status='dropped', error=? WHERE id=?`, why, id)
 	return err
 }
 
