@@ -210,7 +210,8 @@ CREATE TABLE IF NOT EXISTS item_aliases (
   alias TEXT PRIMARY KEY,
   item_id TEXT NOT NULL,
   machine TEXT NOT NULL DEFAULT '',
-  created_at INTEGER NOT NULL DEFAULT 0
+  created_at INTEGER NOT NULL DEFAULT 0,
+  session_id TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS kv (
   k TEXT PRIMARY KEY,
@@ -268,7 +269,9 @@ func upgradeItems(db *sql.DB) {
 	t := now()
 	db.Exec(`UPDATE items SET status='dismissed', resolution='closed by the upgrade: guessed from chat or raised by a hook', resolved_at=?, updated_at=?
 		WHERE status IN ('maybe','open','snoozed') AND (status='maybe' OR source IN ('backfill','notification','permission_denied')
-		OR (source='stop_failure' AND session_id<>''))`, t, t)
+		OR (dedupe_key LIKE 'stopfail:%' AND session_id<>''))`, t, t)
+	// Folder mappings from before voting were explicit choices: give them weight.
+	db.Exec(`UPDATE project_dirs SET votes=3 WHERE votes<3`)
 	db.Exec(`INSERT OR REPLACE INTO kv(k, v) VALUES ('upgrade:agents-file', ?)`, fmt.Sprint(t))
 }
 
@@ -290,6 +293,7 @@ var added = []struct{ table, column, ddl string }{
 	{"deliveries", "quiet", "INTEGER NOT NULL DEFAULT 0"},
 	{"item_aliases", "machine", "TEXT NOT NULL DEFAULT ''"},
 	{"item_aliases", "created_at", "INTEGER NOT NULL DEFAULT 0"},
+	{"item_aliases", "session_id", "TEXT NOT NULL DEFAULT ''"},
 	{"project_dirs", "votes", "INTEGER NOT NULL DEFAULT 1"},
 }
 
@@ -772,13 +776,14 @@ func (s *Store) UpsertItem(it Item) (string, bool, error) {
 			urg := it.Urgency
 			// SQLite evaluates every SET expression against the old row, so
 			// the urgency comparisons below see the previous value. Raising
-			// an item to "now" also brings it back from snoozed or answered:
-			// the filer is saying it can't wait.
+			// an item to "now" also brings it back from snoozed: the filer is
+			// saying it can't wait. (An answered item stays answered: its
+			// answer is already on the way.)
 			const toNow = `?='now' AND urgency<>'now' AND instr(pinned,'urgency')=0`
 			_, err = s.DB.Exec(`UPDATE items SET mention_count=mention_count+1, last_seen_at=?, updated_at=?,
 				title=CASE WHEN ?<>'' THEN ? ELSE title END,
 				body=CASE WHEN ?<>'' THEN ? ELSE body END,
-				status=CASE WHEN status='maybe' AND ?='open' THEN 'open' WHEN `+toNow+` AND status IN ('snoozed','answered') THEN 'open' ELSE status END,
+				status=CASE WHEN status='maybe' AND ?='open' THEN 'open' WHEN `+toNow+` AND status='snoozed' THEN 'open' ELSE status END,
 				snoozed_until=CASE WHEN `+toNow+` THEN NULL ELSE snoozed_until END,
 				kind=CASE WHEN ?<>'' THEN ? ELSE kind END,
 				component=CASE WHEN ?<>'' AND instr(pinned,'component')=0 THEN ? ELSE component END,
@@ -791,8 +796,8 @@ func (s *Store) UpsertItem(it Item) (string, bool, error) {
 				physical=CASE WHEN ? THEN 1 ELSE physical END,
 				expires_at=CASE WHEN ?>0 THEN ? ELSE expires_at END,
 				session_id=CASE WHEN ?<>'' THEN ? ELSE session_id END,
-				machine=CASE WHEN ?<>'' THEN ? ELSE machine END,
-				cwd=CASE WHEN ?<>'' THEN ? ELSE cwd END,
+				machine=CASE WHEN ?<>'' AND ?<>'' THEN ? ELSE machine END,
+				cwd=CASE WHEN ?<>'' AND ?<>'' THEN ? ELSE cwd END,
 				urgent_since=CASE WHEN `+toNow+` THEN ? ELSE urgent_since END,
 				pushed_at=CASE WHEN `+toNow+` THEN NULL ELSE pushed_at END,
 				urgency=CASE WHEN ?<>'' AND instr(pinned,'urgency')=0 THEN ? ELSE urgency END
@@ -804,7 +809,7 @@ func (s *Store) UpsertItem(it Item) (string, bool, error) {
 				it.Kind, it.Kind,
 				it.Component, it.Component, it.Place, it.Place, it.Due, it.Due, it.Recommend, it.Recommend, opts, opts,
 				it.Blocks, it.Blocks, boolInt(it.Blocking), boolInt(it.Physical), it.ExpiresAt, it.ExpiresAt,
-				it.SessionID, it.SessionID, it.Machine, it.Machine, it.Cwd, it.Cwd,
+				it.SessionID, it.SessionID, it.SessionID, it.Machine, it.Machine, it.SessionID, it.Cwd, it.Cwd,
 				urg, t, urg, urg, urg, id)
 			return id, false, err
 		}
@@ -919,6 +924,11 @@ func (s *Store) SetStatusWith(id, status, resolution, action, answer string) err
 	if err := tx.QueryRow(`SELECT status FROM items WHERE id=?`, id).Scan(&prev); err != nil {
 		return err
 	}
+	// Checked inside the transaction (one writer at a time), so two clicks
+	// racing can't both close it.
+	if closedStatus(status) && closedStatus(prev) && action != "" {
+		return errors.New("this item is already closed")
+	}
 	t := now()
 	var resolvedAt any
 	if closedStatus(status) {
@@ -1026,7 +1036,12 @@ func (s *Store) Undo(id string) (string, error) {
 		}
 		return "", err
 	}
-	tx.Exec(`DELETE FROM deliveries WHERE item_id=? AND status='pending'`, id)
+	// Withdraw what the undone action queued (an answer, a "marked done", a
+	// noise note); never another action's delivery, like an answer still on
+	// its way when an expiry is undone.
+	if action == "answer" || action == "approve" || action == "decline" || action == "choose" || action == "done" || action == "noise" {
+		tx.Exec(`DELETE FROM deliveries WHERE item_id=? AND status='pending'`, id)
+	}
 	if _, err := tx.Exec(`DELETE FROM decisions WHERE id=?`, did); err != nil {
 		return "", err
 	}

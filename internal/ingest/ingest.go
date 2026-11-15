@@ -196,14 +196,18 @@ func apply(s *store.Store, e store.RawEvent, o Options) error {
 		case d.ItemID != "":
 			it, ok, _ = s.ResolveItem(d.ItemID)
 		case d.Key != "":
+			k := keyNorm(d.Key)
 			if p := store.Slug(d.Project); p != "" {
-				it, ok = s.ActiveByKey("key:" + p + ":" + d.Key)
+				it, ok = s.ActiveByKey("key:" + p + ":" + k)
+			}
+			if !ok {
+				it, ok = s.MovedByKey(k, sid, r.Machine)
 			}
 			// The project resolved now may differ from the one at filing time
 			// (a folder default vs. an explicit --project then); only an
 			// explicitly named project rules out looking elsewhere.
 			if !ok && !d.Explicit {
-				it, ok = s.ActiveByAgentKey(d.Key, sid, r.Machine)
+				it, ok = s.ActiveByAgentKey(k, sid, r.Machine)
 			}
 		}
 		// Only an item that still needs someone: an agent's "done" must never
@@ -370,17 +374,26 @@ func fileItem(s *store.Store, r record.Record, base store.Item, o Options) error
 		it.Project = projectFor(s, o, r.Lead, base.Machine, firstNonEmpty(in.Root, base.Cwd))
 	}
 	if in.Key != "" {
-		it.DedupeKey = "key:" + it.Project + ":" + clip(in.Key, 200)
-		// An item filed with this key before keys were scoped by project
-		// (an older docket, or while it had no project) becomes this one.
-		if _, ok := s.ActiveByKey(it.DedupeKey); !ok && it.Project != store.Unsorted {
-			s.AdoptLegacyKey(clip(in.Key, 200), base.Machine, it.Project, it.DedupeKey)
+		k := keyNorm(in.Key)
+		it.DedupeKey = "key:" + it.Project + ":" + k
+		if _, ok := s.ActiveByKey(it.DedupeKey); !ok {
+			if moved, ok := s.MovedByKey(k, it.SessionID, base.Machine); ok {
+				// The human moved this item to another project: still the same one.
+				it.DedupeKey = moved.DedupeKey
+			} else if it.Project != store.Unsorted {
+				// An item filed with this key before keys were scoped by project
+				// (an older docket, or while it had no project) becomes this one.
+				s.AdoptLegacyKey(k, base.Machine, it.SessionID, in.Root, it.Project, it.DedupeKey)
+			}
 		}
 		// The human said items like this aren't worth their time: a re-file
 		// within the week is kept for the record but stays out of the queue.
 		if when, ok := s.RecentlyNoised(it.DedupeKey, time.Now().Add(-7*24*time.Hour).Unix()); ok {
+			// Kept for the record, outside the key (so it can't merge into, or
+			// reopen, anything).
 			it.Status = "dismissed"
-			it.Resolution = "suppressed: an item with this key was marked not worth the time on " + time.Unix(when, 0).Format("2006-01-02")
+			it.Resolution = "suppressed: --key " + in.Key + " was marked not worth the time on " + time.Unix(when, 0).Format("2006-01-02")
+			it.DedupeKey = ""
 		}
 	}
 	id, _, err := s.UpsertItem(it)
@@ -389,14 +402,14 @@ func fileItem(s *store.Store, r record.Record, base store.Item, o Options) error
 	}
 	// Bookkeeping is best effort: a failure here must never stop ingest.
 	if id != in.ID {
-		_ = s.AddAlias(in.ID, id, base.Machine) // the agent was told in.ID
+		_ = s.AddAlias(in.ID, id, base.Machine, it.SessionID) // the agent was told in.ID
 	}
 	if explicit != "" {
 		_ = s.EnsureProject(explicit, clip(oneLine(in.NewProject, 200), 200))
-		// Only a project the agent named teaches the folder's default; one
-		// the CLI filled in from the folder or the lead would just echo it.
-		if in.Root != "" && in.Explicit {
-			_ = s.LearnDir(base.Machine, in.Root, explicit)
+		// A project the agent named votes for the folder's default; one the
+		// CLI filled in from that default confirms it.
+		if in.Root != "" {
+			_ = s.LearnDir(base.Machine, in.Root, explicit, in.Explicit)
 		}
 	}
 	for _, ev := range in.Evidence {
@@ -429,6 +442,19 @@ func projectFor(s *store.Store, o Options, lead, machine, dir string) string {
 	return store.Unsorted
 }
 
+// keyNorm is the stored form of an agent's --key: at most 200 bytes, cut on
+// a character boundary, the same on every path that looks a key up.
+func keyNorm(k string) string {
+	if len(k) <= 200 {
+		return k
+	}
+	cut := 200
+	for cut > 0 && (k[cut]&0xC0) == 0x80 {
+		cut--
+	}
+	return k[:cut]
+}
+
 func active(status string) bool {
 	return status == "maybe" || status == "open" || status == "snoozed" || status == "answered"
 }
@@ -436,7 +462,11 @@ func active(status string) bool {
 func notification(s *store.Store, sid string, p payload, base store.Item, at int64, o Options) error {
 	switch p.NotificationType {
 	case "idle_prompt":
-		// Finished and waiting for the next prompt: idle, not stuck.
+		// Finished and waiting for the next prompt: idle, not stuck. But a
+		// dialog that's still open (a permission or a question) stays the wait.
+		if sess, _, _ := s.GetSession(sid); sess.State == "waiting" && sess.WaitingFor != "" {
+			return nil
+		}
 		return s.PatchSession(sid, store.SessionPatch{State: store.Str("idle"), WaitingFor: store.Str(""), WaitingSince: store.Int(0)})
 	case "permission_prompt", "agent_needs_input", "elicitation_dialog", "elicitation_url_dialog":
 		what := "your input"
@@ -462,6 +492,7 @@ func notification(s *store.Store, sid string, p payload, base store.Item, at int
 		it.Blocking = true
 		it.Urgency = "now"
 		it.Project = o.system()
+		it.SessionID = "" // one item per machine, not per session
 		it.Title = "Claude Code is signed out on " + base.Machine
 		it.Body = p.Message
 		it.DedupeKey = "auth:" + base.Machine + ":" + p.NotificationType

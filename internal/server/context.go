@@ -81,7 +81,7 @@ func (s *Server) ContextFor(machine string) ([]byte, error) {
 	// Day-aligned, so the window doesn't change the file every second.
 	day := s.cfg.Now().Truncate(24 * time.Hour).Add(-48 * time.Hour).Unix()
 	c.Seen = s.st.SeenIDs(machine, day)
-	c.Timezone = s.cfg.loc.String()
+	c.Timezone = s.cfg.Timezone // "" when unset: the machine's own zone is as good a guess
 	// "As of" is the last change the file reflects, not the time it was made,
 	// so an unchanged queue gives byte-identical files.
 	var lastDir int64

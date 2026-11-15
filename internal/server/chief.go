@@ -171,9 +171,8 @@ func (s *Server) pushes(ctx context.Context) {
 	}
 	if err := s.push(ctx, title, body, click, prioUrgent, "rotating_light"); err != nil {
 		s.log.Printf("push: %v", err)
-		// A timeout usually means ntfy took the message but answered late:
-		// count it as sent rather than buzz the phone again every tick.
-		if !errors.Is(err, context.DeadlineExceeded) {
+		// Sent but confirmed late counts as sent; anything else retries.
+		if !errors.Is(err, errSentLate) {
 			return
 		}
 	}
@@ -195,10 +194,13 @@ func pushBody(it store.Item) string {
 }
 
 var (
-	mdListMark = regexp.MustCompile(`^(?:[-*+]|\d+[.)])\s+`)
+	mdQuote    = regexp.MustCompile(`^(?:>\s?)+`)
+	mdListMark = regexp.MustCompile(`^(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?`)
 	mdHeading  = regexp.MustCompile(`^#{1,6}\s+`)
+	mdImage    = regexp.MustCompile(`!\[([^\]]*)\]\([^)]*\)`)
 	mdLink     = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
-	mdEmph     = regexp.MustCompile("\\*\\*|__|`")
+	mdEmph     = regexp.MustCompile("\\*\\*|__|~~|`|(^|\\s)[*_]|[*_]($|\\s|[.,;:!?])")
+	mdHTML     = regexp.MustCompile(`^<[!/a-zA-Z]`)
 )
 
 // firstLine is the first line of prose in a markdown body, without its
@@ -211,13 +213,16 @@ func firstLine(body string) string {
 			inFence = !inFence
 			continue
 		}
-		if inFence || t == "" || strings.HasPrefix(t, "|") || strings.Trim(t, "-=*_ ") == "" {
+		indented := strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t")
+		if inFence || indented || t == "" || strings.HasPrefix(t, "|") || strings.Trim(t, "-=*_ ") == "" || mdHTML.MatchString(t) {
 			continue
 		}
+		t = mdQuote.ReplaceAllString(t, "")
 		t = mdHeading.ReplaceAllString(t, "")
 		t = mdListMark.ReplaceAllString(t, "")
+		t = mdImage.ReplaceAllString(t, "$1")
 		t = mdLink.ReplaceAllString(t, "$1")
-		t = strings.TrimSpace(mdEmph.ReplaceAllString(t, ""))
+		t = strings.TrimSpace(mdEmph.ReplaceAllString(t, "$1$2"))
 		if t == "" {
 			continue
 		}
@@ -268,7 +273,7 @@ func (s *Server) watchMachines() {
 }
 
 func (s *Server) resolveKey(key, why string) int {
-	items, _ := s.st.Items("open", "snoozed")
+	items, _ := s.st.Items("open", "snoozed", "answered")
 	n := 0
 	for _, it := range items {
 		if it.DedupeKey == key {

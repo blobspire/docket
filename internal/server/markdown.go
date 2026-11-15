@@ -44,6 +44,23 @@ func (safeLinks) Transform(doc *ast.Document, reader text.Reader, _ parser.Conte
 		return ast.WalkContinue, nil
 	})
 	for _, img := range images {
+		// Inside a link already: keep just its text, so the outer link works.
+		inLink := false
+		for p := img.Parent(); p != nil; p = p.Parent() {
+			if _, ok := p.(*ast.Link); ok {
+				inLink = true
+			}
+		}
+		if inLink {
+			parent := img.Parent()
+			for c := img.FirstChild(); c != nil; {
+				next := c.NextSibling()
+				parent.InsertBefore(parent, img, c)
+				c = next
+			}
+			parent.RemoveChild(parent, img)
+			continue
+		}
 		link := ast.NewLink()
 		link.Destination, link.Title = img.Destination, img.Title
 		for c := img.FirstChild(); c != nil; {

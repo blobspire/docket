@@ -17,19 +17,19 @@
   const single = $("[data-detail]"); // an item's own page
 
   // ---- rows: selection and expansion ------------------------------------------
-  // Rows you can see (not inside a collapsed "Snoozed" section).
-  const rows = () => $$(".row[data-id]").filter((r) => r.offsetParent !== null);
-  // Nothing is selected until you move with j/k or click a row: a one-key
-  // action must never land on a row you can't see is selected.
+  // Rows you can see. A collapsed "Snoozed" section may hide its rows without
+  // taking them out of layout (content-visibility), so check for it too.
+  const rows = () => $$(".row[data-id]").filter((r) => r.offsetParent !== null && !r.closest("details:not([open])"));
+  // Nothing is selected until you move with j/k or click a row on this page:
+  // a one-key action must never land on a row you can't see is selected.
   let sel = -1;
-  const kbd = () => { document.body.classList.add("kbd"); store.set("docket.kbd", "1"); };
+  const kbd = () => document.body.classList.add("kbd");
   const select = (i, scroll = true) => {
     const rs = rows();
     if (!rs.length) return;
     sel = Math.max(0, Math.min(i, rs.length - 1));
     rs.forEach((r, j) => r.classList.toggle("sel", j === sel));
     if (scroll) rs[sel].scrollIntoView({ block: "nearest" });
-    store.set("docket.sel:" + location.search, rs[sel].dataset.id);
   };
   const current = () => (sel >= 0 && rows()[sel]) || (single && $(".row[data-id]")) || null;
   const setOpen = (row, open) => {
@@ -44,38 +44,48 @@
   const toggle = (row) => setOpen(row, !row.classList.contains("open"));
   const anyOpen = () => !single && rows().some((r) => r.classList.contains("open"));
 
-  // After a reload, restore a keyboard selection (by id, so it survives
-  // reordering) and show it.
-  if (!single && store.get("docket.kbd")) {
-    const last = store.get("docket.sel:" + location.search);
-    const li = rows().findIndex((r) => r.dataset.id === last);
-    if (li >= 0) { document.body.classList.add("kbd"); select(li, false); }
-  }
-
   // ---- actions --------------------------------------------------------------------
+  // The page this one should show after an action, without a stale ?err=.
+  const fresh = (href) => {
+    const u = new URL(href, location.origin);
+    u.searchParams.delete("err");
+    return u.pathname + u.search;
+  };
+  let inFlight = false; // one action at a time: a double click sends it once
   async function act(id, action, extra = {}) {
+    if (inFlight) return false;
+    inFlight = true;
     const body = new URLSearchParams({ action, ...extra });
-    const res = await fetch(`/item/${encodeURIComponent(id)}/act`, { method: "POST", body, headers: { "X-Requested-With": "fetch" } });
+    let res;
+    try {
+      res = await fetch(`/item/${encodeURIComponent(id)}/act`, { method: "POST", body, headers: { "X-Requested-With": "fetch" } });
+    } catch (_) {
+      inFlight = false;
+      toast(`Couldn't ${action}: the server didn't answer`);
+      return false;
+    }
     if (!res.ok) {
+      inFlight = false;
       const j = await res.json().catch(() => ({}));
       toast(j.error || `Couldn't ${action}`);
       return false;
     }
     store.set("docket.last", id);
-    const msg = { approve: "Approved, sent to the agent", decline: "Declined, sent to the agent", choose: "Sent to the agent",
+    const msg = { approve: "Approved", decline: "Declined", choose: "Sent to the agent", answer: "Sent to the agent",
       done: "Marked done", dismiss: "Dismissed", noise: "Closed. The agents will hear why.", snooze: "Snoozed",
-      reclassify: "Moved", undo: "Undone" }[action];
+      reclassify: "Moved", undo: "Undone", reopen: "Reopened" }[action];
     toast(msg || "Done");
     // From an item's own page, go back to the dashboard it came from (fresh,
     // not a cached copy that still shows the item).
     const back = () => {
       try {
         const r = new URL(document.referrer);
-        if (r.origin === location.origin && !r.pathname.startsWith("/item/")) return (location.href = r.pathname + r.search);
+        if (r.origin === location.origin && !r.pathname.startsWith("/item/")) return (location.href = fresh(r.href));
       } catch (_) {}
       location.href = "/";
     };
-    setTimeout(() => (single && !["undo", "reclassify"].includes(action) ? back() : location.reload()), 450);
+    const stay = ["undo", "reclassify", "reopen"].includes(action);
+    setTimeout(() => (single && !stay ? back() : (location.href = fresh(location.href))), 450);
     return true;
   }
 
@@ -141,16 +151,26 @@
     act(f.closest("[data-id]").dataset.id, "noise", { text: $("textarea", f).value.trim() });
   });
 
-  document.addEventListener("change", (e) => {
-    const s = e.target.closest("select[data-reclassify]");
-    if (!s) return;
+  // Moving an item: a pick with the mouse acts at once; from the keyboard
+  // (where typing a letter changes a closed select), only Enter does.
+  const reclassify = (s) => {
     const field = s.dataset.reclassify;
     let value = s.value;
     if (value === "__new") {
       value = (prompt("New project name (letters, digits, dashes):") || "").trim();
-      if (!value) { location.reload(); return; }
+      if (!value) { location.href = fresh(location.href); return; }
     }
     act(s.closest("[data-id]").dataset.id, "reclassify", { [field]: value });
+  };
+  document.addEventListener("pointerdown", (e) => {
+    const s = e.target.closest("select[data-reclassify]");
+    if (s) s.dataset.pointer = "1";
+  });
+  document.addEventListener("change", (e) => {
+    const s = e.target.closest("select[data-reclassify]");
+    if (!s) return;
+    if (s.dataset.pointer) { delete s.dataset.pointer; return reclassify(s); }
+    toast("Press Enter to move it");
   });
 
   // ---- keyboard ---------------------------------------------------------------------
@@ -176,6 +196,11 @@
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing && document.activeElement.closest(".noise-form")) {
         e.preventDefault();
         document.activeElement.form.requestSubmit();
+      }
+      // Enter on a project or urgency select moves the item.
+      if (e.key === "Enter" && document.activeElement.matches("select[data-reclassify]")) {
+        e.preventDefault();
+        reclassify(document.activeElement);
       }
       return;
     }
@@ -208,19 +233,23 @@
       if ((k === "Enter" || k === " ") && current()) { e.preventDefault(); return toggle(current()); }
     }
     const el = current();
+    // u undoes the last action, selected row or not (on the Done page, the
+    // selected row's own Undo).
+    if (k === "u") {
+      const own = el && $("button[data-act=undo]", el);
+      if (own) return own.click();
+      const id = store.get("docket.last");
+      return id ? act(id, "undo") : toast("Nothing to undo");
+    }
     if (!el) return;
     if (k === "o" && el.dataset.session) return window.open(el.dataset.session, "_blank", "noopener");
     if (k === "a") {
       e.preventDefault();
       setOpen(el, true);
       const t = $(".answer-form textarea", el);
-      return t ? t.focus() : toast("This item has no agent session to answer");
+      return t ? t.focus() : toast(el.dataset.closed ? "This item is closed" : "This item has no agent session to answer");
     }
     if (k === "w") { e.preventDefault(); return $("[data-noise]", el) && openNoise(el); }
-    if (k === "u") {
-      const id = store.get("docket.last");
-      return id ? act(id, "undo") : toast("Nothing to undo");
-    }
     // Only a row that offers Snooze can be snoozed (never a closed item).
     if ((k === "s" || k === "S") && $("button[data-act=snooze]", el)) return act(el.dataset.id, "snooze", { until: k === "S" ? "tomorrow" : "hour" });
     const btn = $$("button[data-key]", el).find((b) => b.dataset.key === k);

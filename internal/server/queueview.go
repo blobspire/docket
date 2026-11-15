@@ -69,12 +69,25 @@ func (q *queueView) BandRow(r Ranked) itemView {
 }
 
 func (q *queueView) Row(r Ranked) itemView {
-	return itemView{Ranked: r, Projects: q.Projects, Back: q.Link(q.Project, q.Place, q.Mode == "now"), HideComponent: q.Grouped && r.Urgency != "now"}
+	return itemView{Ranked: r, Projects: withProject(q.Projects, projectName(r.Item)), Back: q.Link(q.Project, q.Place, q.Mode == "now"), HideComponent: q.Grouped && r.Urgency != "now"}
+}
+
+// withProject makes sure an item's own project is among the choices, so its
+// "move to" select shows where it is (an archived or unsorted one included).
+func withProject(names []string, p string) []string {
+	for _, n := range names {
+		if n == p {
+			return names
+		}
+	}
+	out := append(append([]string(nil), names...), p)
+	sort.Slice(out, func(i, j int) bool { return projectLess(out[i], out[j]) })
+	return out
 }
 
 // Open is a row shown expanded on its own page.
 func (q *queueView) Open(r *Ranked) itemView {
-	return itemView{Ranked: *r, Expanded: true, Projects: q.Projects, Back: "/item/" + r.ID}
+	return itemView{Ranked: *r, Expanded: true, Projects: withProject(q.Projects, projectName(r.Item)), Back: "/item/" + r.ID}
 }
 
 // Link builds a dashboard URL that keeps the current sort.

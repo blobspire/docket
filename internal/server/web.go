@@ -30,6 +30,7 @@ var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 	"closed":      func(status string) bool { return status == "done" || status == "dismissed" || status == "expired" },
 	"projectName": projectName,
 	"mdShort":     renderMarkdownShort,
+	"trimDot":     func(s string) string { return strings.TrimRight(strings.TrimSpace(s), ".") },
 	"recommended": recommended,
 	"project":     project,
 	"kindName":    kindName,
@@ -329,8 +330,11 @@ func (s *Server) editProject(w http.ResponseWriter, r *http.Request) {
 		if p, ok := s.st.GetProject(target); !ok {
 			err = s.st.EnsureProject(target, desc)
 		} else {
-			if desc == "" || target != name {
-				desc = firstNonEmptyStr(desc, p.Description)
+			// The form starts with this project's description; on a merge,
+			// that untouched text mustn't replace the target's own. On a plain
+			// save it's stored as typed (empty clears it).
+			if target != name && desc == strings.TrimSpace(r.FormValue("old_description")) {
+				desc = p.Description
 			}
 			err = s.st.SetProject(target, desc, archived)
 		}

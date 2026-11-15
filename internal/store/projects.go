@@ -133,11 +133,12 @@ func (s *Store) RenameProject(from, to string) error {
 		moved = append(moved, r)
 	}
 	rows.Close()
-	oldPrefix, newPrefix := "key:"+from+":", "key:"+to+":"
 	for _, r := range moved {
+		// Every moved key joins the new project's scope (legacy keys from an
+		// older docket included), so later filings there find it.
 		key := r.key
-		if strings.HasPrefix(key, oldPrefix) {
-			key = newPrefix + strings.TrimPrefix(key, oldPrefix)
+		if k := AgentKey(key); k != "" {
+			key = "key:" + to + ":" + k
 		}
 		if key != r.key && activeStatus(r.status) {
 			var other string
@@ -178,10 +179,12 @@ type ProjectDir struct {
 	Machine, Dir, Project string
 }
 
-// LearnDir counts an explicit choice of project for a folder. The mapping
-// follows the majority: a different project wins it only after outvoting
-// the current one, so one errand filed from a repo doesn't re-home it.
-func (s *Store) LearnDir(machine, dir, project string) error {
+// LearnDir counts a filing's project for its folder. The mapping follows
+// the majority: an explicit choice of the current project, or a filing that
+// used it as the default, adds a vote; an explicit different choice takes
+// one away and wins the folder only when none are left. So one errand filed
+// from a repo doesn't re-home it.
+func (s *Store) LearnDir(machine, dir, project string, explicit bool) error {
 	dir = strings.TrimRight(dir, "/")
 	if machine == "" || dir == "" || project == "" || project == Unsorted {
 		return nil
@@ -192,10 +195,14 @@ func (s *Store) LearnDir(machine, dir, project string) error {
 	err := s.DB.QueryRow(`SELECT project, votes FROM project_dirs WHERE machine=? AND dir=?`, machine, dir).Scan(&cur, &votes)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
+		if !explicit {
+			return nil // a default from elsewhere (a lead, a parent folder) teaches nothing
+		}
 		_, err = s.DB.Exec(`INSERT OR IGNORE INTO project_dirs(machine, dir, project, updated_at, votes) VALUES (?,?,?,?,1)`, machine, dir, project, t)
 	case err != nil:
 	case cur == project:
 		_, err = s.DB.Exec(`UPDATE project_dirs SET votes=MIN(votes+1, 20) WHERE machine=? AND dir=?`, machine, dir)
+	case !explicit:
 	case votes <= 1:
 		_, err = s.DB.Exec(`UPDATE project_dirs SET project=?, votes=1, updated_at=? WHERE machine=? AND dir=?`, project, t, machine, dir)
 	default:
@@ -250,20 +257,24 @@ func ProjectForDir(dirs []ProjectDir, cwd string) string {
 
 // ---- aliases and lookups --------------------------------------------------------
 
-// AddAlias records that alias (an id an agent on machine was told) means itemID.
-func (s *Store) AddAlias(alias, itemID, machine string) error {
+// AddAlias records that alias (an id an agent session on machine was told)
+// means itemID.
+func (s *Store) AddAlias(alias, itemID, machine, session string) error {
 	if alias == "" || alias == itemID {
 		return nil
 	}
-	_, err := s.DB.Exec(`INSERT OR IGNORE INTO item_aliases(alias, item_id, machine, created_at) VALUES (?,?,?,?)`, alias, itemID, machine, now())
+	_, err := s.DB.Exec(`INSERT OR IGNORE INTO item_aliases(alias, item_id, machine, created_at, session_id) VALUES (?,?,?,?,?)`, alias, itemID, machine, now(), session)
 	return err
 }
 
-// LatestAlias is the id most recently told to an agent for this item, when
-// that differs from the item's own id ("" otherwise).
-func (s *Store) LatestAlias(itemID string) string {
+// LatestAlias is the id this session was most recently told for the item,
+// when that differs from the item's own id ("" otherwise).
+func (s *Store) LatestAlias(itemID, session string) string {
+	if session == "" {
+		return ""
+	}
 	var a string
-	s.DB.QueryRow(`SELECT alias FROM item_aliases WHERE item_id=? ORDER BY rowid DESC LIMIT 1`, itemID).Scan(&a)
+	s.DB.QueryRow(`SELECT alias FROM item_aliases WHERE item_id=? AND session_id=? ORDER BY rowid DESC LIMIT 1`, itemID, session).Scan(&a)
 	return a
 }
 
@@ -306,8 +317,17 @@ func AgentKey(dedupe string) string {
 // ResolveItem finds an item by id or by an alias of it.
 func (s *Store) ResolveItem(id string) (Item, bool, error) {
 	it, ok, err := s.GetItem(id)
-	if ok || err != nil {
+	if err != nil {
 		return it, ok, err
+	}
+	if ok {
+		// Closed by a project merge: the agent means the item it merged into.
+		if it.Status == "done" && strings.HasPrefix(it.Resolution, "merged into ") {
+			if into, ok2, _ := s.GetItem(strings.TrimPrefix(it.Resolution, "merged into ")); ok2 {
+				return into, true, nil
+			}
+		}
+		return it, true, nil
 	}
 	var real string
 	if s.DB.QueryRow(`SELECT item_id FROM item_aliases WHERE alias=?`, id).Scan(&real) != nil {
@@ -395,6 +415,9 @@ func (s *Store) Reclassify(id, project, urgency string) error {
 		return err
 	}
 	prev.Key = key
+	if (project == "" || project == prev.Project) && (urgency == "" || urgency == prev.Urgency) {
+		return nil // nothing to move; nothing to undo later
+	}
 	pins := map[string]bool{}
 	for _, p := range strings.Split(prev.Pinned, ",") {
 		if p != "" {
@@ -406,11 +429,8 @@ func (s *Store) Reclassify(id, project, urgency string) error {
 		if _, err := tx.Exec(`UPDATE items SET project=? WHERE id=?`, project, id); err != nil {
 			return err
 		}
-		// Keep its key in the new project's scope, so the agent's re-file
-		// (which now resolves to the new project) finds it.
-		if k := AgentKey(key); k != "" {
-			tx.Exec(`UPDATE OR IGNORE items SET dedupe_key=? WHERE id=?`, "key:"+project+":"+k, id)
-		}
+		// The key stays as filed, so the agent's next filing (still in its
+		// own project) finds the item; MovedByKey covers one in the new one.
 		pins["project"] = true
 	}
 	if urgency != "" && urgency != prev.Urgency {
@@ -538,17 +558,21 @@ func (s *Store) RecentNoise(limit int, agentOnly bool) ([]Noise, error) {
 // AdoptLegacyKey finds an active item on machine filed with --key k before
 // keys were scoped by project (or while it had no project), and moves it
 // under key, so the next filing updates it instead of adding a duplicate.
-func (s *Store) AdoptLegacyKey(k, machine, project, key string) bool {
-	rows, err := s.DB.Query(`SELECT id, COALESCE(dedupe_key,'') FROM items WHERE machine=? AND project IN ('', ?) AND dedupe_key LIKE 'key:%'
+// Only one filed by the same session or from the same repository counts:
+// another repo's unsorted item with the same key is a different thing.
+func (s *Store) AdoptLegacyKey(k, machine, session, root, project, key string) bool {
+	rows, err := s.DB.Query(`SELECT id, COALESCE(dedupe_key,''), session_id, cwd FROM items WHERE machine=? AND project IN ('', ?) AND dedupe_key LIKE 'key:%'
 		AND status IN ('maybe','open','snoozed','answered') ORDER BY created_at DESC`, machine, Unsorted)
 	if err != nil {
 		return false
 	}
+	root = strings.TrimRight(root, "/")
 	var id string
 	for rows.Next() {
-		var cand, dk string
-		rows.Scan(&cand, &dk)
-		if AgentKey(dk) == k {
+		var cand, dk, sess, cwd string
+		rows.Scan(&cand, &dk, &sess, &cwd)
+		sameRepo := root != "" && (cwd == root || strings.HasPrefix(cwd, root+"/"))
+		if AgentKey(dk) == k && ((session != "" && sess == session) || sameRepo) {
 			id = cand
 			break
 		}
@@ -559,4 +583,29 @@ func (s *Store) AdoptLegacyKey(k, machine, project, key string) bool {
 	}
 	_, err = s.DB.Exec(`UPDATE OR IGNORE items SET project=?, dedupe_key=?, updated_at=? WHERE id=?`, project, key, now(), id)
 	return err == nil
+}
+
+// MovedByKey finds an active item filed with --key k by this session (or
+// from this machine) that the human has since moved to another project, so
+// a filing or done with that key still reaches it.
+func (s *Store) MovedByKey(k, session, machine string) (Item, bool) {
+	for _, q := range []struct{ col, val string }{{"session_id", session}, {"machine", machine}} {
+		if q.val == "" {
+			continue
+		}
+		rows, err := s.DB.Query(`SELECT `+itemCols+` FROM items WHERE dedupe_key LIKE 'key:%' AND instr(pinned,'project')>0 AND `+q.col+`=?
+			AND status IN ('maybe','open','snoozed','answered') ORDER BY created_at DESC`, q.val)
+		if err != nil {
+			return Item{}, false
+		}
+		for rows.Next() {
+			it, err := scanItem(rows)
+			if err == nil && AgentKey(it.DedupeKey) == k {
+				rows.Close()
+				return it, true
+			}
+		}
+		rows.Close()
+	}
+	return Item{}, false
 }

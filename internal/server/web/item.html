@@ -21,7 +21,6 @@
   {{end}}
 
   {{with .One.Answer}}<p class="recommend"><b>Your answer:</b> {{.}}</p>{{end}}
-  {{with .One.Resolution}}<p class="muted">{{.}}</p>{{end}}
   {{range .Delivery}}<p class="muted small">Delivery {{.Status}}{{with .Method}} via {{.}}{{end}}{{if .ConfirmedAt}}, received {{clock .ConfirmedAt}}{{end}}{{with .Error}}. {{.}}{{end}}</p>{{end}}
 
   {{with .Session}}{{if .ID}}

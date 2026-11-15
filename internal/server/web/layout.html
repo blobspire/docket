@@ -84,7 +84,7 @@
 {{end}}
 
 {{define "row"}}{{$it := .Item}}
-<li class="row u-{{.Urgency}}{{if .Expanded}} open{{end}}{{if .Stale}} stale{{end}}" data-id="{{.ID}}" data-href="/item/{{.ID}}"{{with .Session.BridgeID}} data-session="{{rcURL .}}"{{end}}>
+<li class="row u-{{.Urgency}}{{if .Expanded}} open{{end}}{{if .Stale}} stale{{end}}" data-id="{{.ID}}" data-href="/item/{{.ID}}"{{with .Session.BridgeID}} data-session="{{rcURL .}}"{{end}}{{if closed .Status}} data-closed="1"{{end}}>
   <div class="row-head" role="button" tabindex="-1" aria-expanded="{{if .Expanded}}true{{else}}false{{end}}">
     <span class="kind k-{{kindClass .Kind}}">{{kindName .Kind}}</span>
     <div class="row-text">
@@ -107,9 +107,9 @@
     {{if .Blocks}}<p class="blocks"><b>Blocks:</b> {{.Blocks}}</p>{{end}}
     {{with .Body}}<div class="prose">{{if $.Expanded}}{{md .}}{{else}}{{mdShort . $.ID}}{{end}}</div>{{end}}
     {{if .Physical}}<p class="warn">Physical action: it can't be approved from here. Do it in person, then mark it done.</p>{{end}}
-    {{if closed .Status}}<p class="muted small">{{.Status}}{{with .Resolution}}: {{.}}{{end}}. Undo it from the Done page to act on it again.</p>
+    {{if closed .Status}}<div class="closed-note"><span class="muted small">Closed ({{.Status}}){{with .Resolution}}: {{trimDot .}}{{end}}.</span> <button data-act="reopen" class="small">Reopen</button></div>
     {{else}}
-    {{if ne .Status "answered"}}<div class="actions">{{template "actions" $it}}</div>{{end}}
+    {{if and (ne .Status "answered") (ne .Status "delivered")}}<div class="actions">{{template "actions" $it}}</div>{{end}}
     <form class="noise-form" hidden>
       <label>Why didn't this need you? <span class="muted">Optional. It goes to the agent and shapes what every agent files.</span>
       <textarea name="text" rows="2" placeholder="e.g. Post-merge reports don't need me; only send results I asked for."></textarea></label>

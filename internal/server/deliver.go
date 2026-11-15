@@ -47,6 +47,9 @@ func (s *Server) Decide(id string, a Action) error {
 	// follow-up answer.
 	switch it.Status {
 	case "done", "dismissed", "expired":
+		if a.Kind == "reopen" {
+			return s.st.SetStatus(id, "open", "", "reopen")
+		}
 		if a.Kind != "undo" && a.Kind != "reclassify" {
 			return errors.New("this item is already closed; undo it from the Done page to act on it again")
 		}
@@ -79,10 +82,15 @@ func (s *Server) Decide(id string, a Action) error {
 		return s.noise(it, strings.TrimSpace(a.Text))
 	case "snooze":
 		return s.st.Snooze(id, a.Until.Unix())
+	case "reopen":
+		return errors.New("this item is still open")
 	case "reclassify":
 		p, u := store.Slug(a.Project), a.Urgency
 		if _, ok := urgencyRank[u]; u != "" && !ok {
 			return errors.New("urgency must be now, soon or normal")
+		}
+		if a.Project != "" && (p == "" || p == store.Unsorted) {
+			return fmt.Errorf("%q isn't a usable project name: use letters, digits and dashes", a.Project)
 		}
 		if p != "" {
 			s.st.EnsureProject(p, "")
@@ -223,7 +231,7 @@ func (s *Server) queue(it store.Item, text string) error {
 		text += " This does not authorize any physical or robot motion."
 	}
 	// A re-filed item keeps its first id; say which id this agent was told.
-	if a := s.st.LatestAlias(it.ID); a != "" {
+	if a := s.st.LatestAlias(it.ID, it.SessionID); a != "" {
 		text = "(this is the item you filed as " + a + ") " + text
 	}
 	d := store.Delivery{ID: ulid.New(time.Now()), ItemID: it.ID, Machine: it.Machine, SessionID: it.SessionID, Nonce: nonce,

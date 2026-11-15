@@ -131,6 +131,8 @@ body.kbd .row.sel::after { content: ""; position: absolute; inset: 0; box-shadow
 .m-soon { color: var(--soon); font-weight: 650; }
 .m-comp { color: var(--fg2); }
 .m-paused { color: var(--accent); font-weight: 600; }
+.m-place, .m-comp, .error { overflow-wrap: anywhere; }
+.closed-note { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .due-overdue { color: var(--now); font-weight: 650; }
 .due-today { color: var(--now); font-weight: 600; }
 .due-soon { color: var(--soon); font-weight: 600; }
