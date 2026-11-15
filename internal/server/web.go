@@ -27,6 +27,9 @@ var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 	"dueState":    dueState,
 	"dueLabel":    dueLabel,
 	"list":        func(v ...string) []string { return v },
+	"closed":      func(status string) bool { return status == "done" || status == "dismissed" || status == "expired" },
+	"projectName": projectName,
+	"mdShort":     renderMarkdownShort,
 	"recommended": recommended,
 	"project":     project,
 	"kindName":    kindName,
@@ -131,9 +134,12 @@ func dueLabel(due string) string {
 	if err != nil {
 		return due
 	}
+	// Count calendar days in UTC, so a DST change (a 23- or 25-hour day)
+	// doesn't make tomorrow read as today.
 	now := time.Now()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
-	switch days := int(t.Sub(today).Hours() / 24); {
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	day := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+	switch days := int(day.Sub(today).Hours() / 24); {
 	case days == 0:
 		return "today"
 	case days == 1:
@@ -304,26 +310,37 @@ func (s *Server) pageItem(w http.ResponseWriter, r *http.Request) {
 func (s *Server) editProject(w http.ResponseWriter, r *http.Request) {
 	name := store.Slug(r.PathValue("name"))
 	r.ParseForm()
-	back := "/?p=" + url.QueryEscape(name)
+	desc := strings.TrimSpace(r.FormValue("description"))
+	archived := r.FormValue("archived") != ""
+	target := name
 	var err error
-	switch to := store.Slug(r.FormValue("rename")); {
+	rename := strings.TrimSpace(r.FormValue("rename"))
+	switch to := store.Slug(rename); {
+	case rename != "" && to == "":
+		err = fmt.Errorf("%q isn't a usable project name: use letters, digits and dashes", rename)
 	case to != "" && to != name:
 		if err = s.st.RenameProject(name, to); err == nil {
-			back = "/?p=" + url.QueryEscape(to)
-		}
-	default:
-		if _, ok := s.st.GetProject(name); !ok {
-			err = s.st.EnsureProject(name, "")
-		}
-		if err == nil {
-			err = s.st.SetProject(name, strings.TrimSpace(r.FormValue("description")), r.FormValue("archived") != "")
-		}
-		if r.FormValue("archived") != "" {
-			back = "/"
+			target = to
 		}
 	}
+	// The description and archive box apply to the project as it's now named
+	// (after a merge, the existing description is kept unless one was typed).
+	if err == nil && target != store.Unsorted {
+		if p, ok := s.st.GetProject(target); !ok {
+			err = s.st.EnsureProject(target, desc)
+		} else {
+			if desc == "" || target != name {
+				desc = firstNonEmptyStr(desc, p.Description)
+			}
+			err = s.st.SetProject(target, desc, archived)
+		}
+	}
+	back := "/?p=" + url.QueryEscape(target)
+	if archived && err == nil {
+		back = "/"
+	}
 	if err != nil {
-		back += "&err=" + url.QueryEscape(err.Error())
+		back = "/?p=" + url.QueryEscape(name) + "&err=" + url.QueryEscape(err.Error())
 	}
 	s.st.Bump()
 	http.Redirect(w, r, back, http.StatusSeeOther)
@@ -515,7 +532,7 @@ func (s *Server) act(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	back := r.FormValue("back")
-	if back == "" || !strings.HasPrefix(back, "/") || strings.HasPrefix(back, "//") {
+	if !localPath(back) {
 		back = "/"
 	}
 	if err != nil {
@@ -569,4 +586,20 @@ func recommended(option, rec string) bool {
 		return true
 	}
 	return false
+}
+
+// localPath reports whether a redirect target stays on this site: a path
+// like /?p=x, never //host, /\host or anything with control characters,
+// which browsers may treat as another host.
+func localPath(p string) bool {
+	if !strings.HasPrefix(p, "/") || strings.HasPrefix(p, "//") || strings.ContainsAny(p, "\\") {
+		return false
+	}
+	for _, r := range p {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	u, err := url.Parse(p)
+	return err == nil && u.Host == "" && u.Scheme == ""
 }

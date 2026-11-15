@@ -222,8 +222,12 @@ CREATE TABLE IF NOT EXISTS kv (
 var Active = []string{"maybe", "open", "snoozed", "answered"}
 
 type Store struct {
-	DB *sql.DB
+	DB   *sql.DB
+	path string
 }
+
+// Path is the database file.
+func (s *Store) Path() string { return s.path }
 
 // Open opens (creating if needed) the database at path.
 func Open(path string) (*Store, error) {
@@ -247,7 +251,25 @@ func Open(path string) (*Store, error) {
 	if indexed == 0 && items > 0 {
 		db.Exec(`INSERT INTO items_fts(id, title, body, quote, answer, resolution) SELECT id, title, body, quote, answer, resolution FROM items`)
 	}
-	return &Store{DB: db}, nil
+	upgradeItems(db)
+	return &Store{DB: db, path: path}, nil
+}
+
+// upgradeItems runs once on a database from before agents became the only
+// filers: it closes what the old version guessed from chat text or raised
+// for every permission prompt, and per-session login failures (now one per
+// machine). Best effort: a failure leaves them for the human to dismiss.
+func upgradeItems(db *sql.DB) {
+	var done string
+	db.QueryRow(`SELECT v FROM kv WHERE k='upgrade:agents-file'`).Scan(&done)
+	if done != "" {
+		return
+	}
+	t := now()
+	db.Exec(`UPDATE items SET status='dismissed', resolution='closed by the upgrade: guessed from chat or raised by a hook', resolved_at=?, updated_at=?
+		WHERE status IN ('maybe','open','snoozed') AND (status='maybe' OR source IN ('backfill','notification','permission_denied')
+		OR (source='stop_failure' AND session_id<>''))`, t, t)
+	db.Exec(`INSERT OR REPLACE INTO kv(k, v) VALUES ('upgrade:agents-file', ?)`, fmt.Sprint(t))
 }
 
 // columns added after a table was first created; migrate adds any that an
@@ -995,8 +1017,10 @@ func (s *Store) Undo(id string) (string, error) {
 	if prev == "snoozed" {
 		prev = "open"
 	}
+	// Back to an open state: the closing note no longer describes it.
 	if _, err := tx.Exec(`UPDATE items SET status=?, resolved_at=NULL, snoozed_until=NULL, updated_at=?, answer=CASE WHEN ? IN ('answer','approve','decline','choose') THEN '' ELSE answer END,
-		expires_at=CASE WHEN ?='expire' THEN 0 ELSE expires_at END WHERE id=?`, prev, now(), action, action, id); err != nil {
+		expires_at=CASE WHEN ?='expire' THEN 0 ELSE expires_at END,
+		resolution=CASE WHEN ? IN ('open','answered','maybe') THEN '' ELSE resolution END WHERE id=?`, prev, now(), action, action, prev, id); err != nil {
 		if isDedupeConflict(err) {
 			return "", errors.New("can't undo: an open item with the same key has been filed since")
 		}

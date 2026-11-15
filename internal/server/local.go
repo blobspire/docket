@@ -135,7 +135,7 @@ func writeRules(body []byte) error {
 	}
 	p := filepath.Join(config.Home(), "rules.md")
 	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, body, 0o644); err != nil {
+	if err := os.WriteFile(tmp, body, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, p)

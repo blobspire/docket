@@ -128,12 +128,15 @@ func (s *Server) buildQueue(query url.Values) (*queueView, error) {
 	}
 
 	// Sidebar: every known project (muted when empty), then places in use.
-	projects, _ := s.st.Projects(false)
+	// An archived project drops out of the sidebar once it has nothing open.
+	projects, _ := s.st.Projects(true)
 	desc := map[string]string{}
 	count, hasNow, placeCount := map[string]int{}, map[string]bool{}, map[string]int{}
 	for _, p := range projects {
 		desc[p.Name] = p.Description
-		count[p.Name] += 0
+		if !p.Archived {
+			count[p.Name] += 0
+		}
 	}
 	for _, r := range active {
 		p := projectName(r.Item)

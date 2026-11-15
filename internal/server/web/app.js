@@ -17,10 +17,11 @@
   const single = $("[data-detail]"); // an item's own page
 
   // ---- rows: selection and expansion ------------------------------------------
-  const rows = () => $$(".row[data-id]");
+  // Rows you can see (not inside a collapsed "Snoozed" section).
+  const rows = () => $$(".row[data-id]").filter((r) => r.offsetParent !== null);
+  // Nothing is selected until you move with j/k or click a row: a one-key
+  // action must never land on a row you can't see is selected.
   let sel = -1;
-  // The selection only shows once you use the keyboard.
-  if (store.get("docket.kbd")) document.body.classList.add("kbd");
   const kbd = () => { document.body.classList.add("kbd"); store.set("docket.kbd", "1"); };
   const select = (i, scroll = true) => {
     const rs = rows();
@@ -30,22 +31,26 @@
     if (scroll) rs[sel].scrollIntoView({ block: "nearest" });
     store.set("docket.sel:" + location.search, rs[sel].dataset.id);
   };
-  const current = () => rows()[sel] || (single && $(".row[data-id]"));
+  const current = () => (sel >= 0 && rows()[sel]) || (single && $(".row[data-id]")) || null;
   const setOpen = (row, open) => {
     const d = $(".detail", row);
     if (!d) return;
     d.hidden = !open;
     row.classList.toggle("open", open);
     $(".row-head", row)?.setAttribute("aria-expanded", open ? "true" : "false");
-    if (!open) $(".noise-form", row).hidden = true;
+    const nf = $(".noise-form", row);
+    if (!open && nf) nf.hidden = true;
   };
   const toggle = (row) => setOpen(row, !row.classList.contains("open"));
   const anyOpen = () => !single && rows().some((r) => r.classList.contains("open"));
 
-  // Restore the selection after a reload (by id, so it survives reordering).
-  const last = store.get("docket.sel:" + location.search);
-  const li = rows().findIndex((r) => r.dataset.id === last);
-  if (!single) select(li >= 0 ? li : 0, false);
+  // After a reload, restore a keyboard selection (by id, so it survives
+  // reordering) and show it.
+  if (!single && store.get("docket.kbd")) {
+    const last = store.get("docket.sel:" + location.search);
+    const li = rows().findIndex((r) => r.dataset.id === last);
+    if (li >= 0) { document.body.classList.add("kbd"); select(li, false); }
+  }
 
   // ---- actions --------------------------------------------------------------------
   async function act(id, action, extra = {}) {
@@ -61,13 +66,23 @@
       done: "Marked done", dismiss: "Dismissed", noise: "Closed. The agents will hear why.", snooze: "Snoozed",
       reclassify: "Moved", undo: "Undone" }[action];
     toast(msg || "Done");
-    setTimeout(() => (single && !["undo", "reclassify"].includes(action) ? history.length > 1 ? history.back() : (location.href = "/") : location.reload()), 450);
+    // From an item's own page, go back to the dashboard it came from (fresh,
+    // not a cached copy that still shows the item).
+    const back = () => {
+      try {
+        const r = new URL(document.referrer);
+        if (r.origin === location.origin && !r.pathname.startsWith("/item/")) return (location.href = r.pathname + r.search);
+      } catch (_) {}
+      location.href = "/";
+    };
+    setTimeout(() => (single && !["undo", "reclassify"].includes(action) ? back() : location.reload()), 450);
     return true;
   }
 
   const openNoise = (row) => {
-    setOpen(row, true);
     const f = $(".noise-form", row);
+    if (!f) return (location.href = row.dataset.href + "#noise"); // e.g. the Only-you list
+    setOpen(row, true);
     f.hidden = false;
     $("textarea", f).focus();
   };
@@ -112,6 +127,7 @@
       const row = head.closest(".row");
       const i = rows().indexOf(row);
       if (i >= 0 && $(".detail", row)) {
+        kbd();
         select(i, false);
         toggle(row);
       }
@@ -149,7 +165,7 @@
     }
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
     if (e.key === "Escape") {
-      $(".help").hidden = true;
+      if (!$(".help").hidden) return ($(".help").hidden = true);
       if (typing) return document.activeElement.blur();
       const r = current();
       if (r && r.classList.contains("open") && !single) setOpen(r, false);
@@ -157,13 +173,18 @@
     }
     if (typing) {
       // Enter sends a "not worth my time" note; Shift+Enter is a new line.
-      if (e.key === "Enter" && !e.shiftKey && document.activeElement.closest(".noise-form")) {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing && document.activeElement.closest(".noise-form")) {
         e.preventDefault();
         document.activeElement.form.requestSubmit();
       }
       return;
     }
     const k = e.key;
+    // A focused link or button keeps its own Enter and Space.
+    const a = document.activeElement;
+    if ((k === "Enter" || k === " ") && a && a !== document.body && !a.classList.contains("row-head")) return;
+    // While the help panel is open, only ? (and Esc, above) do anything.
+    if (!$(".help").hidden && k !== "?") return;
     if (g) {
       g = false;
       const to = { d: "/", q: "/", c: "/checklist", l: "/leads", e: "/evidence", b: "/brain", h: "/health", s: "/search" }[k];
@@ -200,10 +221,16 @@
       const id = store.get("docket.last");
       return id ? act(id, "undo") : toast("Nothing to undo");
     }
-    if (k === "s" || k === "S") return act(el.dataset.id, "snooze", { until: k === "S" ? "tomorrow" : "hour" });
+    // Only a row that offers Snooze can be snoozed (never a closed item).
+    if ((k === "s" || k === "S") && $("button[data-act=snooze]", el)) return act(el.dataset.id, "snooze", { until: k === "S" ? "tomorrow" : "hour" });
     const btn = $$("button[data-key]", el).find((b) => b.dataset.key === k);
     if (btn) btn.click();
   });
+
+  // "Not worth my time" from a list without the note box opens it here.
+  if (single && location.hash === "#noise") { const r = $(".row[data-id]"); if (r) openNoise(r); }
+  // A dashboard restored from the back-forward cache may be stale.
+  window.addEventListener("pageshow", (e) => { if (e.persisted && !single) location.reload(); });
 
   // Answer forms post normally; remember where to come back to.
   $$(".answer-form input[name=back]").forEach((i) => { if (!i.value) i.value = location.pathname + location.search; });

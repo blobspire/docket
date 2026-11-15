@@ -251,4 +251,5 @@ figcaption a { text-decoration: none; font-weight: 600; color: var(--fg); }
   .detail, .row > .actions, .rows.single .detail { padding: 0 12px 14px 14px; }
   .actions button { padding: 8px 12px; font-size: 14px; }
   .evidence { grid-template-columns: 1fr; }
+  table { display: block; overflow-x: auto; }
 }

@@ -527,3 +527,29 @@ func (s *Store) RecentNoise(limit int, agentOnly bool) ([]Noise, error) {
 	}
 	return out, rows.Err()
 }
+
+// AdoptLegacyKey finds an active item on machine filed with --key k before
+// keys were scoped by project (or while it had no project), and moves it
+// under key, so the next filing updates it instead of adding a duplicate.
+func (s *Store) AdoptLegacyKey(k, machine, project, key string) bool {
+	rows, err := s.DB.Query(`SELECT id, COALESCE(dedupe_key,'') FROM items WHERE machine=? AND project IN ('', ?) AND dedupe_key LIKE 'key:%'
+		AND status IN ('maybe','open','snoozed','answered') ORDER BY created_at DESC`, machine, Unsorted)
+	if err != nil {
+		return false
+	}
+	var id string
+	for rows.Next() {
+		var cand, dk string
+		rows.Scan(&cand, &dk)
+		if AgentKey(dk) == k {
+			id = cand
+			break
+		}
+	}
+	rows.Close()
+	if id == "" {
+		return false
+	}
+	_, err = s.DB.Exec(`UPDATE OR IGNORE items SET project=?, dedupe_key=?, updated_at=? WHERE id=?`, project, key, now(), id)
+	return err == nil
+}

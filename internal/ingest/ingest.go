@@ -371,6 +371,11 @@ func fileItem(s *store.Store, r record.Record, base store.Item, o Options) error
 	}
 	if in.Key != "" {
 		it.DedupeKey = "key:" + it.Project + ":" + clip(in.Key, 200)
+		// An item filed with this key before keys were scoped by project
+		// (an older docket, or while it had no project) becomes this one.
+		if _, ok := s.ActiveByKey(it.DedupeKey); !ok && it.Project != store.Unsorted {
+			s.AdoptLegacyKey(clip(in.Key, 200), base.Machine, it.Project, it.DedupeKey)
+		}
 		// The human said items like this aren't worth their time: a re-file
 		// within the week is kept for the record but stays out of the queue.
 		if when, ok := s.RecentlyNoised(it.DedupeKey, time.Now().Add(-7*24*time.Hour).Unix()); ok {

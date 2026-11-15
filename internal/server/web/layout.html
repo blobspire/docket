@@ -105,8 +105,10 @@
   <div class="detail"{{if not .Expanded}} hidden{{end}}>
     {{if .Recommend}}{{if not .Options}}<p class="recommend"><b>Recommends:</b> {{.Recommend}}</p>{{end}}{{end}}
     {{if .Blocks}}<p class="blocks"><b>Blocks:</b> {{.Blocks}}</p>{{end}}
-    {{with .Body}}<div class="prose">{{md .}}</div>{{end}}
+    {{with .Body}}<div class="prose">{{if $.Expanded}}{{md .}}{{else}}{{mdShort . $.ID}}{{end}}</div>{{end}}
     {{if .Physical}}<p class="warn">Physical action: it can't be approved from here. Do it in person, then mark it done.</p>{{end}}
+    {{if closed .Status}}<p class="muted small">{{.Status}}{{with .Resolution}}: {{.}}{{end}}. Undo it from the Done page to act on it again.</p>
+    {{else}}
     {{if ne .Status "answered"}}<div class="actions">{{template "actions" $it}}</div>{{end}}
     <form class="noise-form" hidden>
       <label>Why didn't this need you? <span class="muted">Optional. It goes to the agent and shapes what every agent files.</span>
@@ -120,13 +122,14 @@
       <button type="submit">Send answer</button>
     </form>
     {{end}}
+    {{end}}
     <div class="foot">
       <span>{{.ID}}</span>
       {{with .Machine}}<span>{{.}}</span>{{end}}
-      <span>filed {{clock .CreatedAt}}</span>
+      <span>filed {{clock .CreatedAt}}{{if gt .MentionCount 1}} · {{.MentionCount}} times{{end}}</span>
       {{with .Session.BridgeID}}<a href="{{rcURL .}}" target="_blank" rel="noopener">Open session ↗</a>{{end}}
       {{if .Projects}}
-      <label class="move">Project <select data-reclassify="project">{{$p := .Project}}{{range .Projects}}<option{{if eq . $p}} selected{{end}}>{{.}}</option>{{end}}<option value="__new">New…</option></select></label>
+      <label class="move">Project <select data-reclassify="project">{{$p := projectName .Item}}{{range .Projects}}<option{{if eq . $p}} selected{{end}}>{{.}}</option>{{end}}<option value="__new">New…</option></select></label>
       <label class="move">Urgency <select data-reclassify="urgency">{{$u := .Urgency}}{{range $v := list "now" "soon" "normal"}}<option{{if eq $v $u}} selected{{end}}>{{$v}}</option>{{end}}</select></label>
       {{end}}
     </div>

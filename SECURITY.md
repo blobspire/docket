@@ -22,7 +22,7 @@ docket relays decisions between you and agents that can run commands on your mac
 - **The server** copies those records into its SQLite database under `~/.local/share/docket/` (mode 0700). Evidence files agents attach are copied there too.
 - **Agent-made HTML or SVG evidence** is served with `Content-Security-Policy: sandbox` and `nosniff`, so it can't run scripts in the queue's origin.
 - **No model reads transcripts.** The one optional model job (rule proposals) sends your logged corrections and decisions to Claude through the server's own `claude` login. Turn it off with `[chief] rules_every = "0"`.
-- **Each machine sees only its own items.** `~/.docket/context.json` lists the project names and descriptions, and only the open items filed from that machine, so a shared lab computer doesn't list your personal admin.
+- **Each machine sees only its own items.** `~/.docket/context.json` lists project names, descriptions and the components and places in use, plus only the open items filed from that machine. The feedback section of `~/.docket/rules.md` is the same everywhere: it lists the titles of items you marked "not worth my time" (and your notes), from every project, so write notes you're comfortable having on every machine. Both files are readable only by your user.
 
 ## Transport
 

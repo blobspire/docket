@@ -311,3 +311,100 @@ func TestContextTellsAMachineWhatWasProcessed(t *testing.T) {
 		t.Fatalf("merged open = %+v", m.Open)
 	}
 }
+
+func TestClosedItemsCantBeActedOnAgain(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	st.UpsertItem(store.Item{ID: "dk-c1000001", Kind: "ask", Title: "q", SessionID: "s", Source: "cli", Machine: "box"})
+	e.s.Decide("dk-c1000001", Action{Kind: "done", Text: "settled in chat"})
+	for _, k := range []string{"snooze", "answer", "approve", "dismiss", "noise"} {
+		if err := e.s.Decide("dk-c1000001", Action{Kind: k, Text: "x", Until: time.Now().Add(time.Hour)}); err == nil {
+			t.Errorf("%s on a done item was accepted", k)
+		}
+	}
+	if it, _, _ := st.GetItem("dk-c1000001"); it.Status != "done" {
+		t.Fatalf("status = %s", it.Status)
+	}
+	// Its page offers no actions, only the way back.
+	rec := httptest.NewRecorder()
+	e.s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/item/dk-c1000001", nil))
+	body := rec.Body.String()
+	if strings.Contains(body, `data-act="snooze"`) || strings.Contains(body, `class="answer-form"`) || !strings.Contains(body, "Undo it from the Done page") {
+		t.Fatal("a closed item's page still offers actions")
+	}
+	// Undo reopens it without the stale closing note.
+	e.s.Decide("dk-c1000001", Action{Kind: "undo"})
+	if it, _, _ := st.GetItem("dk-c1000001"); it.Status != "open" || it.Resolution != "" {
+		t.Fatalf("after undo: %s %q", it.Status, it.Resolution)
+	}
+}
+
+func TestMarkdownImagesBecomeLinks(t *testing.T) {
+	out := string(renderMarkdown("see ![chart](https://tracker.example/p.png) and https://example.com/x"))
+	if strings.Contains(out, "<img") || !strings.Contains(out, `href="https://tracker.example/p.png"`) {
+		t.Fatalf("an image would load from the agent's host: %s", out)
+	}
+	if strings.Count(out, `target="_blank"`) != 2 || strings.Count(out, `rel="noopener noreferrer"`) != 2 {
+		t.Fatalf("links (including bare URLs) must open in a new tab without the opener: %s", out)
+	}
+	long := strings.Repeat("word ", 3000)
+	if short := string(renderMarkdownShort(long, "dk-x")); len(short) > shortBody+500 || !strings.Contains(short, "/item/dk-x") {
+		t.Fatalf("a long body isn't cut in rows (%d bytes)", len(short))
+	}
+}
+
+func TestRedirectsStayOnSite(t *testing.T) {
+	for _, p := range []string{"/", "/?p=admin&sort=newest", "/item/dk-1"} {
+		if !localPath(p) {
+			t.Errorf("%q refused", p)
+		}
+	}
+	for _, p := range []string{"", "//evil.example", `/\evil.example/x`, "/\t/evil.example", "https://evil.example", "/\x00x"} {
+		if localPath(p) {
+			t.Errorf("%q accepted", p)
+		}
+	}
+}
+
+func TestUpgradeClosesGuessedItemsAndAdoptsOldKeys(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	st.UpsertItem(store.Item{ID: "dk-u0000001", Kind: "ask", Title: "Want me to run it?", Status: "maybe", Source: "backfill"})
+	st.UpsertItem(store.Item{ID: "dk-u0000002", Kind: "approval", Title: "Auto mode refused: rm -rf build", Source: "permission_denied"})
+	st.UpsertItem(store.Item{ID: "dk-u0000003", Kind: "ask", Title: "Real ask", Source: "cli", Machine: "box", DedupeKey: "key:mac-repo:arm-plug"})
+	st.DB.Exec(`DELETE FROM kv WHERE k='upgrade:agents-file'`)
+	upgraded, err := store.Open(st.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	upgraded.Close()
+	a := active(t, st)
+	if len(a) != 1 || a[0].ID != "dk-u0000003" {
+		t.Fatalf("after the upgrade: %+v", a)
+	}
+	// The first post-upgrade re-file of the old key updates it, not a duplicate.
+	e.file(t, "s", record.Item{ID: "dk-u0000004", Kind: "ask", Title: "Real ask, still", Key: "arm-plug", Project: "docket"})
+	if a := active(t, st); len(a) != 1 || a[0].ID != "dk-u0000003" || a[0].Project != "docket" || a[0].Title != "Real ask, still" {
+		t.Fatalf("after the re-file: %+v", a)
+	}
+}
+
+func TestProjectEditRenamesWithDescription(t *testing.T) {
+	e := newEnv(t, "")
+	e.s.st.EnsureProject("ladr", "LADR website")
+	form := strings.NewReader("rename=lab-site&description=The+lab+website")
+	req := httptest.NewRequest("POST", "/project/ladr", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	e.s.Handler().ServeHTTP(rec, req)
+	if p, ok := e.s.st.GetProject("lab-site"); !ok || p.Description != "The lab website" || rec.Header().Get("Location") != "/?p=lab-site" {
+		t.Fatalf("project = %+v %v, location %q", p, ok, rec.Header().Get("Location"))
+	}
+	req = httptest.NewRequest("POST", "/project/lab-site", strings.NewReader("rename=!!!"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec = httptest.NewRecorder()
+	e.s.Handler().ServeHTTP(rec, req)
+	if !strings.Contains(rec.Header().Get("Location"), "err=") {
+		t.Fatalf("an unusable name was accepted silently: %q", rec.Header().Get("Location"))
+	}
+}

@@ -4,7 +4,7 @@
 <main class="main">
   <div class="view-head">
     <div>
-      <h1>{{$q.Heading}}{{if eq $q.Mode "project"}} <button type="button" class="quiet small" data-edit-project>Edit</button>{{end}}</h1>
+      <h1>{{$q.Heading}}{{if $q.ProjectInfo}} <button type="button" class="quiet small" data-edit-project>Edit</button>{{end}}</h1>
       {{with $q.Sub}}<p class="sub">{{.}}</p>{{end}}
     </div>
     <div class="sort" role="group" aria-label="Sort">
@@ -20,7 +20,7 @@
   <form class="project-edit" method="post" action="/project/{{.Name}}" hidden>
     <label>Description <input name="description" value="{{.Description}}" placeholder="One line: what this project is"></label>
     <label>Rename or merge into <input name="rename" placeholder="{{.Name}}"></label>
-    <label class="check"><input type="checkbox" name="archived" value="1"{{if .Archived}} checked{{end}}> Archive (hide from the sidebar)</label>
+    <label class="check"><input type="checkbox" name="archived" value="1"{{if .Archived}} checked{{end}}> Archive (hide it from the sidebar once nothing is open)</label>
     <div class="actions"><button class="primary" type="submit">Save</button><button type="button" class="quiet" data-edit-project>Cancel</button></div>
   </form>
   {{end}}
