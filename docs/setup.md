@@ -110,7 +110,7 @@ docket import md STATUS.md --project website --section "Human tasks"   # task li
 
 ## Day to day
 
-Open the dashboard at `https://<server>.<tailnet>.ts.net`. Press `?` for keys:
+Open the dashboard at `https://<server>.<tailnet>.ts.net`. Each row has one-tap ✓ Done, 👎 Not worth my time and × Dismiss buttons: they show on hover with a mouse, and always on a phone. Every action can be undone from its toast. Press `?` for keys:
 
 | Key | Action |
 |---|---|
@@ -119,7 +119,9 @@ Open the dashboard at `https://<server>.<tailnet>.ts.net`. Press `?` for keys:
 | `[` / `]` | switch project |
 | `y` / `n` | approve or decline |
 | `a` | answer in your own words |
+| `d` / `x` | done / dismiss (the next row is selected after) |
 | `w` | not worth my time, with a note |
+| `u` | undo |
 | `o` | open the agent's session |
 
 Answers reach the session right away: at its next tool call if it's working, by waking it if it's idle, or by resuming it if it ended.
