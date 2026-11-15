@@ -51,9 +51,11 @@ func (s *Server) Decide(id string, a Action) error {
 		if a.Kind == "reopen" {
 			// The human closed it here: reopening is undoing that close, with
 			// everything it set off (a queued "marked done", a noise mark and
-			// its note, an expiry). Otherwise an agent or docket closed it.
-			switch s.st.LastDecision(id) {
-			case "done", "dismiss", "noise", "expire":
+			// its note, an expiry, a rule's approval). Otherwise an agent or
+			// docket closed it.
+			switch d := s.st.LastDecision(id); {
+			case d == "done", d == "dismiss", d == "noise", d == "expire",
+				it.Kind == "rule" && (d == "approve" || d == "decline"):
 				return s.Decide(id, Action{Kind: "undo"})
 			}
 			return s.st.Reopen(id)
@@ -64,6 +66,16 @@ func (s *Server) Decide(id string, a Action) error {
 	case "delivered":
 		if a.Kind != "undo" && a.Kind != "reclassify" && a.Kind != "answer" {
 			return errors.New("this item was answered and delivered; send a follow-up answer instead")
+		}
+	case "answered":
+		// Its answer is still on the way: a second one (a double press, a
+		// second tab) would reach the agent twice. Nor can it be snoozed: it
+		// would wake as open, asking for an answer it already has.
+		switch a.Kind {
+		case "approve", "decline", "choose", "answer":
+			return errors.New("you've already answered this; the answer is on its way to the agent")
+		case "snooze":
+			return errors.New("its answer is on its way to the agent; dismiss it to take it off the list")
 		}
 	}
 	switch a.Kind {
@@ -120,6 +132,14 @@ func (s *Server) Decide(id string, a Action) error {
 		action, err := s.st.Undo(id)
 		if err != nil {
 			return err
+		}
+		// A rule's approval (or rejection) wrote its row in the rules table;
+		// undoing it makes it a proposal again, so agents stop getting it.
+		if it.Kind == "rule" && (action == "approve" || action == "decline") { // an edited rule is logged as approve
+			if err := s.st.DeleteRule(id); err != nil {
+				return err
+			}
+			s.rulesChanged()
 		}
 		if action == "noise" {
 			s.rulesChanged()

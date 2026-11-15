@@ -1463,6 +1463,12 @@ func (s *Store) SetRule(r Rule) error {
 	return err
 }
 
+// DeleteRule forgets a rule decision (its approval or rejection was undone).
+func (s *Store) DeleteRule(id string) error {
+	_, err := s.DB.Exec(`DELETE FROM rules WHERE id=?`, id)
+	return err
+}
+
 // Rules lists rules with the given status (all if empty), oldest first.
 func (s *Store) Rules(status string) ([]Rule, error) {
 	q := `SELECT id, text, scope, status, evidence, created_at, updated_at FROM rules`

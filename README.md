@@ -28,6 +28,7 @@ docket gives your agents one place to bring you what really needs you: results y
   - views by place, so one trip to the lab covers everything there
   - sorting by priority, deadline or newest
   - rows that expand in place with rendered markdown and evidence
+  - one-tap Done, "Not worth my time" and Dismiss on every row, so you can clear the list while scrolling it, with Undo
 - **"Not worth my time" with a note.** It closes the item, tells the agent that filed it, and joins a short list every agent reads, so the bar calibrates itself.
 - **Delivers your answer immediately:**
   - into a busy session at its next tool call,

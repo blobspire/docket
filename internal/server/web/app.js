@@ -7,13 +7,31 @@
     get: (k) => { try { return sessionStorage.getItem(k); } catch (_) { return null; } },
     set: (k, v) => { try { sessionStorage.setItem(k, v); } catch (_) {} },
   };
-  const toast = (msg) => {
-    const t = $(".toast");
-    t.textContent = msg;
+  // A toast, with an Undo button when the action it reports can be undone.
+  // A recent error and a recent Undo both outlive the next message, so
+  // overlapping actions can't hide a failure or take away an Undo.
+  let errNote = null, undoNote = null;
+  const toast = (msg, undoId, isErr = false) => {
+    const t = $(".toast"), now = Date.now();
+    if (isErr) errNote = { text: msg, until: now + 6000 };
+    else undoNote = undoId ? { id: undoId, until: now + 6000 } : null;
+    const err = !isErr && errNote && errNote.until > now ? errNote.text : "";
+    const undo = undoNote && undoNote.until > now ? undoNote.id : "";
+    t.replaceChildren(document.createTextNode(err ? `${msg}. ${err}` : msg));
+    if (undo) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = "Undo";
+      b.addEventListener("click", () => { t.hidden = true; undoNote = null; act(undo, "undo"); });
+      t.append(b);
+    }
     t.hidden = false;
     clearTimeout(t._h);
-    t._h = setTimeout(() => (t.hidden = true), 3500);
+    t._h = setTimeout(() => (t.hidden = true), undo || err || isErr ? 6000 : 3500);
   };
+  const timeout = (ms) => (AbortSignal.timeout ? AbortSignal.timeout(ms) : undefined);
+  // A toast for the page about to load (an item's page goes back to the list).
+  const carry = (msg, undoId) => store.set("docket.toast", JSON.stringify({ msg, undoId, at: Date.now() }));
   const single = $("[data-detail]"); // an item's own page
 
   // ---- rows: selection and expansion ------------------------------------------
@@ -40,7 +58,7 @@
     row.classList.toggle("open", open);
     $(".row-head", row)?.setAttribute("aria-expanded", open ? "true" : "false");
     const nf = $(".noise-form", row);
-    if (!open && nf) nf.hidden = true;
+    if (nf) nf.hidden = true;
   };
   const toggle = (row) => setOpen(row, !row.classList.contains("open"));
   const anyOpen = () => !single && rows().some((r) => r.classList.contains("open"));
@@ -52,54 +70,214 @@
     u.searchParams.delete("err");
     return u.pathname + u.search;
   };
-  let inFlight = false; // one action at a time: a double click sends it once
+  // Actions on different items can overlap (clearing a list quickly); one
+  // item takes one action at a time, so a double click sends it once.
+  const pending = new Set();
+  // Items acted on from this page: id -> the action's sequence number
+  // (Infinity while it's on its way). They stay faded until a refresh that
+  // started after the action shows its result (gone, answered, moved).
+  const leaving = new Map();
+  let seq = 0;
+  const CLOSES = ["done", "dismiss", "noise", "snooze"];
+  // A closed item -> the row after it when it closed: where the selection
+  // goes next, so d, d, d works down the list.
+  const follow = new Map();
+  // Actions in the order you took them: only the latest sets what u undoes
+  // and owns the toast, whichever answer arrives last.
+  let order = 0, latest = 0, navigating = false;
+  const fade = () => $$(".row[data-id]").forEach((r) => r.classList.toggle("leaving", leaving.has(r.dataset.id)));
+  const verb = { approve: "approve it", decline: "decline it", choose: "send that", answer: "send that", done: "mark it done",
+    dismiss: "dismiss it", noise: "close it", snooze: "snooze it", reclassify: "move it", undo: "undo that", reopen: "reopen it" };
+
   async function act(id, action, extra = {}) {
-    if (inFlight) return false;
-    inFlight = true;
-    const body = new URLSearchParams({ action, ...extra });
-    let res;
+    // One action per item at a time, and nothing more on one already on its
+    // way out: a quick second key is dropped, not turned into an error.
+    if (navigating || pending.has(id) || (leaving.has(id) && action !== "undo")) return false;
+    pending.add(id);
+    const mine = ++order;
+    // The row is held (faded, deaf to keys) until a refresh shows what the
+    // action did: a second y before then would answer twice. An undo is the
+    // one action that brings a row back rather than settling it.
+    const holds = !single && action !== "undo";
+    if (holds) {
+      if (CLOSES.includes(action)) {
+        const rs = rows(), i = rs.findIndex((r) => r.dataset.id === id);
+        if (i >= 0 && rs[i + 1]) follow.set(id, rs[i + 1].dataset.id);
+      }
+      leaving.set(id, Infinity);
+      fade();
+    }
+    let err = "";
     try {
-      res = await fetch(`/item/${encodeURIComponent(id)}/act`, { method: "POST", body, headers: { "X-Requested-With": "fetch" } });
+      const body = new URLSearchParams({ action, ...extra });
+      const res = await fetch(`/item/${encodeURIComponent(id)}/act`, { method: "POST", body, headers: { "X-Requested-With": "fetch" }, signal: timeout(20000) });
+      if (!res.ok) err = (await res.json().catch(() => ({}))).error || `Couldn't ${verb[action] || action}`;
     } catch (_) {
-      inFlight = false;
-      toast(`Couldn't ${action}: the server didn't answer`);
+      err = `Couldn't ${verb[action] || action}: the server didn't answer`;
+    }
+    pending.delete(id);
+    const last = mine >= latest;
+    if (last) latest = mine;
+    if (err) {
+      if (holds) { leaving.delete(id); follow.delete(id); fade(); }
+      toast(err, "", true); // a failure always says so, even beside a later success
+      if (!single) refresh(); // it may have changed elsewhere
       return false;
     }
-    if (!res.ok) {
-      inFlight = false;
-      const j = await res.json().catch(() => ({}));
-      toast(j.error || `Couldn't ${action}`);
-      return false;
-    }
-    // What u undoes next; an undo itself leaves nothing more to undo.
-    // Reopening a human close already undid it; another u would reach past
-    // it to whatever came before (an answer, a move).
-    if (action === "undo" || action === "reopen") store.set("docket.last", "");
-    else store.set("docket.last", id);
+    if (holds) leaving.set(id, ++seq);
+    if (action === "undo") { leaving.delete(id); follow.delete(id); fade(); } // open again
+    // What u (and the toast's Undo) undoes next; an undo itself leaves
+    // nothing more to undo. Reopening a human close already undid it; another
+    // u would reach past it to whatever came before (an answer, a move).
+    const undoId = action === "undo" || action === "reopen" ? "" : id;
+    if (last) store.set("docket.last", undoId);
     const msg = { approve: "Approved", decline: "Declined", choose: "Sent to the agent", answer: "Sent to the agent",
       done: "Marked done", dismiss: "Dismissed", noise: "Closed. The agents will hear why.", snooze: "Snoozed",
-      reclassify: "Moved", undo: "Undone", reopen: "Reopened" }[action];
-    toast(msg || "Done");
-    // From an item's own page, go back to the dashboard it came from (fresh,
-    // not a cached copy that still shows the item).
-    const back = () => {
+      reclassify: "Moved", undo: "Undone", reopen: "Reopened" }[action] || "Done";
+    if (single) {
+      // From an item's own page, go back to the dashboard it came from (fresh,
+      // not a cached copy that still shows the item); stay for an undo or move.
+      carry(msg, undoId);
+      navigating = true; // nothing more from this page until the next one loads
+      if (["undo", "reclassify", "reopen"].includes(action)) return (location.href = fresh(location.href)), true;
       try {
         const r = new URL(document.referrer);
-        if (r.origin === location.origin && !r.pathname.startsWith("/item/")) return (location.href = fresh(r.href));
+        if (r.origin === location.origin && !r.pathname.startsWith("/item/")) return (location.href = fresh(r.href)), true;
       } catch (_) {}
       location.href = "/";
-    };
-    const stay = ["undo", "reclassify", "reopen"].includes(action);
-    setTimeout(() => (single && !stay ? back() : (location.href = fresh(location.href))), 450);
+      return true;
+    }
+    if (last) toast(msg, undoId);
+    // The acted-on row's own controls (a sent note, a picked project) mustn't
+    // count as typing or a draft and hold the refresh back.
+    const row = $(`.row[data-id="${CSS.escape(id)}"]`);
+    if (row) {
+      if (row.contains(document.activeElement)) document.activeElement.blur();
+      // A closed row's note box goes with it (sent, or no longer needed).
+      if (CLOSES.includes(action)) $$(".noise-form", row).forEach((f) => { f.hidden = true; $("textarea", f).value = ""; });
+    }
+    refresh();
     return true;
   }
 
-  const openNoise = (row) => {
+  // ---- refresh in place -------------------------------------------------------------
+  // Swap in a fresh copy of the page instead of reloading it: the scroll
+  // position, an expanded row and the selection all survive, so a closed row
+  // simply goes and the next one slides up. Never while you're typing or a
+  // note is half-written; the "queue changed" pill says so instead.
+  let v0 = document.body.dataset.version;
+  const typing = () => /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+  // Something half-done: an unsent answer (even in a folded row), an open
+  // note box (empty or not: you opened it to write), or the project form.
+  // A cancelled note is abandoned, not a draft.
+  const drafting = () => $$("textarea").some((t) => t.value.trim() && !t.closest(".noise-form")) ||
+    !!$(".noise-form:not([hidden]), .project-edit:not([hidden])");
+  const swap = (doc, url) => {
+    if (typing() || drafting()) return false;
+    const where = [".shell", "main.page"].find((s) => $(s) && $(s, doc));
+    if (!where) return false;
+    const openIds = $$(".row.open[data-id]").map((r) => r.dataset.id);
+    const selId = sel >= 0 ? rows()[sel]?.dataset.id : null;
+    const side = $(".side"), sideAt = side && [side.scrollLeft, side.scrollTop];
+    const snoozedOpen = $("details.snoozed")?.open;
+    $(where).replaceWith($(where, doc));
+    const top = $("header.top"), nextTop = $("header.top", doc);
+    if (top && nextTop) top.replaceWith(nextTop);
+    document.title = doc.title;
+    v0 = document.body.dataset.version = doc.body.dataset.version;
+    if (url !== location.pathname + location.search) history.replaceState(null, "", url);
+    if ($(".side") && sideAt) [$(".side").scrollLeft, $(".side").scrollTop] = sideAt;
+    if (snoozedOpen && $("details.snoozed")) $("details.snoozed").open = true;
+    openIds.forEach((id) => { const r = $(`.row[data-id="${CSS.escape(id)}"]`); if (r) setOpen(r, true); });
+    reselect(selId);
+    backLinks();
+    $(".updated").hidden = true;
+    return true;
+  };
+  // Keep the selected item selected. If you closed or snoozed it, the row
+  // that came after it is next, even if it's still on the page (a snoozed
+  // row lands in the Snoozed list). If it went any other way (closed
+  // elsewhere, or a decision took it off the list), nothing is selected: a
+  // key must never land on a row you didn't pick, or one you can't see.
+  const reselect = (selId) => {
+    if (!selId) return;
+    const at = (id) => rows().findIndex((r) => r.dataset.id === id);
+    // Move on only past closes that worked (a pending one may still fail and
+    // its row stay); one already gone from the page can't hold the place.
+    let id = selId;
+    for (let hops = 0; follow.has(id) && (leaving.get(id) !== Infinity || at(id) < 0) && hops < 100; hops++) id = follow.get(id);
+    const i = at(id);
+    sel = -1;
+    $$(".row.sel").forEach((r) => r.classList.remove("sel"));
+    if (i < 0) return;
+    if (id !== selId) return select(i, true); // the next row, brought into view
+    // Still the same row: never scroll to it (you may be acting elsewhere
+    // with the mouse), and if it's out of sight, let it go.
+    const r = rows()[i].getBoundingClientRect();
+    if (r.bottom > 50 && r.top < innerHeight) select(i, false);
+  };
+  // When the page can't be swapped (you're mid-answer), still settle the
+  // rows you acted on: a closed one goes, the rest show what happened. A row
+  // holding your unsent words is left exactly as it is.
+  const patch = (doc, start) => {
+    const selId = sel >= 0 ? rows()[sel]?.dataset.id : null;
+    for (const [id, n] of [...leaving]) {
+      if (n > start) continue;
+      leaving.delete(id);
+      const q = `.row[data-id="${CSS.escape(id)}"]`;
+      const cur = $(q), next = $(q, doc);
+      if (!cur || cur.contains(document.activeElement) || $$("textarea", cur).some((t) => t.value.trim()) || $(".noise-form:not([hidden])", cur)) continue;
+      if (!next) { cur.remove(); continue; }
+      const open = cur.classList.contains("open");
+      cur.replaceWith(next);
+      if (open) setOpen(next, true);
+    }
+    reselect(selId);
+  };
+  let refreshing = false, again = false;
+  async function refresh() {
+    if (refreshing) { again = true; return; }
+    refreshing = true;
+    try {
+      do {
+        again = false;
+        const start = seq, url = fresh(location.href);
+        const res = await fetch(url, { signal: timeout(10000) }); // a hung fetch mustn't stop refreshing
+        if (!res.ok) throw new Error(String(res.status));
+        const doc = new DOMParser().parseFromString(await res.text(), "text/html");
+        if (swap(doc, url)) { for (const [id, n] of leaving) if (n <= start) leaving.delete(id); }
+        else { patch(doc, start); $(".updated").hidden = false; }
+        // What's settled no longer needs a successor (a row that wakes from
+        // snooze later is a fresh row).
+        for (const k of [...follow.keys()]) if (!leaving.has(k)) follow.delete(k);
+        fade();
+      } while (again);
+    } catch (_) {
+      // Server unreachable or mid-restart: never navigate away from unsent
+      // words; the pill offers a reload, and the next check tries again.
+      $(".updated").hidden = false;
+    } finally {
+      refreshing = false;
+    }
+  }
+
+  // The note box opens under the row's title; the row folds up so the box
+  // sits where you tapped. On an item's own page it opens under the buttons.
+  // With a mouse or the w key the cursor goes in; on a phone, the keyboard
+  // waits until you tap in.
+  const openNoise = (row, focus = matchMedia("(hover: hover)").matches) => {
     const f = $(".noise-form", row);
     if (!f) return (location.href = row.dataset.href + "#noise"); // e.g. the Only-you list
-    setOpen(row, true);
+    if (single) $(".detail .actions", row)?.after(f);
+    else setOpen(row, false);
     f.hidden = false;
-    $("textarea", f).focus();
+    f.scrollIntoView({ block: "nearest" });
+    if (focus) $("textarea", f).focus({ preventScroll: true });
+  };
+  // A closed note box no longer holds back the refresh it was blocking.
+  const closeNoise = (f) => {
+    f.hidden = true;
+    if (!single && (leaving.size || !$(".updated").hidden)) refresh();
   };
 
   document.addEventListener("click", (e) => {
@@ -117,10 +295,7 @@
       e.preventDefault();
       return openNoise(e.target.closest(".row"));
     }
-    if (e.target.closest("[data-noise-cancel]")) {
-      e.target.closest(".noise-form").hidden = true;
-      return;
-    }
+    if (e.target.closest("[data-noise-cancel]")) return closeNoise(e.target.closest(".noise-form"));
     if (e.target.closest("[data-edit-project]")) {
       const f = $(".project-edit");
       if (f) { f.hidden = !f.hidden; if (!f.hidden) $("input", f).focus(); }
@@ -151,8 +326,14 @@
 
   document.addEventListener("submit", (e) => {
     // An answer posts the plain way; remember it for u all the same.
+    // A double click on Send sends it once.
     const ans = e.target.closest(".answer-form");
-    if (ans) return store.set("docket.last", ans.closest("[data-id]").dataset.id);
+    if (ans) {
+      if (ans.dataset.sent) return e.preventDefault();
+      ans.dataset.sent = "1";
+      setTimeout(() => delete ans.dataset.sent, 8000); // the page didn't go (stopped, offline)
+      return store.set("docket.last", ans.closest("[data-id]").dataset.id);
+    }
     const f = e.target.closest(".noise-form");
     if (!f) return;
     e.preventDefault();
@@ -166,7 +347,7 @@
     let value = s.value;
     if (value === "__new") {
       value = (prompt("New project name (letters, digits, dashes):") || "").trim();
-      if (!value) { location.href = fresh(location.href); return; }
+      if (!value) { s.value = [...s.options].find((o) => o.defaultSelected)?.value ?? s.value; return; }
     }
     act(s.closest("[data-id]").dataset.id, "reclassify", { [field]: value });
   };
@@ -198,7 +379,16 @@
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
     if (e.key === "Escape") {
       if (!$(".help").hidden) return ($(".help").hidden = true);
-      if (typing) return document.activeElement.blur();
+      // Esc closes an empty note box; a half-written note only loses focus,
+      // so the words aren't thrown away.
+      const empty = (f) => !$("textarea", f).value.trim();
+      if (typing) {
+        const nf = document.activeElement.closest(".noise-form");
+        document.activeElement.blur();
+        return nf && empty(nf) && closeNoise(nf);
+      }
+      const nf = $$(".noise-form").find((f) => !f.hidden && empty(f));
+      if (nf) return closeNoise(nf);
       const r = current();
       if (r && r.classList.contains("open") && !single) setOpen(r, false);
       return;
@@ -254,10 +444,14 @@
     if (k === "u") {
       const own = el && $("button[data-act=reopen]", el);
       if (own) return own.click();
+      // While an action is on its way, what u would undo isn't known yet.
+      if (pending.size) return toast("Still sending; press u again in a moment");
       const id = store.get("docket.last");
       return id ? act(id, "undo") : toast("Nothing to undo");
     }
-    if (!el) return;
+    // Nothing selected, or the selected row is on its way out (a key pressed
+    // twice quickly): do nothing rather than act on something else.
+    if (!el || leaving.has(el.dataset.id)) return;
     if (k === "o" && el.dataset.session) return window.open(el.dataset.session, "_blank", "noopener");
     if (k === "a") {
       e.preventDefault();
@@ -265,7 +459,7 @@
       const t = $(".answer-form textarea", el);
       return t ? t.focus() : toast(el.dataset.closed ? "This item is closed" : "This item has no agent session to answer");
     }
-    if (k === "w") { e.preventDefault(); return $("[data-noise]", el) && openNoise(el); }
+    if (k === "w") { e.preventDefault(); return $("[data-noise]", el) && openNoise(el, true); }
     // Only a row that offers Snooze can be snoozed (never a closed item).
     if ((k === "s" || k === "S") && $("button[data-act=snooze]", el)) return act(el.dataset.id, "snooze", { until: k === "S" ? "tomorrow" : "hour" });
     const btn = $$("button[data-key]", el).find((b) => b.dataset.key === k);
@@ -275,26 +469,43 @@
   // "Not worth my time" from a list without the note box opens it here.
   if (single && location.hash === "#noise") { const r = $(".row[data-id]"); if (r) openNoise(r); }
   // A dashboard restored from the back-forward cache may be stale.
-  window.addEventListener("pageshow", (e) => { if (e.persisted && !single) location.reload(); });
+  // An item's page restored the same way must take actions again.
+  window.addEventListener("pageshow", (e) => {
+    if (!e.persisted) return;
+    navigating = false;
+    $$(".answer-form").forEach((f) => delete f.dataset.sent);
+    if (!single) location.reload();
+  });
 
   // Answer forms post normally; remember where to come back to.
-  $$(".answer-form input[name=back]").forEach((i) => { if (!i.value) i.value = location.pathname + location.search; });
+  function backLinks() {
+    $$(".answer-form input[name=back]").forEach((i) => { if (!i.value) i.value = location.pathname + location.search; });
+  }
+  backLinks();
+
+  // The toast an action on the last page left for this one.
+  try {
+    const c = JSON.parse(store.get("docket.toast") || "null");
+    store.set("docket.toast", "");
+    if (c && Date.now() - c.at < 5000) toast(c.msg, c.undoId);
+  } catch (_) {}
 
   // ---- live refresh ---------------------------------------------------------------
-  // Reload when the queue changes, but never while you're reading an expanded
+  // Refresh when the queue changes, but never while you're reading an expanded
   // item or typing: show a quiet "refresh" pill instead.
-  const v0 = document.body.dataset.version;
   setInterval(async () => {
-    if (document.hidden) return;
+    if (document.hidden || refreshing) return;
     try {
       const r = await fetch("/api/version");
       const { v } = await r.json();
       if (v === v0) return;
       // A selected or expanded row, or typing, means you're in the middle of
-      // something: offer the refresh instead of yanking the page.
-      const busy = single || sel >= 0 || anyOpen() || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
-      if (busy) $(".updated").hidden = false;
-      else location.reload();
+      // something: offer the refresh instead of moving rows under you.
+      // Rows held after an action (a refresh that failed) always retry: the
+      // swap itself still waits out typing and drafts.
+      const busy = single || sel >= 0 || anyOpen() || typing() || drafting();
+      if (busy && !leaving.size) $(".updated").hidden = false;
+      else refresh();
     } catch (_) {}
   }, 5000);
 })();
