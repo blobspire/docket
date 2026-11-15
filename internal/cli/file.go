@@ -277,8 +277,11 @@ func Done(args []string, stdout io.Writer, getenv func(string) string) error {
 	if err := (spool.Spool{Dir: config.SpoolDir()}).Append(r); err != nil {
 		return err
 	}
-	agentctx.Remember(func(o *agentctx.Overlay) { o.Closed = append(o.Closed, closing) })
+	rememberErr := agentctx.Remember(func(o *agentctx.Overlay) { o.Closed = append(o.Closed, closing) })
 	fmt.Fprintf(stdout, "docket: marked %s done.\n", firstNonEmpty(d.ItemID, "--key "+d.Key))
+	if rememberErr != nil {
+		fmt.Fprintf(stdout, "docket: note: this machine's local record wasn't updated (%v); docket list shows it closed after the next sync.\n", rememberErr)
+	}
 	return nil
 }
 

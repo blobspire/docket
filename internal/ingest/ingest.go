@@ -201,7 +201,7 @@ func apply(s *store.Store, e store.RawEvent, o Options) error {
 				it, ok = s.ActiveByKey("key:" + p + ":" + k)
 			}
 			if !ok {
-				it, ok = s.MovedByKey(k, sid, r.Machine)
+				it, ok = s.MovedByKey(k, store.Slug(d.Project), sid, r.Machine)
 			}
 			// The project resolved now may differ from the one at filing time
 			// (a folder default vs. an explicit --project then); only an
@@ -376,8 +376,14 @@ func fileItem(s *store.Store, r record.Record, base store.Item, o Options) error
 	if in.Key != "" {
 		k := keyNorm(in.Key)
 		it.DedupeKey = "key:" + it.Project + ":" + k
-		if _, ok := s.ActiveByKey(it.DedupeKey); !ok {
-			if moved, ok := s.MovedByKey(k, it.SessionID, base.Machine); ok {
+		if hit, ok := s.ActiveByKey(it.DedupeKey); ok {
+			// An older docket scoped keys by folder: when that scope happens to
+			// be this project's name, the old item is this one; give it the project.
+			if hit.Project == "" || hit.Project == store.Unsorted {
+				_ = s.ClaimUnsorted(hit.ID, it.Project)
+			}
+		} else {
+			if moved, ok := s.MovedByKey(k, it.Project, it.SessionID, base.Machine); ok {
 				// The human moved this item to another project: still the same one.
 				it.DedupeKey = moved.DedupeKey
 			} else {

@@ -3,6 +3,8 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 
 	"github.com/blobspire/docket/internal/agentctx"
 	"github.com/blobspire/docket/internal/ingest"
@@ -153,4 +155,89 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+func TestMovedKeyLookupStaysInItsProject(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	e.file(t, "s-m1", record.Item{ID: "dk-mk000001", Kind: "review", Title: "API CI fix", Key: "ci", Project: "api"})
+	e.s.Decide("dk-mk000001", Action{Kind: "reclassify", Project: "platform"})
+	// Another session, another project, same key: its own item.
+	e.file(t, "s-m2", record.Item{ID: "dk-mk000002", Kind: "review", Title: "Tools CI fix", Key: "ci", Project: "tools"})
+	if a := active(t, st); len(a) != 2 {
+		t.Fatalf("a filing in tools merged into the moved api item: %+v", a)
+	}
+	// done --key with a project that isn't where the moved item is leaves it.
+	e.send(t, record.Record{Event: "cli.done", SessionID: "s-m3", Done: &record.Done{Key: "ci", Project: "ops", Explicit: true}}, ingest.Options{})
+	if it, _, _ := st.GetItem("dk-mk000001"); it.Status != "open" {
+		t.Fatalf("done --key --project ops closed the platform item")
+	}
+	// In the project it was moved to, the key still reaches it.
+	e.file(t, "s-m1", record.Item{ID: "dk-mk000003", Kind: "review", Title: "API CI fix, v2", Key: "ci", Project: "platform"})
+	if it, _, _ := st.GetItem("dk-mk000001"); it.Title != "API CI fix, v2" {
+		t.Fatalf("a filing in the new project didn't reach the moved item: %q", it.Title)
+	}
+}
+
+func TestUndoKeepsAnEarlierAnswerGoing(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	st.UpsertItem(store.Item{ID: "dk-ue000001", Kind: "ask", Title: "rename?", SessionID: "s", Machine: "box", Source: "cli"})
+	e.s.Decide("dk-ue000001", Action{Kind: "answer", Text: "yes, v2"})
+	st.DB.Exec(`UPDATE deliveries SET created_at=created_at-10 WHERE item_id='dk-ue000001'`)
+	st.DB.Exec(`UPDATE decisions SET ts=ts-10 WHERE item_id='dk-ue000001'`)
+	st.DB.Exec(`UPDATE items SET status='open' WHERE id='dk-ue000001'`) // a later re-file reopened it
+	e.s.Decide("dk-ue000001", Action{Kind: "noise"})
+	e.s.Decide("dk-ue000001", Action{Kind: "undo"})
+	ds, _ := st.ItemDeliveries("dk-ue000001")
+	if len(ds) != 1 || !strings.Contains(ds[0].Text, "yes, v2") {
+		t.Fatalf("undoing the noise withdrew the earlier answer: %+v", ds)
+	}
+}
+
+func TestAnAnswerCantReopenAClosedItem(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	st.UpsertItem(store.Item{ID: "dk-ar000001", Kind: "ask", Title: "q"})
+	st.SetStatus("dk-ar000001", "dismissed", "", "dismiss")
+	if err := st.SetAnswer("dk-ar000001", "yes", "answer"); err == nil {
+		t.Fatal("an answer landed on a dismissed item")
+	}
+}
+
+func TestLegacyKeyNamedLikeTheProjectGetsIt(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	st.UpsertItem(store.Item{ID: "dk-lp000001", Kind: "ask", Title: "ci?", Source: "cli", Machine: "box", DedupeKey: "key:shared:ci"})
+	e.file(t, "s", record.Item{ID: "dk-lp000002", Kind: "ask", Title: "ci? v2", Key: "ci", Project: "shared"})
+	if it, _, _ := st.GetItem("dk-lp000001"); it.Project != "shared" || it.Title != "ci? v2" {
+		t.Fatalf("legacy item = %+v", it)
+	}
+}
+
+func TestAMergedItemsPageShowsItself(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	st.EnsureProject("tools", "")
+	st.EnsureProject("robot", "")
+	e.file(t, "a", record.Item{ID: "dk-pg000001", Kind: "ask", Title: "from tools", Key: "k", Project: "tools"})
+	e.file(t, "b", record.Item{ID: "dk-pg000002", Kind: "ask", Title: "from robot", Key: "k", Project: "robot"})
+	st.RenameProject("tools", "robot")
+	rec := httptest.NewRecorder()
+	e.s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/item/dk-pg000001", nil))
+	if !strings.Contains(rec.Body.String(), "from tools") {
+		t.Fatal("the merged item's page shows the survivor instead")
+	}
+}
+
+func TestUpgradeClosesOldPerSessionSignInItems(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	st.UpsertItem(store.Item{ID: "dk-up000001", Kind: "health", Title: "signed out", Source: "stop_failure", Machine: "mac", SessionID: "sQ", DedupeKey: "auth:mac:auth_failed"})
+	st.DB.Exec(`DELETE FROM kv WHERE k='upgrade:agents-file'`)
+	again, _ := store.Open(st.Path())
+	again.Close()
+	if it, _, _ := st.GetItem("dk-up000001"); it.Status != "dismissed" {
+		t.Fatalf("an old per-session sign-in item survived the upgrade: %s", it.Status)
+	}
 }

@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS events (
   processed INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS events_todo ON events(processed, id);
+CREATE INDEX IF NOT EXISTS events_by_machine ON events(machine, event, ts);
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
   machine TEXT,
@@ -269,7 +270,7 @@ func upgradeItems(db *sql.DB) {
 	t := now()
 	db.Exec(`UPDATE items SET status='dismissed', resolution='closed by the upgrade: guessed from chat or raised by a hook', resolved_at=?, updated_at=?
 		WHERE status IN ('maybe','open','snoozed') AND (status='maybe' OR source IN ('backfill','notification','permission_denied')
-		OR (dedupe_key LIKE 'stopfail:%' AND session_id<>''))`, t, t)
+		OR ((dedupe_key LIKE 'stopfail:%' OR dedupe_key LIKE 'auth:%') AND session_id<>''))`, t, t)
 	// Folder mappings from before voting were explicit choices: give them weight.
 	db.Exec(`UPDATE project_dirs SET votes=3 WHERE votes<3`)
 	db.Exec(`INSERT OR REPLACE INTO kv(k, v) VALUES ('upgrade:agents-file', ?)`, fmt.Sprint(t))
@@ -983,6 +984,10 @@ func (s *Store) SetAnswer(id, answer, action string) error {
 	if err := tx.QueryRow(`SELECT status FROM items WHERE id=?`, id).Scan(&prev); err != nil {
 		return err
 	}
+	// Checked here too, so an answer racing a close can't reopen it.
+	if closedStatus(prev) {
+		return errors.New("this item is already closed")
+	}
 	t := now()
 	if _, err := tx.Exec(`UPDATE items SET status='answered', answer=?, answered_at=?, updated_at=? WHERE id=?`, answer, t, t, id); err != nil {
 		return err
@@ -1000,9 +1005,9 @@ func (s *Store) Undo(id string) (string, error) {
 		return "", err
 	}
 	defer tx.Rollback()
-	var did int64
+	var did, dts int64
 	var action, prev, answer string
-	err = tx.QueryRow(`SELECT id, action, prev_status, answer FROM decisions WHERE item_id=? ORDER BY id DESC LIMIT 1`, id).Scan(&did, &action, &prev, &answer)
+	err = tx.QueryRow(`SELECT id, action, prev_status, answer, ts FROM decisions WHERE item_id=? ORDER BY id DESC LIMIT 1`, id).Scan(&did, &action, &prev, &answer, &dts)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", errors.New("nothing to undo")
 	}
@@ -1040,8 +1045,10 @@ func (s *Store) Undo(id string) (string, error) {
 	// Withdraw what the undone action queued (an answer, a "marked done", a
 	// noise note); never another action's delivery, like an answer still on
 	// its way when an expiry is undone.
+	// (Only deliveries queued from that decision on: an earlier answer still
+	// on its way stays.)
 	if action == "answer" || action == "approve" || action == "decline" || action == "choose" || action == "done" || action == "noise" {
-		tx.Exec(`DELETE FROM deliveries WHERE item_id=? AND status='pending'`, id)
+		tx.Exec(`DELETE FROM deliveries WHERE item_id=? AND status='pending' AND created_at>=?`, id, dts)
 	}
 	if _, err := tx.Exec(`DELETE FROM decisions WHERE id=?`, did); err != nil {
 		return "", err

@@ -292,7 +292,12 @@ func (s *Server) pageQueue(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) pageItem(w http.ResponseWriter, r *http.Request) {
-	it, ok, err := s.st.ResolveItem(r.PathValue("id"))
+	// An item's own id shows that item (a merged one included); only an id
+	// that isn't an item (an agent's re-filing alias) forwards.
+	it, ok, err := s.st.GetItem(r.PathValue("id"))
+	if err == nil && !ok {
+		it, ok, err = s.st.ResolveItem(r.PathValue("id"))
+	}
 	if err != nil || !ok {
 		http.NotFound(w, r)
 		return

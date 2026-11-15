@@ -610,16 +610,21 @@ func (s *Store) AdoptLegacyKey(k, machine, session, root, project, key string) b
 	return err == nil
 }
 
-// MovedByKey finds an active item filed with --key k by this session (or
-// from this machine) that the human has since moved to another project, so
-// a filing or done with that key still reaches it.
-func (s *Store) MovedByKey(k, session, machine string) (Item, bool) {
+// MovedByKey finds an active item filed with --key k that the human has
+// since moved into project, so a filing or done there with that key (the
+// agent sees it under its new project) still reaches it. Its key keeps the
+// original scope, so filings in the original project find it directly.
+// This session's item first, then this machine's.
+func (s *Store) MovedByKey(k, project, session, machine string) (Item, bool) {
+	if project == "" || project == Unsorted {
+		return Item{}, false
+	}
 	for _, q := range []struct{ col, val string }{{"session_id", session}, {"machine", machine}} {
 		if q.val == "" {
 			continue
 		}
-		rows, err := s.DB.Query(`SELECT `+itemCols+` FROM items WHERE dedupe_key LIKE 'key:%' AND instr(pinned,'project')>0 AND `+q.col+`=?
-			AND status IN ('maybe','open','snoozed','answered') ORDER BY created_at DESC`, q.val)
+		rows, err := s.DB.Query(`SELECT `+itemCols+` FROM items WHERE dedupe_key LIKE 'key:%' AND instr(pinned,'project')>0 AND project=? AND `+q.col+`=?
+			AND status IN ('maybe','open','snoozed','answered') ORDER BY created_at DESC`, project, q.val)
 		if err != nil {
 			return Item{}, false
 		}
@@ -665,4 +670,15 @@ func (s *Store) Reopen(id string) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// ClaimUnsorted gives an item without a project (an older docket's, or one
+// filed before a project was known) the project a filing named for it,
+// unless the human placed it by hand.
+func (s *Store) ClaimUnsorted(id, project string) error {
+	if project == "" || project == Unsorted {
+		return nil
+	}
+	_, err := s.DB.Exec(`UPDATE items SET project=?, updated_at=? WHERE id=? AND project IN ('', ?) AND instr(pinned,'project')=0`, project, now(), id, Unsorted)
+	return err
 }
