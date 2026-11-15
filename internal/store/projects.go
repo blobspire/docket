@@ -286,10 +286,13 @@ func (s *Store) SeenIDs(machine string, since int64) []string {
 	// Items and re-filing aliases, plus the done and project records the
 	// server has applied, so the machine can drop its own copies of those.
 	ts := time.Unix(since, 0).UTC().Format(time.RFC3339)
+	// Every filing this machine made (its item id, even if another machine
+	// has since re-filed the item), plus items and aliases recorded for it.
 	rows, err := s.DB.Query(`SELECT id FROM items WHERE machine=? AND created_at>=?
 		UNION SELECT alias FROM item_aliases WHERE machine=? AND created_at>=?
 		UNION SELECT id FROM events WHERE machine=? AND event IN ('cli.done','cli.project') AND processed=1 AND ts>=?
-		ORDER BY 1`, machine, since, machine, since, machine, ts)
+		UNION SELECT json_extract(body,'$.item.id') FROM events WHERE machine=? AND event='cli.file' AND processed=1 AND ts>=? AND json_extract(body,'$.item.id') IS NOT NULL
+		ORDER BY 1`, machine, since, machine, since, machine, ts, machine, ts)
 	if err != nil {
 		return nil
 	}
@@ -298,6 +301,22 @@ func (s *Store) SeenIDs(machine string, since int64) []string {
 		var id string
 		rows.Scan(&id)
 		out = append(out, id)
+	}
+	return out
+}
+
+// Aliases lists the other ids agents were told for an item.
+func (s *Store) Aliases(itemID string) []string {
+	var out []string
+	rows, err := s.DB.Query(`SELECT alias FROM item_aliases WHERE item_id=? ORDER BY rowid`, itemID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var a string
+		rows.Scan(&a)
+		out = append(out, a)
 	}
 	return out
 }
@@ -561,8 +580,14 @@ func (s *Store) RecentNoise(limit int, agentOnly bool) ([]Noise, error) {
 // Only one filed by the same session or from the same repository counts:
 // another repo's unsorted item with the same key is a different thing.
 func (s *Store) AdoptLegacyKey(k, machine, session, root, project, key string) bool {
+	// Rows from before keys were scoped (project '') come first; a filing
+	// that is itself unsorted only takes one of those.
+	candidates := []any{machine, Unsorted}
+	if project == Unsorted {
+		candidates = []any{machine, ""}
+	}
 	rows, err := s.DB.Query(`SELECT id, COALESCE(dedupe_key,''), session_id, cwd FROM items WHERE machine=? AND project IN ('', ?) AND dedupe_key LIKE 'key:%'
-		AND status IN ('maybe','open','snoozed','answered') ORDER BY created_at DESC`, machine, Unsorted)
+		AND status IN ('maybe','open','snoozed','answered') ORDER BY project<>'', created_at DESC`, candidates...)
 	if err != nil {
 		return false
 	}

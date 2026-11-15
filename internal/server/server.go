@@ -39,6 +39,8 @@ func Open(cfg *Config) (*Server, error) {
 	for _, m := range cfg.Machines {
 		s.pullKick[m.Name] = make(chan struct{}, 1)
 	}
+	// docket's own health items go here, so it's a project agents can see too.
+	st.EnsureProject(cfg.SystemProject, "docket's own alerts: logins, machines, usage limits")
 	return s, nil
 }
 

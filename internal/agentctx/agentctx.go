@@ -14,6 +14,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -49,14 +50,15 @@ type Dir struct {
 }
 
 type Item struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Kind      string `json:"kind,omitempty"`
-	Project   string `json:"project,omitempty"`
-	Urgency   string `json:"urgency,omitempty"`
-	Key       string `json:"key,omitempty"` // as the agent gave it (without docket's scope prefix)
-	SessionID string `json:"session_id,omitempty"`
-	CreatedAt int64  `json:"created_at"`
+	ID        string   `json:"id"`
+	Title     string   `json:"title"`
+	Kind      string   `json:"kind,omitempty"`
+	Project   string   `json:"project,omitempty"`
+	Urgency   string   `json:"urgency,omitempty"`
+	Key       string   `json:"key,omitempty"` // as the agent gave it (without docket's scope prefix)
+	SessionID string   `json:"session_id,omitempty"`
+	CreatedAt int64    `json:"created_at"`
+	Aliases   []string `json:"aliases,omitempty"` // other ids agents were told for it (re-filings)
 }
 
 // Path is ~/.docket/context.json.
@@ -289,7 +291,7 @@ func (c Context) Merged(o Overlay) Context {
 	closed := func(it Item) bool {
 		for _, x := range closings {
 			if x.ID != "" {
-				if x.ID == it.ID {
+				if x.ID == it.ID || slices.Contains(it.Aliases, x.ID) {
 					return true
 				}
 				continue

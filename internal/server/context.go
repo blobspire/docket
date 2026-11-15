@@ -17,6 +17,11 @@ import (
 // items stay off it (a shared lab computer shouldn't list personal admin).
 // The content is deterministic, so its hash only changes when something did.
 func (s *Server) ContextFor(machine string) ([]byte, error) {
+	// What the server has processed from this machine, read before the open
+	// items: anything processed in between shows as open but not yet seen,
+	// which the machine's own record covers; the other order could hide it.
+	day := s.cfg.Now().Truncate(24 * time.Hour).Add(-48 * time.Hour).Unix()
+	seen := s.st.SeenIDs(machine, day)
 	projects, err := s.st.Projects(false)
 	if err != nil {
 		return nil, err
@@ -51,9 +56,10 @@ func (s *Server) ContextFor(machine string) ([]byte, error) {
 			a.places[it.Place] = true
 			places[it.Place] = true
 		}
-		if it.Machine == machine {
+		// Only what agents filed: docket's own health items aren't theirs to close.
+		if it.Machine == machine && it.Source == "cli" {
 			c.Open = append(c.Open, agentctx.Item{ID: it.ID, Title: it.Title, Kind: it.Kind, Project: it.Project, Urgency: it.Urgency,
-				Key: store.AgentKey(it.DedupeKey), SessionID: it.SessionID, CreatedAt: it.CreatedAt})
+				Key: store.AgentKey(it.DedupeKey), SessionID: it.SessionID, CreatedAt: it.CreatedAt, Aliases: s.st.Aliases(it.ID)})
 		}
 	}
 	var asOf int64
@@ -63,7 +69,7 @@ func (s *Server) ContextFor(machine string) ([]byte, error) {
 		asOf = max(asOf, p.UpdatedAt)
 	}
 	for _, it := range items {
-		if it.Machine == machine {
+		if it.Machine == machine && it.Source == "cli" {
 			asOf = max(asOf, it.UpdatedAt)
 		}
 	}
@@ -79,8 +85,7 @@ func (s *Server) ContextFor(machine string) ([]byte, error) {
 	// What the server has processed from this machine lately, open or not:
 	// the machine's own record of its filings defers to the server for these.
 	// Day-aligned, so the window doesn't change the file every second.
-	day := s.cfg.Now().Truncate(24 * time.Hour).Add(-48 * time.Hour).Unix()
-	c.Seen = s.st.SeenIDs(machine, day)
+	c.Seen = seen
 	c.Timezone = s.cfg.Timezone // "" when unset: the machine's own zone is as good a guess
 	// "As of" is the last change the file reflects, not the time it was made,
 	// so an unchanged queue gives byte-identical files.

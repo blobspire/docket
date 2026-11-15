@@ -653,7 +653,13 @@ func TestPushTimeoutCountsOnlyWhenSent(t *testing.T) {
 		t.Skip("waits out the 15 s push timeout")
 	}
 	// A listener that accepts and never answers: the message was written.
-	silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.ReadAll(r.Body); time.Sleep(20 * time.Second) }))
+	silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		select {
+		case <-r.Context().Done():
+		case <-time.After(20 * time.Second):
+		}
+	}))
 	defer silent.Close()
 	e := pushEnv(t, silent.URL)
 	e.s.st.UpsertItem(store.Item{ID: "dk-pt000001", Kind: "issue", Title: "down", Urgency: "now", UrgentSince: time.Now().Add(-time.Hour).Unix()})
@@ -756,5 +762,39 @@ func TestImageInsideALinkKeepsTheLink(t *testing.T) {
 	out := string(renderMarkdown("[![logo](http://img.example/l.png)](https://link.example/)"))
 	if !strings.Contains(out, `href="https://link.example/"`) || strings.Contains(out, "img.example") || strings.Count(out, "<a ") != 1 {
 		t.Fatalf("rendered %s", out)
+	}
+}
+
+func TestAMovedFilingLeavesTheOriginalMachinesList(t *testing.T) {
+	e := newEnv(t, "")
+	e.file(t, "mac1", record.Item{ID: "dk-mf000001", Kind: "ask", Title: "db?", Key: "db", Project: "w"})
+	e.sendFrom(t, "lab", record.Record{Event: "cli.file", SessionID: "tl1", Item: &record.Item{ID: "dk-mf000002", Kind: "ask", Title: "db?", Key: "db", Project: "w"}})
+	data, _ := e.s.ContextFor("box")
+	var c agentctx.Context
+	json.Unmarshal(data, &c)
+	if !strings.Contains(strings.Join(c.Seen, ","), "dk-mf000001") || len(c.Open) != 0 {
+		t.Fatalf("box still owns a filing another machine took over: seen=%v open=%+v", c.Seen, c.Open)
+	}
+}
+
+func TestOneSignInItemWhicheverWayItsReported(t *testing.T) {
+	e := newEnv(t, "")
+	b1, _ := json.Marshal(map[string]any{"session_id": "s1", "error": "authentication_failed"})
+	e.send(t, record.Record{Event: "StopFailure", SessionID: "s1", Payload: b1}, ingest.Options{})
+	b2, _ := json.Marshal(map[string]any{"session_id": "s2", "notification_type": "auth_failed", "message": "signed out"})
+	e.send(t, record.Record{Event: "Notification", SessionID: "s2", Payload: b2}, ingest.Options{})
+	if a := active(t, e.s.st); len(a) != 1 {
+		t.Fatalf("one sign-in problem made %d items", len(a))
+	}
+}
+
+func TestLegacyKeyAdoptedBeforeTheMachineHasAContext(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	st.UpsertItem(store.Item{ID: "dk-lk000001", Kind: "ask", Title: "Postgres or SQLite?", Source: "cli", Machine: "box", Cwd: "/w/api", DedupeKey: "key:api:db-choice"})
+	// No context yet: the CLI sends no project, so the server files it unsorted.
+	e.file(t, "s", record.Item{ID: "dk-lk000002", Kind: "ask", Title: "Postgres or SQLite?", Key: "db-choice", Root: "/w/api"})
+	if a := active(t, st); len(a) != 1 || a[0].ID != "dk-lk000001" {
+		t.Fatalf("a re-file before the first sync duplicated the old item: %+v", a)
 	}
 }

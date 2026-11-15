@@ -94,15 +94,16 @@ project = "vlm-teacher"
 	st.EnsureProject("vlm-teacher", "Robots")
 	st.EnsureProject("admin", "Admin")
 	st.SetDir("box", "/w/robot", "vlm-teacher")
-	st.UpsertItem(store.Item{ID: "dk-c0000001", Kind: "ask", Title: "Mine", Project: "vlm-teacher", Component: "FR5", Place: "lab", Machine: "box", DedupeKey: "key:vlm-teacher:arm"})
-	st.UpsertItem(store.Item{ID: "dk-c0000002", Kind: "ask", Title: "The laptop's", Project: "admin", Machine: "laptop"})
+	st.UpsertItem(store.Item{ID: "dk-c0000001", Kind: "ask", Title: "Mine", Project: "vlm-teacher", Component: "FR5", Place: "lab", Machine: "box", DedupeKey: "key:vlm-teacher:arm", Source: "cli"})
+	st.UpsertItem(store.Item{ID: "dk-c0000002", Kind: "ask", Title: "The laptop's", Project: "admin", Machine: "laptop", Source: "cli"})
+	st.UpsertItem(store.Item{ID: "dk-c0000003", Kind: "health", Title: "box is unreachable", Project: "system", Machine: "box", Source: "watchdog"})
 	e.s.syncContext(e.ctx, e.m)
 	c, ok := agentctx.Load()
-	if !ok || len(c.Projects) != 2 || c.Leads["robotics"] != "vlm-teacher" || len(c.Dirs) != 1 {
+	if !ok || !c.HasProject("vlm-teacher") || !c.HasProject("admin") || c.Leads["robotics"] != "vlm-teacher" || len(c.Dirs) != 1 {
 		t.Fatalf("context = %+v", c)
 	}
 	if len(c.Open) != 1 || c.Open[0].ID != "dk-c0000001" || c.Open[0].Key != "arm" {
-		t.Fatalf("a machine must only see its own items: %+v", c.Open)
+		t.Fatalf("a machine must only see its own agent-filed items: %+v", c.Open)
 	}
 	if len(c.Places) != 1 || c.Places[0] != "lab" {
 		t.Fatalf("places = %v", c.Places)

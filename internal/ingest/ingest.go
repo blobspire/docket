@@ -380,10 +380,10 @@ func fileItem(s *store.Store, r record.Record, base store.Item, o Options) error
 			if moved, ok := s.MovedByKey(k, it.SessionID, base.Machine); ok {
 				// The human moved this item to another project: still the same one.
 				it.DedupeKey = moved.DedupeKey
-			} else if it.Project != store.Unsorted {
+			} else {
 				// An item filed with this key before keys were scoped by project
 				// (an older docket, or while it had no project) becomes this one.
-				s.AdoptLegacyKey(k, base.Machine, it.SessionID, in.Root, it.Project, it.DedupeKey)
+				s.AdoptLegacyKey(k, base.Machine, it.SessionID, firstNonEmpty(in.Root, base.Cwd), it.Project, it.DedupeKey)
 			}
 		}
 		// The human said items like this aren't worth their time: a re-file
@@ -495,7 +495,9 @@ func notification(s *store.Store, sid string, p payload, base store.Item, at int
 		it.SessionID = "" // one item per machine, not per session
 		it.Title = "Claude Code is signed out on " + base.Machine
 		it.Body = p.Message
-		it.DedupeKey = "auth:" + base.Machine + ":" + p.NotificationType
+		// The same sign-in problem as a StopFailure authentication_failed:
+		// one item for both.
+		it.DedupeKey = "stopfail:" + base.Machine + ":authentication_failed"
 		return upsertHealth(s, it)
 	}
 	return nil
