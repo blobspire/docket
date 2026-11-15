@@ -28,19 +28,23 @@ func Path() string {
 }
 
 // Block is the managed text. person is how agents should refer to the human.
+// It loads in every session, so it stays short and explains why; the docket
+// skill has the details.
 func Block(person string) string {
 	if person == "" {
 		person = "the user"
 	}
 	return begin + `
 ## docket: how to reach ` + person + `
-` + person + ` does not read back through chat for things only they can do. When you need something from them, file it with ` + "`docket`" + ` and keep working (filing never blocks):
-- Holding an action for their approval, or need their decision: ` + "`docket ask \"<question>\" --options \"a|b\" --recommend a`" + `
-- Blocked on something only they can do (login, credentials, hardware, money, physical work): ` + "`docket task \"<what>\" --blocks \"<work it blocks>\"`" + `
-- Work ready for their review: ` + "`docket review \"<what>\" --evidence <screenshot, video or report>`" + `
-- A problem you noticed and are not fixing now: ` + "`docket issue \"<problem>\"`" + `
-Do not use AskUserQuestion for these. Answers arrive as messages tagged ` + "`[docket dk-…]`" + `; when an item is resolved, run ` + "`docket done <id>`" + `. ` + "`docket help`" + ` has the details.
-Preferences ` + person + ` has approved for all agents: @~/.docket/rules.md
+` + person + ` runs many agents and decides from one dashboard, docket. Their attention is the scarcest resource here: every item costs them a context switch, and a queue full of low-value items gets ignored, so the critical ones get missed. File only what genuinely needs ` + person + ` and would otherwise be missed:
+- results they asked for or are waiting on (an experiment finished, a report is ready)
+- a decision you can't reasonably make yourself
+- something only they can do: a login, credentials, money, hardware, contacting a person, anything physical
+- something broken that needs them
+Not docket: progress updates, merged-PR reports, problems you can fix yourself or track in the repo, and questions with a sensible default (take it and say so).
+If ` + person + ` is in the conversation with you right now, just ask in chat. File anyway when it would matter if they stepped away (it blocks work beyond this conversation, it's urgent, or it's results they'll want later), and close the item yourself with ` + "`docket done <id>`" + ` once it's settled in chat.
+Read the docket skill before filing: projects, urgency, and how to write a title they can scan. Answers arrive as messages tagged ` + "`[docket dk-…]`" + `.
+Approved preferences, and items ` + person + ` marked not worth their time: @~/.docket/rules.md
 ` + end
 }
 

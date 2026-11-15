@@ -11,7 +11,7 @@ docket relays decisions between you and agents that can run commands on your mac
 
 ## What an answer can do
 
-- **docket only relays your decision.** An answer goes to the session that filed the item, labeled as coming from the docket queue. docket never answers, approves or retries anything on its own, and that includes the chief of staff.
+- **docket only relays your decision.** An answer goes to the session that filed the item, labeled as coming from the docket queue. docket never answers, approves or retries anything on its own.
 - **Auto mode still decides.** An approval for an action auto mode refused is delivered as your message; Claude Code's own permission checks then decide whether the retry runs. docket never tells the model to bypass them.
 - **Physical actions are never approvable remotely.** That means items marked `--physical`, or matching a machine's `physical_keywords` such as robot motion. Deliveries to such machines also state that they don't authorize physical motion.
 - **Every answer is logged** with its delivery method and receipt.
@@ -21,7 +21,8 @@ docket relays decisions between you and agents that can run commands on your mac
 - **On each agent machine**, hooks append Claude Code's hook payloads to `~/.docket/spool/` (mode 0700): session ids, folders, prompts, the assistant's last message, and the commands of tool calls that needed permission. Long strings are truncated. Environment variables whose names look like secrets (`TOKEN`, `KEY`, `SECRET`, `AUTH`, …) are never recorded.
 - **The server** copies those records into its SQLite database under `~/.local/share/docket/` (mode 0700). Evidence files agents attach are copied there too.
 - **Agent-made HTML or SVG evidence** is served with `Content-Security-Policy: sandbox` and `nosniff`, so it can't run scripts in the queue's origin.
-- **No model reads transcripts.** The optional chief-of-staff jobs (pre-review and rule proposals) send item text and your logged corrections to Claude through the server's own `claude` login. Turn them off with `[chief] pre_review = false` and `rules_every = "0"`.
+- **No model reads transcripts.** The one optional model job (rule proposals) sends your logged corrections and decisions to Claude through the server's own `claude` login. Turn it off with `[chief] rules_every = "0"`.
+- **Each machine sees only its own items.** `~/.docket/context.json` lists the project names and descriptions, and only the open items filed from that machine, so a shared lab computer doesn't list your personal admin.
 
 ## Transport
 

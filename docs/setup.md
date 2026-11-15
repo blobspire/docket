@@ -24,8 +24,8 @@ claude plugin install docket@docket
 
 What this sets up:
 - **`~/.docket/`:** the local spool the server collects, the mailbox answers arrive in, and the approved preferences.
-- **A short block in `~/.claude/CLAUDE.md`:** it tells every agent on the machine to file what it needs from you with `docket`. `docket uninstall` removes it, and backups of the previous file are kept.
-- **The Claude Code plugin:** hooks that capture permission prompts, auto-mode refusals, "needs input" notifications and login errors, and that deliver your answers. It also includes the `docket` skill.
+- **A short block in `~/.claude/CLAUDE.md`:** it tells every agent on the machine when to bring something to you in docket, and why the bar is high. `docket uninstall` removes it, and backups of the previous file are kept.
+- **The Claude Code plugin:** hooks that deliver your answers and notice what an agent can't file itself (an expired login, a stuck lead). It also includes the `docket` skill, which agents read before filing.
 
 Sessions already running pick up the plugin when they restart. Until then the server can still see them through Claude Code's session registry, and it reaches the ones in tmux by typing into them, guarded so it never types while you're attached or mid-sentence.
 
@@ -56,12 +56,21 @@ Restart the service after editing the config: `systemctl --user restart docket`.
 
 ### Phone pushes
 
-Install the [ntfy](https://ntfy.sh) app and subscribe to the topic in your config (`init --server` picks a random one). Pushes go out only when:
-- a lead is blocked on you,
-- a system is down, or
-- something is due today.
+Install the [ntfy](https://ntfy.sh) app and subscribe to the topic in your config (`init --server` picks a random one).
 
-Quiet hours hold everything except system-down alerts. Everything else waits in the queue.
+Pushes go out only for **act-now** items: an agent marked something `--urgency now`, or a Claude login failed. Each goes out once, 90 seconds after it became urgent, at any hour. Everything else waits on the dashboard.
+
+Other programs can use the same path: `docket issue "<what broke>" --project <p> --urgency now --key <id>` raises an alert, and `docket done --key <id>` clears it. An alert that clears within the grace period never buzzes.
+
+### Projects
+
+Agents choose and create projects as they file. Seed the ones you know so agents reuse them. Here `docket` is the CLI the agents use:
+
+```sh
+docket ask "First item for this project" --project website --new-project "The company website and blog"
+```
+
+Map a lead to its project with `project = "website"` in its `[[lead]]`. Put docket's own health items (machines, logins, quota) where you like with `system_project = "admin"`. You can rename, merge or archive projects from a project's page on the dashboard.
 
 ## 4. Leads (optional)
 
@@ -83,11 +92,31 @@ Leads are event-driven: your answers, their jobs, or a schedule wake them. Sched
 ## 5. Start with what is already waiting
 
 ```sh
-docket backfill grep --since 30d          # on each machine: asks already in transcripts become "maybe" items
-docket import md STATUS.md --section "Human tasks"   # task lists you keep in markdown
-docket server backfill-prompt --dry-run   # then without --dry-run: live sessions file what they're waiting on
+docket import md STATUS.md --project website --section "Human tasks"   # task lists you keep in markdown
 ```
+
+## Upgrading
+
+1. Install the new binary everywhere (`install.sh` again, or copy a `make dist` binary). Use a temporary file and `mv` it into place, because a running hook may hold the old one open.
+2. On the server, run `systemctl --user restart docket`.
+3. On every machine with agents:
+   - Run `docket init --agent` to refresh the `CLAUDE.md` block.
+   - Run `claude plugin marketplace update docket && claude plugin update docket@docket`.
+4. Update laptops and lab machines before the server. A newer server sends them files (`context put`) that an older binary doesn't know.
+5. New sessions pick up the new instructions; running sessions keep the old ones until they restart.
 
 ## Day to day
 
-Open the queue at `https://<server>.<tailnet>.ts.net`. Press `?` for keys: `j`/`k` to move, `y`/`n` to approve or decline, `a` to answer, `o` to open the agent's session. Answers reach the session right away: at its next tool call if it's working, by waking it if it's idle, or by resuming it if it ended.
+Open the dashboard at `https://<server>.<tailnet>.ts.net`. Press `?` for keys:
+
+| Key | Action |
+|---|---|
+| `j` / `k` | move |
+| `enter` | expand an item in place |
+| `[` / `]` | switch project |
+| `y` / `n` | approve or decline |
+| `a` | answer in your own words |
+| `w` | not worth my time, with a note |
+| `o` | open the agent's session |
+
+Answers reach the session right away: at its next tool call if it's working, by waking it if it's idle, or by resuming it if it ended.

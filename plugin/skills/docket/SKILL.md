@@ -1,67 +1,112 @@
 ---
 name: docket
-description: File what you need from the human in docket instead of only saying it in chat. Use whenever you are holding an action for their approval, need their decision, are blocked on something only they can do (logins, credentials, hardware, money, physical work), have work ready for their review, or noticed a problem you are not fixing now. Also use when a message tagged [docket dk-…] arrives with their answer.
+description: Reach the human through docket, their dashboard of decisions and action items, when something genuinely needs them and would otherwise be missed - results they're waiting on, a decision you can't make, something only they can do (logins, credentials, money, hardware, people, anything physical), or something broken. Read before running docket ask/task/review/issue, and when a message tagged [docket dk-…] arrives with their answer.
 ---
 
 # docket: reaching the human
 
-The human reads one prioritized queue, not your chat history. Anything you only *say* in chat can sit unseen for days, and is lost across context compactions. So when you need them, **file it** with the `docket` CLI and keep working. Filing never blocks you.
+The human runs many agents and decides from one dashboard: docket. It groups items by project, puts anything urgent in a red **Act now** band at the top, and pushes their phone only for act-now items. Their attention is the scarcest resource in this whole system. Every item you file costs them a context switch. If docket fills with things that didn't need them, they stop reading it, and the one item that mattered gets missed. So the bar is high, and you are trusted to judge it.
 
-## Which command
+## Should this go to docket?
 
-| Situation | Command |
+File it when it **needs them** and **would otherwise be missed**:
+
+| File it | Don't file it |
 |---|---|
-| You are holding an action until they approve it | `docket ask "Deploy the new pricing to production?" --options "deploy|wait" --recommend deploy --why "Tests pass; 3 customers asked"` |
-| You need their decision between options | `docket ask "Which storage backend?" --options "sqlite|postgres" --recommend sqlite` |
-| Only they can do it (login, credentials, money, hardware, anything physical) | `docket task "Re-authenticate WARP in the GUI" --blocks "lab SSH, nightly sync"` |
-| Work is ready for their review | `docket review "New landing page hero" --evidence shot-desktop.png,shot-phone.png,demo.mp4` |
-| A problem you noticed and aren't fixing now | `docket issue "Backups have failed for 3 nights" --why "disk full on the NAS"` |
-| Something they should know, no action needed | `docket fyi "Migrated the CI to the new runner"` |
+| Results they asked for or are waiting on: "LIBERO-plus results: Model A 65.5% vs control 78.6%" | Progress updates, "started X", "tests pass" |
+| A decision you can't reasonably make yourself, that changes direction or costs money | A question with a sensible default: take the default, say so in your reply |
+| Only they can do it: a login, credentials, money, hardware, contacting a person, anything physical | "PR merged: review report" when no decision is needed |
+| Something is broken and needs them: "ARC login expired: all training jobs are failing" | Bugs you can fix, or track in the repo's issues |
+| An action you're holding for their approval that you can't take yourself | Optional nice-to-haves ("optional speed-up: …") |
 
-Useful flags:
-- `--blocking`: you can't make progress until they answer. Use it honestly; it can wake their phone.
-- `--due YYYY-MM-DD|today|tomorrow`.
-- `--physical`: the step involves physical action (robots, hardware). It can never be approved remotely; they'll do it in person.
-- `--key <stable-id>`: re-filing with the same key updates one item instead of adding a duplicate. Use it for things you re-check on a schedule.
+**If they're in the conversation with you right now**, ask in chat; don't file a copy of a quick back-and-forth. File anyway when it would matter if they stepped away: it blocks work beyond this conversation, it's urgent, or it's results they'll want to come back to. When it gets settled in chat, close it yourself with `docket done <id>`.
 
-## Long-running jobs
+`~/.docket/rules.md` lists items they marked **not worth their time**, often with a note saying why. Read those notes as direct instructions about what not to file.
 
-If you start something that runs for a long time (training, a backfill, a cluster job, a recording), register it so a stall gets noticed even while you're idle:
+## Filing
 
 ```sh
-docket job register nightly-backtest --every 10m --why "3h run on the cluster"
-docket job beat nightly-backtest --why "epoch 4/12"     # from the job's loop, or each time you check on it
-docket job done nightly-backtest [--failed] --why "sharpe 1.4"
+docket ask "Raise the GitHub Actions spending limit so CI runs again?" --project windward \
+  --options "raise to 10|slim CI only|wait for Dec 1" --recommend "raise to 10" \
+  --why "$(cat <<'EOF'
+CI has been off since Nov 10: the free minutes ran out.
+
+- **raise to 10**: CI back today; $10 is a hard cap
+- **slim CI only**: free, desktop tests on PRs only
+- **wait**: no CI until Dec 1
+EOF
+)"
+docket task "Plug the COLE thumb drive into aurora for a backup" --project cwant --place home --component backups
+docket review "LIBERO-plus results: Model A 65.5% vs control 78.6%" --project vlm-teacher --component "Model A" --evidence report.md
+docket issue "ARC login expired: all training jobs are failing" --project vlm-teacher --urgency now --key arc-auth --why "..."
 ```
 
-A job that misses two beats becomes a health alert, and its lead can be woken to look.
+| Command | When |
+|---|---|
+| `ask` | A decision, or an action you're holding for approval. Give `--options` and `--recommend` when you have them. |
+| `task` | Something only they can do. `--blocks "<what it blocks>"` if it blocks work. |
+| `review` | Results or work for them to look at. Attach `--evidence` (screenshots, report, video). |
+| `issue` | Something broken that needs them. |
 
-## Write items that can be decided without opening your session
+### Title: they read it in a second
 
-- **Title:** the decision or action itself, phrased as a question or an imperative. Not "Update".
-- **`--why`:** the context needed to decide. Assume they haven't read anything you wrote.
-- **`--recommend`:** your recommendation, whenever you have one.
-- **Evidence:** attach screenshots, videos, logs or reports with `--evidence`. A review with evidence gets answered much faster.
+At most ~80 characters (90 is a hard limit), one line, plain words. Say the decision, the action or the result itself. No paths, hashes, ids, branch names or code. Details go in `--why`.
 
-## Adding to an item
+| Bad | Good |
+|---|---|
+| Measure the modified tool on BOTH FR5 arms (F/T sensor + TSF-85 fingers): flange face to gripper mounting face; flange to fingertip, … | Measure the new FR5 tool on both arms |
+| 2026-11-14 PR #165 merged: the suite on the new-tool arm file (31 reds to 5), five real defects fixed | (don't file: no decision needed) |
+| Auto mode refused: python3 -I -c " import json m=json.load(open('/home/… | Approve reading the camera calibration file? |
 
-If you learn more after filing (results came in, you made the screenshots), add them instead of filing again:
+### Body (`--why`): markdown, short
 
-```sh
-docket add dk-xxxxxxxx --why "Benchmarks: p95 dropped from 180ms to 95ms" --evidence bench.png
-```
+Lead with what you need from them and why, in a sentence or two. Then at most ~5 bullets of the context needed to decide. Use **bold** labels, real lists, and a table if it helps. Aim for under ~120 words; link or attach the long version. Assume they've read nothing you wrote elsewhere.
 
-docket's chief of staff may ask you for this: a message that says it is from the chief of staff is a request for more detail, not the human's answer. Keep working, add what it asks for, and wait for the real answer.
+### Project, component, place
+
+- `--project <name>`: run `docket projects` to see the projects, with descriptions. Reuse one when it fits. In a repo that already filed to a project, you can leave it out. If nothing fits, start one: `--project <short-name> --new-project "<one-line description>"`. A project is a body of work, not a repo: several repos can share one.
+- `--component <name>`: optional, the part of the project ("FR5 hardware", "billing", "CI"). Reuse names `docket projects` shows.
+- `--place <name>`: only for things they must physically be somewhere to do ("tealab", "home", "office"). Items are grouped by place so one trip covers them, because a missed physical task can cost a trip back. Reuse existing place names.
+
+### Urgency: `--urgency now|soon|normal` (default normal)
+
+- **now**: something is down or blocked, and every hour it waits costs real time or money until they act. Examples: a login expired and all training jobs are failing; production is down; a trading system is losing money. It goes in the red band and **pushes their phone at any hour**. Use it rarely and honestly.
+- **soon**: a real deadline or a person is waiting: a reply someone needs this week, a server shutting down Friday.
+- **normal**: everything else: results, reviews, decisions that don't block anything today. Most items are normal.
+
+### Deadlines and expiry
+
+- `--due YYYY-MM-DD` (or `today`/`tomorrow`): a real deadline. They can sort by it.
+- `--expires <date | 6h | 3d>`: when the item stops mattering, so it closes on its own instead of rotting. Example: "Launch before Curry shuts down his server?" expires when the server is gone.
+
+### Other flags
+
+- `--key <stable-id>`: re-filing with the same key updates the one item instead of adding another: a new title, body or urgency. Escalate this way (`--urgency now`) if a waiting item becomes urgent. Use it for anything you re-check on a schedule.
+- `--blocking`: you're paused until they answer.
+- `--physical`: needs physical action (robots, hardware). It can never be approved remotely; they'll do it in person.
+
+## After filing: keep the dashboard true
+
+- `docket list` shows open items from this machine. `*` marks yours, so you can find their ids after a context compaction.
+- `docket done <id> --why "<what happened>"` as soon as an item is answered in chat, done, fixed, or moot. Use `docket done --key <key>` if you filed it with a key. Leaving stale items open is the fastest way to make the dashboard useless.
+- `docket add <id> --why "..." --evidence file.png` when you learn more, instead of filing again.
 
 ## When their answer arrives
 
-It shows up in your context as a message starting with `[docket dk-xxxxxxxx #nonce]`. Act on it.
-- If an answer approves an action that auto mode refused earlier, retry it.
+It shows up as a message starting with `[docket dk-xxxxxxxx #nonce]`. Act on it:
+- If they approved an action auto mode refused earlier, retry it.
 - If they declined, don't do it.
-- When an item is resolved, run `docket done dk-xxxxxxxx --why "<what happened>"`.
+- If they marked your item **not worth their time**, take their note to heart: don't re-file it, and file fewer things like it.
+- When the item is resolved, run `docket done dk-xxxxxxxx --why "<what happened>"`.
 
-## Don't
+## Long-running jobs
 
-- Don't use AskUserQuestion for these. It blocks the session, and the human may be away for hours.
-- Don't file routine progress updates; those belong in your normal output.
-- Don't re-file something already open. Use `--key`, or `docket add` to update it.
+If you start something that runs for a long time (training, a backfill, a cluster job), register it so a stall gets noticed even while you're idle:
+
+```sh
+docket job register nightly-backtest --every 10m --why "3h run on the cluster"
+docket job beat nightly-backtest --why "epoch 4/12"
+docket job done nightly-backtest [--failed] --why "sharpe 1.4"
+```
+
+A job that misses two beats shows up on their dashboard, and its lead is woken to look. When it finishes, file the **results** with `docket review` if they're waiting on them.

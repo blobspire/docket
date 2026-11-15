@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/blobspire/docket/internal/agentctx"
-	"github.com/blobspire/docket/internal/store"
 )
 
 // ContextFor builds ~/.docket/context.json for one machine: every project
@@ -125,5 +124,3 @@ func (s *Server) leadProject(lead string) string {
 	}
 	return ""
 }
-
-var _ = store.Unsorted

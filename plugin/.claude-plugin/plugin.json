@@ -1,8 +1,8 @@
 {
   "name": "docket",
   "displayName": "docket",
-  "version": "0.3.0",
-  "description": "Captures what your agents need from you (approvals they're holding, blockers, permission prompts, reviews, human-only tasks) for one prioritized queue.",
+  "version": "0.4.0",
+  "description": "Lets your agents bring you what really needs you (results, decisions, things only you can do, things that broke) on one dashboard by project, and delivers your answers back to them.",
   "author": {
     "name": "Cole Wendrowski"
   },
