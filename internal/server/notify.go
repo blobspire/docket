@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"strings"
 	"time"
 )
@@ -17,6 +19,9 @@ const (
 	prioHigh   = 4
 	prioUrgent = 5
 )
+
+// errSentLate: the push went out but ntfy didn't confirm in time.
+var errSentLate = errors.New("ntfy took the message but didn't answer in time")
 
 // push sends a phone notification through ntfy. It is a no-op when no topic
 // is configured.
@@ -35,6 +40,8 @@ func (s *Server) push(ctx context.Context, title, body, click string, priority i
 	b, _ := json.Marshal(msg)
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
+	wrote := false
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{WroteRequest: func(i httptrace.WroteRequestInfo) { wrote = i.Err == nil }})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(n.Server, "/"), bytes.NewReader(b))
 	if err != nil {
 		return err
@@ -45,6 +52,11 @@ func (s *Server) push(ctx context.Context, title, body, click string, priority i
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		// ntfy got the whole message but answered late: it was almost
+		// certainly delivered, so don't buzz the phone again.
+		if wrote && errors.Is(err, context.DeadlineExceeded) {
+			return errSentLate
+		}
 		return err
 	}
 	defer resp.Body.Close()
@@ -67,5 +79,5 @@ func (s *Server) TestPush(ctx context.Context) error {
 	if s.cfg.Ntfy.Topic == "" {
 		return fmt.Errorf("no ntfy topic configured")
 	}
-	return s.push(ctx, "docket is set up", "Test notification. From now on you'll only get pushes when an agent is blocked on you, a system is down, or something is due today.", strings.TrimRight(s.cfg.PublicURL, "/")+"/", prioHigh, "white_check_mark")
+	return s.push(ctx, "docket is set up", "Test notification. From now on your phone only buzzes for act-now items: something is down or blocked until you act.", strings.TrimRight(s.cfg.PublicURL, "/")+"/", prioHigh, "white_check_mark")
 }

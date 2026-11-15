@@ -3,6 +3,7 @@ package server
 import (
 	"embed"
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"io/fs"
 	"net/http"
@@ -19,16 +20,17 @@ import (
 var webFS embed.FS
 
 var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
-	"age": func(unix int64) string { return age(time.Now(), unix) },
-	"where": func(v any) string {
-		switch it := v.(type) {
-		case store.Item:
-			return strings.TrimSpace(strings.Trim(where(it), " ()"))
-		case *store.Item:
-			return strings.TrimSpace(strings.Trim(where(*it), " ()"))
-		}
-		return ""
-	},
+	"age":         func(unix int64) string { return age(time.Now(), unix) },
+	"md":          renderMarkdown,
+	"kindClass":   kindClass,
+	"until":       until,
+	"dueState":    dueState,
+	"dueLabel":    dueLabel,
+	"list":        func(v ...string) []string { return v },
+	"closed":      func(status string) bool { return status == "done" || status == "dismissed" || status == "expired" },
+	"projectName": projectName,
+	"mdShort":     renderMarkdownShort,
+	"trimDot":     func(s string) string { return strings.TrimRight(strings.TrimSpace(s), ".") },
 	"recommended": recommended,
 	"project":     project,
 	"kindName":    kindName,
@@ -74,20 +76,81 @@ var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 	},
 }).ParseFS(webFS, "web/*.html"))
 
+// kindName is how an item's type reads on the page: what it asks of the
+// human, in one word.
 func kindName(k string) string {
 	switch k {
-	case "ask":
-		return "decision"
+	case "ask", "approval":
+		return "Decide"
 	case "human_task":
-		return "only you"
-	case "approval":
-		return "approval"
+		return "Do"
+	case "review", "fyi":
+		return "Review"
+	case "issue", "health":
+		return "Problem"
 	case "blocker":
-		return "waiting"
+		return "Waiting"
 	case "rule":
-		return "rule"
+		return "Rule"
 	}
 	return k
+}
+
+func kindClass(k string) string { return strings.ToLower(kindName(k)) }
+
+// until is a short "in 2d" / "in 5h" for a future unix time.
+func until(unix int64) string {
+	d := time.Until(time.Unix(unix, 0))
+	switch {
+	case d < 0:
+		return "now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes())+1)
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	}
+	return fmt.Sprintf("%dd", int(d.Hours()/24))
+}
+
+// dueState is "overdue", "today", "soon" (within 3 days) or "".
+func dueState(due string) string {
+	if due == "" {
+		return ""
+	}
+	today := time.Now().Format("2006-01-02")
+	switch {
+	case due < today:
+		return "overdue"
+	case due == today:
+		return "today"
+	case due <= time.Now().AddDate(0, 0, 3).Format("2006-01-02"):
+		return "soon"
+	}
+	return ""
+}
+
+// dueLabel reads a deadline the way people say it: today, tomorrow, Fri, Nov 20.
+func dueLabel(due string) string {
+	t, err := time.ParseInLocation("2006-01-02", due, time.Local)
+	if err != nil {
+		return due
+	}
+	// Count calendar days in UTC, so a DST change (a 23- or 25-hour day)
+	// doesn't make tomorrow read as today.
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	day := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+	switch days := int(day.Sub(today).Hours() / 24); {
+	case days == 0:
+		return "today"
+	case days == 1:
+		return "tomorrow"
+	case days == -1:
+		return "yesterday"
+	case days > 1 && days < 7:
+		return t.Format("Mon")
+	}
+	return t.Format("Jan 2")
 }
 
 // Handler serves the queue UI.
@@ -96,6 +159,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /{$}", s.pageQueue)
 	mux.HandleFunc("GET /item/{id}", s.pageItem)
 	mux.HandleFunc("POST /item/{id}/act", s.act)
+	mux.HandleFunc("POST /project/{name}", s.editProject)
 	mux.HandleFunc("GET /done", s.pageDone)
 	mux.HandleFunc("GET /search", s.pageSearch)
 	mux.HandleFunc("GET /evidence", s.pageEvidence)
@@ -109,7 +173,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /blob/{sha}", s.blob)
 	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"v": s.st.Get("version")})
+		json.NewEncoder(w).Encode(map[string]string{"v": s.st.QueueDigest()})
 	})
 	mux.HandleFunc("POST /api/collect", func(w http.ResponseWriter, r *http.Request) {
 		s.KickPull("")
@@ -158,11 +222,8 @@ type page struct {
 	Title       string
 	Nav         string
 	Person      string
-	Brief       string
-	BriefDay    string
-	Now         []Ranked
-	Maybe       []Ranked
-	Snoozed     []Ranked
+	Queue       *queueView
+	One         *Ranked
 	Closed      []store.Item
 	Item        *store.Item
 	Session     *store.Session
@@ -182,6 +243,8 @@ type page struct {
 	Spend       []Spend
 	Rules       []store.Rule
 	Corrections []store.Decision
+	Noise       []store.Noise
+	RuleCount   int
 }
 
 type leadRow struct {
@@ -201,7 +264,14 @@ type machineRow struct {
 
 func (s *Server) render(w http.ResponseWriter, name string, p page) {
 	p.Person = s.cfg.Person
-	p.Version = s.st.Get("version")
+	p.Version = s.st.QueueDigest()
+	if items, err := s.st.Items("open"); err == nil {
+		for _, it := range items {
+			if it.Kind == "rule" {
+				p.RuleCount++
+			}
+		}
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := tmpl.ExecuteTemplate(w, name, p); err != nil {
 		s.log.Printf("render %s: %v", name, err)
@@ -209,20 +279,25 @@ func (s *Server) render(w http.ResponseWriter, name string, p page) {
 }
 
 func (s *Server) pageQueue(w http.ResponseWriter, r *http.Request) {
-	now, maybe, snoozed, err := s.Queue()
+	q, err := s.buildQueue(r.URL.Query())
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	p := page{Title: "Queue", Nav: "queue", Now: now, Maybe: maybe, Snoozed: snoozed}
-	if s.st.Get("brief_date") == s.cfg.Now().Format("2006-01-02") {
-		p.Brief, p.BriefDay = s.st.Get("brief_text"), s.st.Get("brief_date")
+	title := "docket"
+	if q.Mode != "all" {
+		title = q.Heading
 	}
-	s.render(w, "queue.html", p)
+	s.render(w, "queue.html", page{Title: title, Nav: "queue", Queue: q, Error: r.URL.Query().Get("err")})
 }
 
 func (s *Server) pageItem(w http.ResponseWriter, r *http.Request) {
+	// An item's own id shows that item (a merged one included); only an id
+	// that isn't an item (an agent's re-filing alias) forwards.
 	it, ok, err := s.st.GetItem(r.PathValue("id"))
+	if err == nil && !ok {
+		it, ok, err = s.st.ResolveItem(r.PathValue("id"))
+	}
 	if err != nil || !ok {
 		http.NotFound(w, r)
 		return
@@ -230,8 +305,58 @@ func (s *Server) pageItem(w http.ResponseWriter, r *http.Request) {
 	sess, _, _ := s.st.GetSession(it.SessionID)
 	ev, _ := s.st.Evidence(it.ID)
 	ds, _ := s.st.ItemDeliveries(it.ID)
-	s.render(w, "item.html", page{Title: it.Title, Nav: "queue", Item: &it, Session: &sess, Evidence: ev, Delivery: ds,
+	q, _ := s.buildQueue(url.Values{})
+	one := Ranked{Item: it, Session: sess}
+	s.render(w, "item.html", page{Title: it.Title, Nav: "queue", One: &one, Queue: q, Session: &sess, Evidence: ev, Delivery: ds,
 		Physical: s.physical(it), Error: r.URL.Query().Get("err")})
+}
+
+// editProject saves a project's description and archived flag, or renames it
+// (merging into an existing project of that name).
+func (s *Server) editProject(w http.ResponseWriter, r *http.Request) {
+	name := store.Slug(r.PathValue("name"))
+	r.ParseForm()
+	desc := strings.TrimSpace(r.FormValue("description"))
+	archived := r.FormValue("archived") != ""
+	target := name
+	var err error
+	rename := strings.TrimSpace(r.FormValue("rename"))
+	switch to := store.Slug(rename); {
+	case rename != "" && to == "":
+		err = fmt.Errorf("%q isn't a usable project name: use letters, digits and dashes", rename)
+	case to != "" && to != name:
+		if err = s.st.RenameProject(name, to); err == nil {
+			target = to
+		}
+	}
+	// The description and archive box apply to the project as it's now named
+	// (after a merge, the existing description is kept unless one was typed).
+	if err == nil && target != store.Unsorted {
+		if p, ok := s.st.GetProject(target); !ok {
+			err = s.st.EnsureProject(target, desc)
+		} else {
+			// The form starts with this project's description; on a merge,
+			// that untouched text mustn't replace the target's own. On a plain
+			// save it's stored as typed (empty clears it).
+			if target != name && desc == strings.TrimSpace(r.FormValue("old_description")) {
+				desc = p.Description
+			}
+			// Likewise the archive box: an untouched box keeps the target's own flag.
+			if target != name && archived == (r.FormValue("old_archived") != "") {
+				archived = p.Archived
+			}
+			err = s.st.SetProject(target, desc, archived)
+		}
+	}
+	back := "/?p=" + url.QueryEscape(target)
+	if archived && err == nil {
+		back = "/"
+	}
+	if err != nil {
+		back = "/?p=" + url.QueryEscape(name) + "&err=" + url.QueryEscape(err.Error())
+	}
+	s.st.Bump()
+	http.Redirect(w, r, back, http.StatusSeeOther)
 }
 
 func (s *Server) pageDone(w http.ResponseWriter, r *http.Request) {
@@ -321,6 +446,7 @@ func (s *Server) pageBrain(w http.ResponseWriter, r *http.Request) {
 			rs = append(rs, it)
 		}
 	}
+	noise, _ := s.st.RecentNoise(50, false)
 	ds, _ := s.st.DecisionsSince(time.Now().AddDate(0, 0, -14).Unix(), 500)
 	var corr []store.Decision
 	for i := len(ds) - 1; i >= 0; i-- {
@@ -332,7 +458,7 @@ func (s *Server) pageBrain(w http.ResponseWriter, r *http.Request) {
 	if m := r.URL.Query().Get("msg"); m != "" {
 		msg = m
 	}
-	s.render(w, "brain.html", page{Title: "Brain", Nav: "brain", Rules: rules, Closed: rs, Corrections: corr, Error: msg})
+	s.render(w, "brain.html", page{Title: "Brain", Nav: "brain", Rules: rules, Closed: rs, Corrections: corr, Noise: noise, Error: msg})
 }
 
 func (s *Server) proposeNow(w http.ResponseWriter, r *http.Request) {
@@ -386,7 +512,7 @@ func (s *Server) act(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	a := Action{Kind: r.FormValue("action"), Text: r.FormValue("text")}
+	a := Action{Kind: r.FormValue("action"), Text: r.FormValue("text"), Project: r.FormValue("project"), Urgency: r.FormValue("urgency")}
 	if o := r.FormValue("option"); o != "" {
 		a.Option, _ = strconv.Atoi(o)
 	}
@@ -419,7 +545,7 @@ func (s *Server) act(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	back := r.FormValue("back")
-	if back == "" || !strings.HasPrefix(back, "/") || strings.HasPrefix(back, "//") {
+	if !localPath(back) {
 		back = "/"
 	}
 	if err != nil {
@@ -473,4 +599,20 @@ func recommended(option, rec string) bool {
 		return true
 	}
 	return false
+}
+
+// localPath reports whether a redirect target stays on this site: a path
+// like /?p=x, never //host, /\host or anything with control characters,
+// which browsers may treat as another host.
+func localPath(p string) bool {
+	if !strings.HasPrefix(p, "/") || strings.HasPrefix(p, "//") || strings.ContainsAny(p, "\\") {
+		return false
+	}
+	for _, r := range p {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	u, err := url.Parse(p)
+	return err == nil && u.Host == "" && u.Scheme == ""
 }

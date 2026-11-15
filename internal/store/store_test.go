@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -149,9 +150,9 @@ func TestSnoozeAndWake(t *testing.T) {
 func TestPatchSession(t *testing.T) {
 	s := open(t)
 	s.PatchSession("s1", SessionPatch{Machine: Str("lab"), State: Str("busy"), HasPlugin: Bool(true)})
-	s.PatchSession("s1", SessionPatch{State: Str("idle"), AddNudge: true})
+	s.PatchSession("s1", SessionPatch{State: Str("idle")})
 	x, ok, err := s.GetSession("s1")
-	if !ok || err != nil || x.Machine != "lab" || x.State != "idle" || !x.HasPlugin || x.Nudges != 1 {
+	if !ok || err != nil || x.Machine != "lab" || x.State != "idle" || !x.HasPlugin {
 		t.Fatalf("session = %+v ok=%v err=%v", x, ok, err)
 	}
 }
@@ -212,5 +213,71 @@ func TestMigrateAddsColumnsToOldDatabases(t *testing.T) {
 	x, ok, err := s.GetSession("s1")
 	if err != nil || !ok || x.WaitingSince != 5 || x.Kind != "interactive" || x.Machine != "lab" {
 		t.Fatalf("got %+v %v %v", x, ok, err)
+	}
+}
+
+func TestExactAgentKeys(t *testing.T) {
+	s := open(t)
+	s.UpsertItem(Item{ID: "dk-1", Kind: "ask", Title: "a", DedupeKey: "key:p:build:x", SessionID: "s"})
+	s.UpsertItem(Item{ID: "dk-2", Kind: "ask", Title: "b", DedupeKey: "key:p:Deploy", SessionID: "s"})
+	s.UpsertItem(Item{ID: "dk-3", Kind: "ask", Title: "c", DedupeKey: `key:p:ab`, SessionID: "s"})
+	for _, k := range []string{"x", "deploy", `a\b`, "a_b", "%"} {
+		if it, ok := s.ActiveByAgentKey(k, "s", ""); ok {
+			t.Errorf("--key %q matched %s (%s)", k, it.ID, it.DedupeKey)
+		}
+	}
+	if it, ok := s.ActiveByAgentKey("build:x", "s", ""); !ok || it.ID != "dk-1" {
+		t.Errorf("exact key not found: %+v %v", it, ok)
+	}
+}
+
+func TestUndoExpiryKeepsItOpen(t *testing.T) {
+	s := open(t)
+	s.UpsertItem(Item{ID: "dk-e", Kind: "ask", Title: "launch?", ExpiresAt: time.Now().Add(-time.Minute).Unix()})
+	if n, _ := s.Expire(time.Now().Unix()); n != 1 {
+		t.Fatalf("expired %d", n)
+	}
+	if _, err := s.Undo("dk-e"); err != nil {
+		t.Fatal(err)
+	}
+	s.Expire(time.Now().Unix())
+	if it, _, _ := s.GetItem("dk-e"); it.Status != "open" || it.ExpiresAt != 0 {
+		t.Fatalf("after undo: %s expires=%d", it.Status, it.ExpiresAt)
+	}
+}
+
+func TestConcurrentMigrationsOfAnOldDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "d.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Make it look like a database from before these columns existed.
+	for _, a := range added {
+		if a.table == "items" || a.table == "deliveries" {
+			if _, err := s.DB.Exec(`ALTER TABLE ` + a.table + ` DROP COLUMN ` + a.column); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	s.Close()
+	var wg sync.WaitGroup
+	errs := make(chan error, 4)
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s, err := Open(path)
+			if err != nil {
+				errs <- err
+				return
+			}
+			s.Close()
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("a concurrent migration failed: %v", err)
 	}
 }

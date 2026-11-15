@@ -4,6 +4,8 @@
 //	mailbox/inbox/<session>/<delivery>.json    waiting to be delivered
 //	mailbox/claimed/<session>/<delivery>.json  handed to the session
 //
+// Quiet deliveries are stored as <delivery>.q.json.
+//
 // Claiming is an atomic rename, so when a background waiter and a
 // PostToolUse hook race for the same answer, exactly one delivers it.
 package mailbox
@@ -27,6 +29,9 @@ type Delivery struct {
 	SessionID string `json:"session_id"`
 	Nonce     string `json:"nonce"`
 	Text      string `json:"text"`
+	// Quiet deliveries never wake an idle session: the waiter ignores them,
+	// and the next hook that runs in the session hands them over.
+	Quiet bool `json:"quiet,omitempty"`
 }
 
 var safe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
@@ -55,11 +60,18 @@ func (b Box) Put(d Delivery) error {
 	if err != nil {
 		return err
 	}
+	name := d.ID + ".json"
+	if d.Quiet {
+		name = d.ID + ".q.json"
+	}
+	if _, err := os.Stat(filepath.Join(b.claimed(d.SessionID), name)); err == nil {
+		return nil
+	}
 	tmp := filepath.Join(dir, "."+d.ID+".tmp")
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, filepath.Join(dir, d.ID+".json"))
+	return os.Rename(tmp, filepath.Join(dir, name))
 }
 
 // Pending reports whether a session has anything waiting.
@@ -70,6 +82,20 @@ func (b Box) Pending(sid string) bool {
 	ents, _ := os.ReadDir(b.inbox(sid))
 	for _, e := range ents {
 		if strings.HasSuffix(e.Name(), ".json") {
+			return true
+		}
+	}
+	return false
+}
+
+// PendingLoud reports whether a session has a delivery that should wake it.
+func (b Box) PendingLoud(sid string) bool {
+	if !safe.MatchString(sid) {
+		return false
+	}
+	ents, _ := os.ReadDir(b.inbox(sid))
+	for _, e := range ents {
+		if n := e.Name(); strings.HasSuffix(n, ".json") && !strings.HasSuffix(n, ".q.json") {
 			return true
 		}
 	}

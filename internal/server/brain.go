@@ -17,31 +17,22 @@ import (
 	"github.com/blobspire/docket/internal/ulid"
 )
 
-// The chief of staff's two small model jobs, both optional and capped:
-//   - pre-review: annotate items agents file (and send incomplete ones back)
-//   - rule proposals: weekly, distil corrections and decisions into
-//     preference rules the human approves; approved rules reach every agent
-//
-// Neither ever answers an item for the human.
+// The brain's one small model job, optional and capped: weekly, distil the
+// human's corrections, decisions and "not worth my time" feedback into
+// preference rules they approve; approved rules reach every agent. It never
+// answers an item for the human.
 
 // Chief is the [chief] section of the config.
 type Chief struct {
-	PreReview   *bool   `toml:"pre_review"`
-	ReviewModel string  `toml:"review_model"`
-	RulesModel  string  `toml:"rules_model"`
-	DailyCap    int     `toml:"daily_cap"`   // model calls per day
-	BudgetUSD   float64 `toml:"budget_usd"`  // per call
-	Claude      string  `toml:"claude"`      // path to the claude CLI on the server
-	RulesEvery  string  `toml:"rules_every"` // "7d"
+	RulesModel string  `toml:"rules_model"`
+	DailyCap   int     `toml:"daily_cap"`   // model calls per day
+	BudgetUSD  float64 `toml:"budget_usd"`  // per call
+	Claude     string  `toml:"claude"`      // path to the claude CLI on the server
+	RulesEvery string  `toml:"rules_every"` // "7d"
 }
-
-func (c Chief) preReviewOn() bool { return c.PreReview == nil || *c.PreReview }
 
 func (s *Server) chiefDefaults() Chief {
 	c := s.cfg.Chief
-	if c.ReviewModel == "" {
-		c.ReviewModel = "sonnet"
-	}
 	if c.RulesModel == "" {
 		c.RulesModel = "sonnet"
 	}
@@ -104,92 +95,6 @@ func (s *Server) ask(ctx context.Context, model, prompt, schema string) (json.Ra
 		return res.Structured, nil
 	}
 	return json.RawMessage(res.Result), nil
-}
-
-// ---- pre-review -----------------------------------------------------------
-
-const reviewSchema = `{"type":"object","properties":{"note":{"type":"string"},"confidence":{"type":"number"},"missing":{"type":"string"}},"required":["note","confidence","missing"]}`
-
-func (s *Server) preReviewTick(ctx context.Context) {
-	if !s.chiefDefaults().preReviewOn() {
-		return
-	}
-	items, err := s.st.Items("open")
-	if err != nil {
-		return
-	}
-	done := 0
-	for _, it := range items {
-		if done >= 2 {
-			return // a couple per tick keeps it gentle
-		}
-		if it.Source != ingest.SrcCLI || it.ChiefNote != "" || (it.Kind != "ask" && it.Kind != "review") ||
-			time.Since(time.Unix(it.CreatedAt, 0)) > 48*time.Hour || s.st.Get("pre:"+it.ID) != "" {
-			continue
-		}
-		s.st.Set("pre:"+it.ID, "1")
-		done++
-		ev, _ := s.st.Evidence(it.ID)
-		if it.Kind == "review" && len(ev) == 0 {
-			s.bounce(it, "evidence for the review: screenshots, a short video, a report or a diff, with `docket add "+it.ID+" --evidence <file>`")
-		}
-		if err := s.preReview(ctx, it, len(ev)); err != nil {
-			s.log.Printf("pre-review %s: %v", it.ID, err)
-		}
-	}
-}
-
-func (s *Server) preReview(ctx context.Context, it store.Item, evidence int) error {
-	rules := s.rulesText()
-	prompt := fmt.Sprintf(`You are the chief of staff for %[1]s, who runs many AI coding agents. An agent filed this item in %[1]s's queue. Annotate it so %[1]s can decide quickly. You never decide for them.
-
-Kind: %[2]s
-Title: %[3]s
-Details: %[4]s
-Options: %[5]s
-Agent's recommendation: %[6]s
-Evidence files attached: %[7]d
-
-%[1]s's approved preferences:
-%[8]s
-
-Return JSON:
-- note: one or two plain sentences. What is being decided, and anything %[1]s should weigh, including any approved preference that applies. Do not recommend beyond what the evidence supports.
-- confidence: 0 to 1, how well this item alone lets %[1]s decide without opening the agent's session.
-- missing: what the agent should add first, or "" if nothing important is missing.`,
-		s.cfg.Person, it.Kind, it.Title, clipStr(it.Body, 3000), strings.Join(it.Options, " | "), it.Recommend, evidence, firstNonEmptyStr(rules, "(none yet)"))
-	raw, err := s.ask(ctx, s.chiefDefaults().ReviewModel, prompt, reviewSchema)
-	if err != nil {
-		return err
-	}
-	var r struct {
-		Note       string  `json:"note"`
-		Confidence float64 `json:"confidence"`
-		Missing    string  `json:"missing"`
-	}
-	if err := json.Unmarshal(raw, &r); err != nil {
-		return err
-	}
-	note := strings.TrimSpace(r.Note)
-	if r.Confidence < 0.4 && strings.TrimSpace(r.Missing) != "" {
-		note += " Missing: " + strings.TrimSpace(r.Missing)
-		s.bounce(it, strings.TrimSpace(r.Missing)+" (add it with `docket add "+it.ID+" --why \"...\"`)")
-	}
-	s.st.SetChiefNote(it.ID, clipStr(note, 1200))
-	s.st.Bump()
-	return nil
-}
-
-// bounce asks the filing agent, once per item, for what is missing.
-func (s *Server) bounce(it store.Item, what string) {
-	if it.SessionID == "" || s.st.Get("bounced:"+it.ID) != "" {
-		return
-	}
-	s.st.Set("bounced:"+it.ID, "1")
-	nonce := randomNonce()
-	s.st.AddDelivery(store.Delivery{ID: ulid.New(time.Now()), ItemID: it.ID, Machine: it.Machine, SessionID: it.SessionID, Nonce: nonce,
-		Text: fmt.Sprintf("[docket %s #%s] docket's chief of staff, before %s looks at %q: please add %s. This isn't %s's answer; keep working meanwhile.", it.ID, nonce, s.cfg.Person, it.Title, what, s.cfg.Person)})
-	s.kickDeliver()
 }
 
 func clipStr(s string, n int) string {
@@ -373,14 +278,34 @@ func (s *Server) rulesText() string {
 	return b.String()
 }
 
-// RulesMarkdown is ~/.docket/rules.md, imported by docket's CLAUDE.md block.
+// noiseShown is how many "not worth my time" examples every agent sees.
+const noiseShown = 12
+
+// RulesMarkdown is ~/.docket/rules.md, imported by docket's CLAUDE.md block:
+// the approved preferences, then the latest items the human marked "not
+// worth my time" (with their notes), so every agent calibrates what to file.
 func (s *Server) RulesMarkdown() string {
 	body := s.rulesText()
 	if body == "" {
 		body = "(none yet)\n"
 	}
-	return "# Preferences " + s.cfg.Person + " has approved\n\n" +
+	md := "# Preferences " + s.cfg.Person + " has approved\n\n" +
 		"Managed by docket; " + s.cfg.Person + " approves these in the docket queue. Follow them unless a task says otherwise. A rule in parentheses applies only to that project.\n\n" + body
+	if ns, _ := s.st.RecentNoise(noiseShown, true); len(ns) > 0 {
+		md += "\n## Recently marked not worth " + s.cfg.Person + "'s time\n\n" +
+			"Items agents filed in docket that " + s.cfg.Person + " said didn't need them, newest first. Don't file things like these; mention them in chat instead.\n\n"
+		for _, n := range ns {
+			line := "- " + n.Title
+			if n.Project != "" {
+				line += " (" + n.Project + ")"
+			}
+			if n.Note != "" {
+				line += ": " + n.Note
+			}
+			md += line + "\n"
+		}
+	}
+	return md
 }
 
 // syncRules sends changed rules to every machine the server can reach.

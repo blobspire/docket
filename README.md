@@ -1,6 +1,6 @@
 # docket
 
-**One queue for everything your agents need from you.**
+**One dashboard of what your agents actually need from you.**
 
 > Status: **pre-alpha**, built in the open and used daily by its author across a laptop, a home server and a lab machine. It works, but expect rough edges and changes.
 
@@ -13,29 +13,32 @@ If you run several coding agents across projects and machines, the things only y
 
 You find out days later, when you ask "do you need anything from me?".
 
-docket collects those into **one prioritized queue** with the evidence attached. It pushes to your phone only when something is truly blocked, and it delivers your answer back to the agent right away so the work continues.
+docket gives your agents one place to bring you what really needs you: results you're waiting on, decisions they can't make, things only you can do, and things that broke. It groups them by project, puts anything urgent at the top, pushes your phone only when something can't wait, and delivers your answer back to the agent right away so the work continues.
 
 ## What it does
 
-- **Captures what agents need from you, with no extra model tokens.**
-  - Agents file items with a non-blocking CLI: `docket ask`, `task`, `review`, `issue`.
-  - Claude Code hooks catch what they don't file: permission prompts, auto-mode refusals, "needs input", login and API failures.
-  - A cheap regex self-check nudges an agent that asked for something in chat without filing it.
-- **Ranks the queue,** with a morning brief, a list of things only you can do, search over every past decision, and an evidence gallery of screenshots, videos and reports.
+- **Agents decide what reaches you.** No scraping of chat text and no model vetting. A short instruction in every agent's context explains why your attention is scarce, sets the bar, and has agents write a title you can scan in a second.
+  - Agents file with a non-blocking CLI (`docket ask`, `task`, `review`, `issue`), choosing a **project**, an optional **component**, a **place** for physical tasks, an **urgency** (`now`, `soon`, `normal`), a deadline and an expiry.
+  - When you answer in chat instead, the agent closes the item itself.
+  - Claude Code hooks catch only what an agent can't file itself: an expired Claude login, a stuck unattended lead.
+- **A dashboard you can read quickly:**
+  - a project sidebar (or chips on a phone)
+  - a red **Act now** band at the top
+  - one section per project, grouped by component
+  - views by place, so one trip to the lab covers everything there
+  - sorting by priority, deadline or newest
+  - rows that expand in place with rendered markdown and evidence
+- **"Not worth my time" with a note.** It closes the item, tells the agent that filed it, and joins a short list every agent reads, so the bar calibrates itself.
 - **Delivers your answer immediately:**
   - into a busy session at its next tool call,
   - by waking an idle session,
   - by resuming a session that has ended,
   - or as soon as a sleeping laptop reconnects.
-- **Pushes to your phone (ntfy) only when it matters:** a lead is blocked, a system is down, or something is due today.
+- **Pushes to your phone (ntfy) only for act-now items,** at any hour. Nothing else buzzes.
 - **Leads:** one long-running agent per area, woken by your answers, job events or schedules that survive reboots.
-- **Job liveness:** a job that stops sending heartbeats becomes an alert.
-- **Chief of staff:**
-  - a watchdog for unreachable machines, sessions stuck on a dialog, expired logins and stalled jobs
-  - usage limits per account, and which lead is spending
-  - optional pre-review that annotates items and sends incomplete ones back
-  - it never answers anything for you
-- **Brain:** your corrections become proposed preference rules. You approve each one, and approved rules reach every agent.
+- **Job liveness:** a job that stops sending heartbeats becomes an alert, and its lead is woken.
+- **Watchdog:** unreachable machines, expired logins, usage limits per account, which lead is spending. It never answers anything for you.
+- **Brain:** your corrections and "not worth my time" notes become proposed preference rules. You approve each one, and approved rules reach every agent.
 - **Robot-safe:** physical actions can never be approved remotely.
 
 ## How it works

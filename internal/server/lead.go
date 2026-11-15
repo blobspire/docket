@@ -108,8 +108,14 @@ func (s *Server) watchJobs(ctx context.Context) {
 		switch {
 		case j.Status == "running" && j.Every > 0 && now.Sub(time.Unix(j.LastBeatAt, 0)) > 2*time.Duration(j.Every)*time.Second:
 			s.st.SetJobState(j.Scope, j.Name, "stale", "stale")
-			s.st.UpsertItem(store.Item{ID: ulid.ItemID(), Ongoing: true, Kind: "health", Blocking: true, Source: ingest.SrcWatchdog,
-				Machine: j.Machine, SessionID: j.SessionID, Lead: j.Lead, DedupeKey: key,
+			project := s.leadProject(j.Lead)
+			if project == "" {
+				sess, _, _ := s.st.GetSession(j.SessionID)
+				dirs, _ := s.st.ProjectDirs(j.Machine)
+				project = firstNonEmptyStr(store.ProjectForDir(dirs, sess.Cwd), s.cfg.SystemProject)
+			}
+			s.watch(store.Item{ID: ulid.ItemID(), Ongoing: true, Kind: "health", Blocking: true, Source: ingest.SrcWatchdog,
+				Machine: j.Machine, SessionID: j.SessionID, Lead: j.Lead, DedupeKey: key, Project: project, Urgency: "soon",
 				Title: fmt.Sprintf("Job %q looks stalled (no heartbeat for %s)", j.Name, age(now, j.LastBeatAt)),
 				Body:  "It was expected to beat every " + (time.Duration(j.Every) * time.Second).String() + ". Last note: " + j.Note})
 			s.st.Bump()

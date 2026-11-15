@@ -1,11 +1,12 @@
 {{define "leads.html"}}{{template "head" .}}
+<main class="page">
 <h1>Leads</h1>
 {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
 {{if not .Leads}}<p class="empty">No leads yet. Add <code>[[lead]]</code> sections to the server config: one long-running agent per area of work.</p>{{end}}
 {{range .Leads}}
 <section class="lead{{if not .On}} off{{end}}">
   <h2>{{.Name}} <span class="muted">· {{.Machine}} · {{project .Dir}}{{if not .On}} · disabled{{end}}</span></h2>
-  <p class="row-meta">
+  <p class="meta">
     {{if .HasSess}}<span class="state-{{.Session.State}}">session {{.Session.State}}{{with .Session.WaitingFor}}: {{.}}{{end}}</span>
       {{with .Session.BridgeID}}<a href="{{rcURL .}}" target="_blank" rel="noopener">open ↗</a>{{end}}
     {{else}}<span>no session yet</span>{{end}}
@@ -33,4 +34,5 @@
   {{end}}
   </tbody>
 </table>
+</main>
 {{template "foot" .}}{{end}}

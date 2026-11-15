@@ -39,6 +39,8 @@ func Open(cfg *Config) (*Server, error) {
 	for _, m := range cfg.Machines {
 		s.pullKick[m.Name] = make(chan struct{}, 1)
 	}
+	// docket's own health items go here, so it's a project agents can see too.
+	st.EnsureProject(cfg.SystemProject, "docket's own alerts: logins, machines, usage limits")
 	return s, nil
 }
 
@@ -106,7 +108,7 @@ func (s *Server) Run(ctx context.Context) error {
 		})
 	}
 	loop("ingest", 2*time.Second, s.processKick, func(context.Context) {
-		if n, err := ingest.Process(s.st, 200); err != nil {
+		if n, err := ingest.ProcessWith(s.st, 200, ingest.Options{LeadProject: s.leadProject, SystemProject: s.cfg.SystemProject}); err != nil {
 			s.log.Printf("ingest: %v", err)
 		} else if n > 0 {
 			s.kickDeliver()

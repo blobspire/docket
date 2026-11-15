@@ -15,8 +15,9 @@ Packages, in data-flow order:
 
 | Package | What it does |
 |---|---|
-| `internal/hook` | Claude Code hook handler: records events, delivers answers, the self-check |
-| `internal/cli` | `docket ask/task/review/…` |
+| `internal/hook` | Claude Code hook handler: records events, delivers answers |
+| `internal/cli` | `docket ask/task/review/…`, `list`, `projects` |
+| `internal/agentctx` | `~/.docket/context.json`: what an agent machine knows about projects and its open items |
 | `internal/spool` | the per-machine append-only log and its export/ack protocol |
 | `internal/server` | collector, delivery, chief of staff, leads, brain, web UI |
 | `internal/ingest` | the deterministic rules that turn records into items |
@@ -25,7 +26,7 @@ Packages, in data-flow order:
 ## Guidelines
 
 - **Hooks must never break a session.** They exit 0 (except the waiter's deliberate exit 2), they are fast, and they swallow errors.
-- **No model calls in capture or ingest.** Model jobs live only in `internal/server/brain.go`, and they are optional and capped.
+- **Agents decide what reaches the human.** No guessing from chat text, and no model calls in capture or ingest. The one model job (rule proposals) lives in `internal/server/brain.go`, and it is optional and capped.
 - **docket never decides for the human.** Code that answers an item must come from a human action in the UI.
 - **Tests come with behaviour changes.** The server tests run the whole loop in-process: file, collect, answer, deliver, receipt.
 - **Nothing personal in the repo.** Host names, topics and leads live in `~/.config/docket/`.

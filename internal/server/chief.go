@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -12,171 +14,167 @@ import (
 	"github.com/blobspire/docket/internal/ulid"
 )
 
-// The chief of staff is deterministic: it ranks the queue, decides what is
-// worth a phone push, watches machines, and writes the morning brief. It
+// The chief of staff is deterministic: it orders the queue, pushes only what
+// an agent marked "act now", expires moot items and watches machines. It
 // never answers anything on the human's behalf.
 
-// Give someone at the terminal a moment before pushing to their phone.
-const pushGrace = 2 * time.Minute
+// pushGrace gives someone at the terminal (or an agent that recovers on its
+// own, like a watchdog alert that clears) a moment before the phone buzzes.
+const pushGrace = 90 * time.Second
 
 // Machines that stay unreachable this long become a health item.
 const unreachableAfter = 10 * time.Minute
 
-var kindBase = map[string]float64{
-	"health": 60, "blocker": 70, "approval": 60, "ask": 50, "human_task": 45, "review": 40, "issue": 25, "fyi": 10,
-}
+var urgencyRank = map[string]int{"now": 0, "soon": 1, "normal": 2}
 
-// Score orders the queue: what blocks work first, then what has waited longest.
-func Score(it store.Item, sess store.Session, today string, leadPriority int) float64 {
-	sc := kindBase[it.Kind] + 10*float64(leadPriority)
-	if it.Kind == "health" && it.Blocking {
-		sc += 30
-	}
-	if it.Blocking {
-		sc += 20
-	}
-	if sess.State == "waiting" || (sess.State == "idle" && it.Kind != "fyi") {
-		sc += 15
-	}
-	if it.Due != "" {
-		switch {
-		case it.Due < today:
-			sc += 40
-		case it.Due == today:
-			sc += 30
-		}
-	}
-	age := time.Since(time.Unix(it.CreatedAt, 0)).Hours()
-	if age > 72 {
-		age = 72
-	}
-	return sc + age/2
-}
-
-// Ranked is an item with its session and score, for the queue view.
+// Ranked is an item with its session, for the queue view.
 type Ranked struct {
 	store.Item
 	Session store.Session
-	Score   float64
 }
 
-// Queue returns open items ranked, plus the "maybe" pile.
-func (s *Server) Queue() (now, maybe, snoozed []Ranked, err error) {
-	items, err := s.st.Items("open", "answered", "maybe", "snoozed")
+// Paused reports whether the filing agent is waiting on this item.
+func (r Ranked) Paused() bool {
+	return r.Blocking && (r.Session.State == "idle" || r.Session.State == "waiting")
+}
+
+// Stale reports an item nobody has touched in a week.
+func (r Ranked) Stale() bool {
+	return time.Since(time.Unix(r.UpdatedAt, 0)) > 7*24*time.Hour
+}
+
+// Queue returns the active items (open, answered, snoozed), with sessions.
+// Rule proposals live on the Brain page, not here.
+func (s *Server) Queue() (active, snoozed []Ranked, err error) {
+	items, err := s.st.Items("open", "answered", "snoozed")
 	if err != nil {
 		return
 	}
-	today := s.cfg.Now().Format("2006-01-02")
 	for _, it := range items {
+		if it.Kind == "rule" {
+			continue
+		}
 		sess, _, gerr := s.st.GetSession(it.SessionID)
 		if gerr != nil {
 			s.log.Printf("queue: session %s: %v", short(it.SessionID), gerr)
 		}
 		it.Lead = s.leadOf(it, sess)
-		r := Ranked{Item: it, Session: sess, Score: Score(it, sess, today, s.leadPriority(it.Lead))}
-		switch it.Status {
-		case "maybe":
-			maybe = append(maybe, r)
-		case "snoozed":
+		r := Ranked{Item: it, Session: sess}
+		if it.Status == "snoozed" {
 			snoozed = append(snoozed, r)
-		default:
-			now = append(now, r)
+		} else {
+			active = append(active, r)
 		}
-	}
-	for _, l := range [][]Ranked{now, maybe, snoozed} {
-		sort.SliceStable(l, func(i, j int) bool { return l[i].Score > l[j].Score })
 	}
 	return
 }
 
-// pushWorthy decides whether an open item deserves a phone push now.
-// Pushes go out only when a lead is blocked, a system is down, or something
-// is due today; everything else waits quietly in the queue.
-func (s *Server) pushWorthy(it store.Item, sess store.Session, now time.Time) (bool, bool) {
-	critical := it.Kind == "health" && it.Blocking
-	if it.Status != "open" || it.PushedAt != 0 {
-		return false, critical
+// SortItems orders items: "priority" (urgency, then deadline, then oldest
+// first), "deadline" (soonest deadline first, then urgency) or "newest".
+func SortItems(rs []Ranked, by string) {
+	due := func(r Ranked) string {
+		if r.Due == "" {
+			return "9999"
+		}
+		return r.Due
 	}
-	if critical {
-		return true, true
+	sort.SliceStable(rs, func(i, j int) bool {
+		a, b := rs[i], rs[j]
+		switch by {
+		case "newest":
+			return a.CreatedAt > b.CreatedAt
+		case "deadline":
+			if due(a) != due(b) {
+				return due(a) < due(b)
+			}
+			if urgencyRank[a.Urgency] != urgencyRank[b.Urgency] {
+				return urgencyRank[a.Urgency] < urgencyRank[b.Urgency]
+			}
+			return a.CreatedAt < b.CreatedAt
+		}
+		if urgencyRank[a.Urgency] != urgencyRank[b.Urgency] {
+			return urgencyRank[a.Urgency] < urgencyRank[b.Urgency]
+		}
+		if a.Paused() != b.Paused() {
+			return a.Paused()
+		}
+		if due(a) != due(b) {
+			return due(a) < due(b)
+		}
+		return a.CreatedAt < b.CreatedAt
+	})
+}
+
+// pushWorthy decides whether an open item deserves a phone push now: only
+// what an agent (or a login failure) marked "act now", once it has stayed
+// open through the grace period.
+func pushWorthy(it store.Item, now time.Time) bool {
+	if it.Status != "open" || it.PushedAt != 0 || it.Urgency != "now" || it.Kind == "rule" {
+		return false
 	}
-	old := now.Sub(time.Unix(it.CreatedAt, 0)) >= pushGrace
-	today := now.Format("2006-01-02")
-	if it.Due != "" && it.Due <= today && now.Hour()*60+now.Minute() >= minutes(s.cfg.BriefAt) {
-		return true, false
+	since := it.UrgentSince
+	if since == 0 {
+		since = it.CreatedAt
 	}
-	stalled := sess.State == "idle" || sess.State == "waiting" || sess.State == "ended" || it.SessionID == ""
-	switch it.Kind {
-	case "blocker":
-		return old, false
-	case "approval":
-		return old && stalled, false
-	case "ask", "human_task":
-		return old && stalled && it.Blocking, false
-	}
-	return false, false
+	return now.Sub(time.Unix(since, 0)) >= pushGrace
 }
 
 func (s *Server) chiefTick(ctx context.Context) {
 	if n, _ := s.st.Wake(); n > 0 {
 		s.st.Bump()
 	}
+	if n, _ := s.st.Expire(s.cfg.Now().Unix()); n > 0 {
+		s.st.Bump()
+	}
 	s.watchMachines()
 	s.watchHealth(ctx)
 	s.pushes(ctx)
-	s.brief(ctx)
 	s.syncRules(ctx)
-	s.preReviewTick(ctx)
 	s.rulesTick(ctx)
 }
 
+// pushes sends one phone notification for the act-now items that came due,
+// whatever the hour: "act now" means now.
 func (s *Server) pushes(ctx context.Context) {
 	items, err := s.st.Items("open")
 	if err != nil {
 		return
 	}
 	now := s.cfg.Now()
-	quiet := inWindow(now, s.cfg.Ntfy.QuietStart, s.cfg.Ntfy.QuietEnd)
 	var due []store.Item
-	urgent := false
 	for _, it := range items {
-		sess, _, _ := s.st.GetSession(it.SessionID)
-		ok, critical := s.pushWorthy(it, sess, now)
-		if !ok || (quiet && !critical) {
-			continue
+		if pushWorthy(it, now) {
+			due = append(due, it)
 		}
-		due = append(due, it)
-		urgent = urgent || critical
 	}
 	if len(due) == 0 {
 		return
 	}
-	prio := prioHigh
-	if urgent {
-		prio = prioUrgent
-	}
 	var title, body, click string
 	if len(due) == 1 {
 		it := due[0]
-		title = pushTitle(it)
-		body = it.Title + where(it)
+		title = it.Title
+		body = pushBody(it)
 		click = s.itemURL(it.ID)
 	} else {
-		title = fmt.Sprintf("%d things need you", len(due))
+		title = fmt.Sprintf("%d things need you now", len(due))
 		var lines []string
 		for i, it := range due {
 			if i == 5 {
 				lines = append(lines, fmt.Sprintf("…and %d more", len(due)-5))
 				break
 			}
-			lines = append(lines, "• "+it.Title+where(it))
+			lines = append(lines, "• "+it.Title+" ("+firstNonEmptyStr(it.Project, store.Unsorted)+")")
 		}
 		body = strings.Join(lines, "\n")
-		click = strings.TrimRight(s.cfg.PublicURL, "/") + "/"
+		click = strings.TrimRight(s.cfg.PublicURL, "/") + "/?view=now"
 	}
-	if err := s.push(ctx, title, body, click, prio, "docket"); err != nil {
+	if err := s.push(ctx, title, body, click, prioUrgent, "rotating_light"); err != nil {
 		s.log.Printf("push: %v", err)
-		return
+		// Sent but confirmed late counts as sent; anything else retries.
+		if !errors.Is(err, errSentLate) {
+			return
+		}
 	}
 	ids := make([]string, len(due))
 	for i, it := range due {
@@ -185,32 +183,53 @@ func (s *Server) pushes(ctx context.Context) {
 	s.st.MarkPushed(ids)
 }
 
-func pushTitle(it store.Item) string {
-	switch it.Kind {
-	case "health":
-		return "System problem"
-	case "blocker":
-		return "An agent is waiting on you"
-	case "approval":
-		return "An agent needs your approval"
-	case "human_task":
-		return "Only you can do this"
+// pushBody is "project · type", then the first line of the details as
+// plain text.
+func pushBody(it store.Item) string {
+	b := firstNonEmptyStr(it.Project, store.Unsorted) + " · " + kindName(it.Kind)
+	if line := firstLine(it.Body); line != "" {
+		return b + "\n" + line
 	}
-	if it.Due != "" {
-		return "Due today"
-	}
-	return "An agent needs your decision"
+	return b
 }
 
-func where(it store.Item) string {
-	p := project(it.Cwd)
-	switch {
-	case it.Lead != "":
-		return " (" + it.Lead + ")"
-	case p != "" && it.Machine != "":
-		return " (" + p + " on " + it.Machine + ")"
-	case it.Machine != "":
-		return " (" + it.Machine + ")"
+var (
+	mdQuote    = regexp.MustCompile(`^(?:>\s?)+`)
+	mdListMark = regexp.MustCompile(`^(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?`)
+	mdHeading  = regexp.MustCompile(`^#{1,6}\s+`)
+	mdImage    = regexp.MustCompile(`!\[([^\]]*)\]\([^)]*\)`)
+	mdLink     = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
+	mdEmph     = regexp.MustCompile("\\*\\*|__|~~|`|(^|\\s)[*_]|[*_]($|\\s|[.,;:!?])")
+	mdHTML     = regexp.MustCompile(`^<[!/a-zA-Z]`)
+)
+
+// firstLine is the first line of prose in a markdown body, without its
+// markup, cut to about 200 characters on a character boundary.
+func firstLine(body string) string {
+	inFence := false
+	for _, line := range strings.Split(body, "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		indented := strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t")
+		if inFence || indented || t == "" || strings.HasPrefix(t, "|") || strings.Trim(t, "-=*_ ") == "" || mdHTML.MatchString(t) {
+			continue
+		}
+		t = mdQuote.ReplaceAllString(t, "")
+		t = mdHeading.ReplaceAllString(t, "")
+		t = mdListMark.ReplaceAllString(t, "")
+		t = mdImage.ReplaceAllString(t, "$1")
+		t = mdLink.ReplaceAllString(t, "$1")
+		t = strings.TrimSpace(mdEmph.ReplaceAllString(t, "$1$2"))
+		if t == "" {
+			continue
+		}
+		if r := []rune(t); len(r) > 200 {
+			t = string(r[:200]) + "…"
+		}
+		return t
 	}
 	return ""
 }
@@ -238,8 +257,9 @@ func (s *Server) watchMachines() {
 		}
 		key := "watchdog:machine:" + m.Name
 		if m.FailingSince > 0 && time.Since(time.Unix(m.FailingSince, 0)) > unreachableAfter {
-			s.st.UpsertItem(store.Item{
+			s.watch(store.Item{
 				ID: ulid.ItemID(), Ongoing: true, Kind: "health", Blocking: true, Source: ingest.SrcWatchdog, Machine: m.Name, DedupeKey: key,
+				Project: s.cfg.SystemProject, Urgency: "soon",
 				Title: fmt.Sprintf("%s has been unreachable since %s", m.Name, time.Unix(m.FailingSince, 0).In(s.cfg.loc).Format("Mon 15:04")),
 				Body:  "docket can't collect from it or deliver answers to it. Last error: " + m.LastError,
 			})
@@ -253,7 +273,7 @@ func (s *Server) watchMachines() {
 }
 
 func (s *Server) resolveKey(key, why string) int {
-	items, _ := s.st.Items("open", "snoozed")
+	items, _ := s.st.Items("open", "snoozed", "answered")
 	n := 0
 	for _, it := range items {
 		if it.DedupeKey == key {
@@ -262,79 +282,6 @@ func (s *Server) resolveKey(key, why string) int {
 		}
 	}
 	return n
-}
-
-// Brief is the morning summary shown at the top of the queue.
-type Brief struct {
-	Date     string
-	Text     string
-	Open     int
-	Blocking int
-}
-
-// brief writes the morning brief once a day at brief_at.
-func (s *Server) brief(ctx context.Context) {
-	now := s.cfg.Now()
-	today := now.Format("2006-01-02")
-	if s.st.Get("brief_date") == today || now.Hour()*60+now.Minute() < minutes(s.cfg.BriefAt) {
-		return
-	}
-	text, open, blocking := s.composeBrief(now)
-	s.st.Set("brief_text", text)
-	s.st.Set("brief_date", today)
-	s.st.Bump()
-	if s.cfg.BriefPushOn() {
-		summary := fmt.Sprintf("%d open, %d blocking", open, blocking)
-		if open == 0 {
-			summary = "Nothing needs you right now."
-		}
-		if err := s.push(ctx, "Morning brief", summary, strings.TrimRight(s.cfg.PublicURL, "/")+"/", prioLow, "sunrise"); err != nil {
-			s.log.Printf("brief push: %v", err)
-		}
-	}
-}
-
-func (s *Server) composeBrief(now time.Time) (string, int, int) {
-	nowItems, _, _, _ := s.Queue()
-	since := now.Add(-24 * time.Hour).Unix()
-	closed, _ := s.st.RecentlyClosed(since, 200)
-	var b strings.Builder
-	blocking := 0
-	for _, r := range nowItems {
-		if r.Blocking {
-			blocking++
-		}
-	}
-	fmt.Fprintf(&b, "%s. %d open (%d blocking); %d resolved in the last 24 hours.\n", now.Format("Monday, January 2"), len(nowItems), blocking, len(closed))
-	if len(nowItems) > 0 {
-		b.WriteString("\nTop of the queue:\n")
-		for i, r := range nowItems {
-			if i == 5 {
-				break
-			}
-			fmt.Fprintf(&b, "- %s%s, waiting %s\n", r.Title, where(r.Item), age(now, r.CreatedAt))
-		}
-	}
-	ms, _ := s.st.Machines()
-	var down []string
-	for _, m := range ms {
-		if m.FailingSince > 0 {
-			down = append(down, m.Name)
-		}
-	}
-	if len(down) > 0 {
-		fmt.Fprintf(&b, "\nUnreachable: %s.\n", strings.Join(down, ", "))
-	}
-	sessions, _ := s.st.Sessions(true, 500)
-	nudges, hits := 0, 0
-	for _, x := range sessions {
-		nudges += x.Nudges
-		hits += x.NudgeHits
-	}
-	if nudges > 0 {
-		fmt.Fprintf(&b, "\nSelf-check: %d nudges so far, %d led to a filed item.\n", nudges, hits)
-	}
-	return b.String(), len(nowItems), blocking
 }
 
 func age(now time.Time, unix int64) string {
@@ -346,4 +293,17 @@ func age(now time.Time, unix int64) string {
 		return fmt.Sprintf("%dh", int(d.Hours()))
 	}
 	return fmt.Sprintf("%dd", int(d.Hours()/24))
+}
+
+// watch files or refreshes one of docket's own health items, unless the
+// human marked that check "not worth my time" in the last week.
+func (s *Server) watch(it store.Item) {
+	if it.DedupeKey != "" {
+		if _, noised := s.st.RecentlyNoised(it.DedupeKey, time.Now().Add(-7*24*time.Hour).Unix()); noised {
+			return
+		}
+	}
+	if _, _, err := s.st.UpsertItem(it); err != nil {
+		s.log.Printf("watch %s: %v", it.DedupeKey, err)
+	}
 }

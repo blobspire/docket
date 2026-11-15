@@ -1,21 +1,28 @@
 {{define "search.html"}}{{template "head" .}}
+<main class="page">
 <h1>Search</h1>
 <form class="searchbar" method="get" action="/search">
   <input id="q" name="q" value="{{.Query}}" placeholder="Search everything: questions, answers, reasons ('sept7', 'basket demo', 'why did we')" autofocus>
   <button class="primary" type="submit">Search</button>
 </form>
 {{if .Query}}<p class="muted">{{len .Closed}} result{{if ne (len .Closed) 1}}s{{end}}</p>{{end}}
-<ol class="rows done">
+<ol class="rows plain">
 {{range .Closed}}
-<li class="row kind-{{.Kind}}" data-id="{{.ID}}" data-href="/item/{{.ID}}">
-  <div class="row-main"><span class="badge">{{kindName .Kind}}</span> <a class="title" href="/item/{{.ID}}">{{.Title}}</a></div>
-  <div class="row-meta">
-    {{with where .}}<span>{{.}}</span>{{end}}
-    <span>{{.Status}}</span><span>{{clock .CreatedAt}}</span>
-    {{with .Answer}}<span><strong>answer:</strong> {{.}}</span>{{end}}
-    {{with .Resolution}}<span>{{.}}</span>{{end}}
+<li class="row" data-id="{{.ID}}" data-href="/item/{{.ID}}"{{if closed .Status}} data-closed="1"{{end}}>
+  <div class="row-head">
+    <span class="kind k-{{kindClass .Kind}}">{{kindName .Kind}}</span>
+    <div class="row-text">
+      <a class="title" href="/item/{{.ID}}">{{.Title}}</a>
+      <div class="meta">
+        {{with .Project}}<span class="m-comp">{{.}}</span>{{end}}
+        <span class="st-{{.Status}}">{{.Status}}</span><span>{{clock .CreatedAt}}</span>
+        {{with .Answer}}<span><b>answer:</b> {{.}}</span>{{end}}
+        {{with .Resolution}}<span>{{.}}</span>{{end}}
+      </div>
+    </div>
   </div>
 </li>
 {{end}}
 </ol>
+</main>
 {{template "foot" .}}{{end}}

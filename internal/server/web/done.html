@@ -1,17 +1,26 @@
 {{define "done.html"}}{{template "head" .}}
+<main class="page">
 <h1>Done in the last 7 days</h1>
 {{if not .Closed}}<p class="empty">Nothing yet.</p>{{end}}
-<ol class="rows done">
+<ol class="rows plain">
 {{range .Closed}}
-<li class="row kind-{{.Kind}}" data-id="{{.ID}}" data-href="/item/{{.ID}}">
-  <div class="row-main"><span class="badge">{{kindName .Kind}}</span> <a class="title" href="/item/{{.ID}}">{{.Title}}</a></div>
-  <div class="row-meta">
-    {{with where .}}<span>{{.}}</span>{{end}}
-    <span>{{.Status}}{{with .Resolution}}: {{.}}{{end}}</span>
-    {{with .Answer}}<span>answered: {{.}}</span>{{end}}
+<li class="row closed" data-id="{{.ID}}" data-href="/item/{{.ID}}" data-closed="1">
+  <div class="row-head">
+    <span class="kind k-{{kindClass .Kind}}">{{kindName .Kind}}</span>
+    <div class="row-text">
+      <a class="title" href="/item/{{.ID}}">{{.Title}}</a>
+      <div class="meta">
+        {{with .Project}}<span class="m-comp">{{.}}</span>{{end}}
+        <span class="st-{{.Status}}">{{.Status}}</span>
+        {{with .Resolution}}<span>{{.}}</span>{{end}}
+        {{with .Answer}}<span>answered: {{.}}</span>{{end}}
+        <span class="m-age">{{age .UpdatedAt}} ago</span>
+      </div>
+    </div>
+    {{if ne .Status "delivered"}}<button data-act="reopen" data-key="u" class="quiet small">Reopen</button>{{end}}
   </div>
-  <div class="row-actions"><button data-act="undo" data-key="u" class="quiet">Undo</button></div>
 </li>
 {{end}}
 </ol>
+</main>
 {{template "foot" .}}{{end}}

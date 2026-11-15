@@ -1,22 +1,28 @@
 {{define "checklist.html"}}{{template "head" .}}
+<main class="page">
 <h1>Only you can do these</h1>
-<p class="muted">Logins, keys, hardware, money, anything physical, gathered from every agent. Marking one done tells the agent that asked.</p>
+<p class="sub">Logins, keys, hardware, money, anything physical, from every agent. Marking one done tells the agent that asked.</p>
 {{if not .Tasks}}<p class="empty">Nothing on your list.</p>{{end}}
-<ol class="rows">
+<ol class="rows plain">
 {{range .Tasks}}
-<li class="row kind-{{.Kind}}{{if .Blocking}} blocking{{end}}" data-id="{{.ID}}" data-href="/item/{{.ID}}">
-  <div class="row-main">
-    {{if .Due}}<span class="due">{{.Due}}</span>{{end}}
-    <a class="title" href="/item/{{.ID}}">{{.Title}}</a>
+<li class="row u-{{.Urgency}}" data-id="{{.ID}}" data-href="/item/{{.ID}}">
+  <div class="row-head">
+    <span class="kind k-do">Do</span>
+    <div class="row-text">
+      <a class="title" href="/item/{{.ID}}">{{.Title}}</a>
+      <div class="meta">
+        {{with .Project}}<span class="m-comp">{{.}}</span>{{end}}
+        {{with .Place}}<span class="m-place">📍 {{.}}</span>{{end}}
+        {{with .Due}}<span class="m-due due-{{dueState .}}">due {{dueLabel .}}</span>{{end}}
+        {{with .Blocks}}<span>blocks: {{.}}</span>{{end}}
+        {{if eq .Status "snoozed"}}<span>snoozed</span>{{end}}
+        <span class="m-age">{{age .CreatedAt}}</span>
+      </div>
+    </div>
   </div>
-  <div class="row-meta">
-    {{with where .}}<span>{{.}}</span>{{end}}
-    {{with .Blocks}}<span>blocks: {{.}}</span>{{end}}
-    <span>{{age .CreatedAt}} ago</span>
-    {{if eq .Status "snoozed"}}<span>snoozed</span>{{end}}
-  </div>
-  <div class="row-actions">{{template "actions" .}}</div>
+  <div class="actions">{{template "actions" .}}</div>
 </li>
 {{end}}
 </ol>
+</main>
 {{template "foot" .}}{{end}}

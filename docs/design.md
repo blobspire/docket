@@ -38,16 +38,36 @@ Some observations that shaped the design:
 - **Pull protocol:** `docket spool export --cursor C` returns only complete lines plus a trailer with the next cursor. The server stores the records (`INSERT OR IGNORE` by id) and the cursor in one transaction, then sends `docket spool ack C`. Delivery is at-least-once and de-duplicated.
 - **Direction:** the server opens every connection with the system `ssh`. Laptops that sleep and lab machines that can't reach the server still work.
 
-## Capture, cheapest first
+## Capture: agents decide
 
-1. **Instructions.** A short managed block in the global `~/.claude/CLAUDE.md` tells agents to file anything only the human can do with the `docket` CLI and keep working. Details live in a skill that loads on demand.
-2. **Hooks (zero tokens):**
-   - `PermissionDenied`: an auto-mode refusal becomes an approval item that includes the command.
-   - `Notification` (`permission_prompt`, `agent_needs_input`, `idle_prompt`, `auth_*`).
-   - `StopFailure` for API and login errors, and `SessionEnd`.
-3. **Self-check.** A regex over the agent's final message looks for ask-like phrases. If one matches and nothing was filed that turn, the Stop hook nudges the agent once. Hit rates are tracked.
-4. **Backfill.** Live sessions are asked once to file what they're waiting on, plus a local, free grep for candidates.
-5. **The session registry.** Claude Code's `~/.claude/sessions/*.json` shows every live session's state, so sessions started before the plugin still surface when they sit on a dialog.
+The first version tried to catch every ask: a regex over agents' messages, a transcript grep, an item for every permission prompt and auto-mode refusal, and a model that annotated each item. The result was a queue of 84 items, about 10 of them real, which the human stopped reading. Agents are capable of judging what needs the human if they're told why it matters, so capture is now:
+
+1. **Instructions.** A short managed block in the global `~/.claude/CLAUDE.md`:
+   - why the human's attention is scarce,
+   - the bar (results they're waiting on, decisions the agent can't make, things only they can do, things that broke),
+   - what doesn't belong,
+   - to ask in chat when the human is right there and close the item when it's settled in chat.
+
+   The `docket` skill has the details: projects, urgency, titles, and examples from a real queue.
+2. **The CLI corrects at filing time.** A missing or unknown project gets an error listing the projects. A long or multi-line title gets an error that says where the details go.
+3. **Feedback.** "Not worth my time" (with an optional note) closes an item, tells the filing session without waking it, and joins the list of recent examples in `~/.docket/rules.md`, which every agent reads.
+4. **Hooks only for what an agent can't file:**
+   - a Claude login or billing failure (one item per machine, urgency `now`);
+   - a lead (unattended by definition) waiting on a dialog for more than 15 minutes;
+   - otherwise session state for delivery.
+
+## Projects, places, urgency
+
+- **Projects** are chosen by agents.
+  - `~/.docket/context.json`, which the server sends every machine, lists the projects with descriptions, components and places in use. It also lists the folder→project map and that machine's own open items.
+  - The first explicit filing from a repository maps that repository (worktrees map to their main repo), so later filings can leave `--project` out.
+  - The human can rename or merge projects on the dashboard.
+- **Places** group physical tasks, so one trip covers them.
+- **Urgency:**
+  - `now` puts an item in the red band and pushes the phone 90 seconds after it becomes urgent, at any hour.
+  - `soon` and `normal` never push.
+  - Deadlines are only for sorting; nothing escalates on its own.
+- **Expiry** closes an item when it stops mattering.
 
 ## Delivery
 
@@ -64,9 +84,11 @@ Some observations that shaped the design:
 - **Leads:** one long-running agent per area, defined in the server's private config with a `LEAD.md` charter in each repo.
   - Leads are event-driven by default: woken by answers, job events, or optional systemd timers that survive reboots.
   - Session control matches the tmux conventions of rc, a small standalone tool for remote Claude Code sessions.
-- **Chief of staff:** mostly deterministic.
-  - It handles a watchdog (unreachable machines, dead or stuck sessions, expired logins, stale jobs), quota visibility, ranking, and a templated morning brief.
-  - Optional small model jobs pre-review items against approved preference rules and propose new rules. They annotate and bounce items; they never answer for the human.
+- **Chief of staff:** deterministic.
+  - It runs a watchdog: unreachable machines, a lead stuck on a dialog, expired logins, stale jobs, quota.
+  - It orders the queue and expires moot items.
+  - It pushes act-now items.
+- **Brain:** one optional, capped model job proposes preference rules from the human's corrections, decisions and "not worth my time" notes. The human approves each rule. It never answers an item.
 - **Safety:** items that involve physical actions (for example robot motion) can't be approved remotely.
 
 ## What was learned building it
@@ -87,3 +109,9 @@ All of these have shipped in their first form:
 - **M4, chief of staff:** watchdog, quota, morning brief, pre-review.
 - **M5, brain:** decision log, proposed rules for the human to approve.
 - **M6, release:** packaging, docs, adapter guide.
+- **M7, the dashboard:**
+  - agents decide what to file: no scraping, no pre-review, no morning brief;
+  - projects, components, places, urgency and expiry;
+  - act-now-only pushes;
+  - "not worth my time" feedback;
+  - the per-project dashboard.

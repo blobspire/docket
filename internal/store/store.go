@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS events (
   processed INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS events_todo ON events(processed, id);
+CREATE INDEX IF NOT EXISTS events_by_machine ON events(machine, event, ts);
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
   machine TEXT,
@@ -87,7 +88,14 @@ CREATE TABLE IF NOT EXISTS items (
   answer TEXT NOT NULL DEFAULT '',
   answered_at INTEGER,
   pushed_at INTEGER,
-  chief_note TEXT NOT NULL DEFAULT ''
+  chief_note TEXT NOT NULL DEFAULT '',
+  project TEXT NOT NULL DEFAULT '',
+  component TEXT NOT NULL DEFAULT '',
+  place TEXT NOT NULL DEFAULT '',
+  urgency TEXT NOT NULL DEFAULT 'normal',
+  urgent_since INTEGER NOT NULL DEFAULT 0,
+  expires_at INTEGER NOT NULL DEFAULT 0,
+  pinned TEXT NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX IF NOT EXISTS items_active_dedupe ON items(dedupe_key)
   WHERE dedupe_key IS NOT NULL AND status IN ('maybe','open','snoozed','answered');
@@ -115,7 +123,9 @@ CREATE TABLE IF NOT EXISTS deliveries (
   sent_at INTEGER,
   confirmed_at INTEGER,
   attempts INTEGER NOT NULL DEFAULT 0,
-  error TEXT NOT NULL DEFAULT ''
+  error TEXT NOT NULL DEFAULT '',
+  live_only INTEGER NOT NULL DEFAULT 0,
+  quiet INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS deliveries_status ON deliveries(status);
 CREATE TABLE IF NOT EXISTS decisions (
@@ -182,6 +192,28 @@ CREATE TABLE IF NOT EXISTS rules (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS projects (
+  name TEXT PRIMARY KEY,
+  description TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  archived INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS project_dirs (
+  machine TEXT NOT NULL,
+  dir TEXT NOT NULL,
+  project TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  votes INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY (machine, dir)
+);
+CREATE TABLE IF NOT EXISTS item_aliases (
+  alias TEXT PRIMARY KEY,
+  item_id TEXT NOT NULL,
+  machine TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT 0,
+  session_id TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS kv (
   k TEXT PRIMARY KEY,
   v TEXT NOT NULL
@@ -192,8 +224,12 @@ CREATE TABLE IF NOT EXISTS kv (
 var Active = []string{"maybe", "open", "snoozed", "answered"}
 
 type Store struct {
-	DB *sql.DB
+	DB   *sql.DB
+	path string
 }
+
+// Path is the database file.
+func (s *Store) Path() string { return s.path }
 
 // Open opens (creating if needed) the database at path.
 func Open(path string) (*Store, error) {
@@ -217,7 +253,27 @@ func Open(path string) (*Store, error) {
 	if indexed == 0 && items > 0 {
 		db.Exec(`INSERT INTO items_fts(id, title, body, quote, answer, resolution) SELECT id, title, body, quote, answer, resolution FROM items`)
 	}
-	return &Store{DB: db}, nil
+	upgradeItems(db)
+	return &Store{DB: db, path: path}, nil
+}
+
+// upgradeItems runs once on a database from before agents became the only
+// filers: it closes what the old version guessed from chat text or raised
+// for every permission prompt, and per-session login failures (now one per
+// machine). Best effort: a failure leaves them for the human to dismiss.
+func upgradeItems(db *sql.DB) {
+	var done string
+	db.QueryRow(`SELECT v FROM kv WHERE k='upgrade:agents-file'`).Scan(&done)
+	if done != "" {
+		return
+	}
+	t := now()
+	db.Exec(`UPDATE items SET status='dismissed', resolution='closed by the upgrade: guessed from chat or raised by a hook', resolved_at=?, updated_at=?
+		WHERE status IN ('maybe','open','snoozed') AND (status='maybe' OR source IN ('backfill','notification','permission_denied')
+		OR ((dedupe_key LIKE 'stopfail:%' OR dedupe_key LIKE 'auth:%') AND session_id<>''))`, t, t)
+	// Folder mappings from before voting were explicit choices: give them weight.
+	db.Exec(`UPDATE project_dirs SET votes=3 WHERE votes<3`)
+	db.Exec(`INSERT OR REPLACE INTO kv(k, v) VALUES ('upgrade:agents-file', ?)`, fmt.Sprint(t))
 }
 
 // columns added after a table was first created; migrate adds any that an
@@ -227,6 +283,19 @@ var added = []struct{ table, column, ddl string }{
 	{"sessions", "waiting_since", "INTEGER NOT NULL DEFAULT 0"},
 	{"decisions", "context", "TEXT NOT NULL DEFAULT ''"},
 	{"items", "chief_note", "TEXT NOT NULL DEFAULT ''"},
+	{"items", "project", "TEXT NOT NULL DEFAULT ''"},
+	{"items", "component", "TEXT NOT NULL DEFAULT ''"},
+	{"items", "place", "TEXT NOT NULL DEFAULT ''"},
+	{"items", "urgency", "TEXT NOT NULL DEFAULT 'normal'"},
+	{"items", "urgent_since", "INTEGER NOT NULL DEFAULT 0"},
+	{"items", "expires_at", "INTEGER NOT NULL DEFAULT 0"},
+	{"items", "pinned", "TEXT NOT NULL DEFAULT ''"},
+	{"deliveries", "live_only", "INTEGER NOT NULL DEFAULT 0"},
+	{"deliveries", "quiet", "INTEGER NOT NULL DEFAULT 0"},
+	{"item_aliases", "machine", "TEXT NOT NULL DEFAULT ''"},
+	{"item_aliases", "created_at", "INTEGER NOT NULL DEFAULT 0"},
+	{"item_aliases", "session_id", "TEXT NOT NULL DEFAULT ''"},
+	{"project_dirs", "votes", "INTEGER NOT NULL DEFAULT 1"},
 }
 
 func migrate(db *sql.DB) error {
@@ -245,7 +314,9 @@ func migrate(db *sql.DB) error {
 		}
 		rows.Close()
 		if !have {
-			if _, err := db.Exec(`ALTER TABLE ` + a.table + ` ADD COLUMN ` + a.column + ` ` + a.ddl); err != nil {
+			// Another docket process (a laptop's `server receive` next to
+			// `serve`) may add the same column at the same moment.
+			if _, err := db.Exec(`ALTER TABLE ` + a.table + ` ADD COLUMN ` + a.column + ` ` + a.ddl); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 				return fmt.Errorf("add %s.%s: %w", a.table, a.column, err)
 			}
 		}
@@ -513,16 +584,14 @@ type Session struct {
 	HasPlugin         bool
 	Kind              string // interactive | bg | … (from the session registry)
 	WaitingSince      int64
-	Nudges            int
-	NudgeHits         int
 }
 
-const sessionCols = `id, COALESCE(machine,''), COALESCE(cwd,''), COALESCE(lead,''), COALESCE(name,''), COALESCE(tmux,''), COALESCE(bridge_id,''), COALESCE(pid,0), COALESCE(state,''), COALESCE(waiting_for,''), COALESCE(transcript_path,''), COALESCE(started_at,0), COALESCE(last_event_at,0), COALESCE(ended_at,0), COALESCE(pending_permission,''), COALESCE(last_message,''), has_plugin, kind, waiting_since, nudges, nudge_hits`
+const sessionCols = `id, COALESCE(machine,''), COALESCE(cwd,''), COALESCE(lead,''), COALESCE(name,''), COALESCE(tmux,''), COALESCE(bridge_id,''), COALESCE(pid,0), COALESCE(state,''), COALESCE(waiting_for,''), COALESCE(transcript_path,''), COALESCE(started_at,0), COALESCE(last_event_at,0), COALESCE(ended_at,0), COALESCE(pending_permission,''), COALESCE(last_message,''), has_plugin, kind, waiting_since`
 
 func scanSession(sc interface{ Scan(...any) error }) (Session, error) {
 	var x Session
 	var plugin int
-	err := sc.Scan(&x.ID, &x.Machine, &x.Cwd, &x.Lead, &x.Name, &x.Tmux, &x.BridgeID, &x.PID, &x.State, &x.WaitingFor, &x.TranscriptPath, &x.StartedAt, &x.LastEventAt, &x.EndedAt, &x.PendingPermission, &x.LastMessage, &plugin, &x.Kind, &x.WaitingSince, &x.Nudges, &x.NudgeHits)
+	err := sc.Scan(&x.ID, &x.Machine, &x.Cwd, &x.Lead, &x.Name, &x.Tmux, &x.BridgeID, &x.PID, &x.State, &x.WaitingFor, &x.TranscriptPath, &x.StartedAt, &x.LastEventAt, &x.EndedAt, &x.PendingPermission, &x.LastMessage, &plugin, &x.Kind, &x.WaitingSince)
 	x.HasPlugin = plugin != 0
 	return x, err
 }
@@ -541,7 +610,6 @@ type SessionPatch struct {
 	Machine, Cwd, Lead, Name, Tmux, BridgeID, State, WaitingFor, TranscriptPath, PendingPermission, LastMessage, Kind *string
 	PID, StartedAt, LastEventAt, EndedAt, WaitingSince                                                                *int64
 	HasPlugin                                                                                                         *bool
-	AddNudge, AddNudgeHit                                                                                             bool
 }
 
 func Str(s string) *string { return &s }
@@ -571,12 +639,6 @@ func (s *Store) PatchSession(id string, p SessionPatch) error {
 	}
 	if p.HasPlugin != nil {
 		add("has_plugin", boolInt(*p.HasPlugin))
-	}
-	if p.AddNudge {
-		sets = append(sets, "nudges=nudges+1")
-	}
-	if p.AddNudgeHit {
-		sets = append(sets, "nudge_hits=nudge_hits+1")
 	}
 	if len(sets) == 0 {
 		return nil
@@ -641,6 +703,13 @@ type Item struct {
 	AnsweredAt   int64
 	PushedAt     int64
 	ChiefNote    string
+	Project      string
+	Component    string
+	Place        string
+	Urgency      string // now | soon | normal
+	UrgentSince  int64  // when urgency last became "now"
+	ExpiresAt    int64  // the item closes on its own after this (0: never)
+	Pinned       string // comma-separated fields the human set by hand
 
 	// Ongoing marks an upsert that re-checks a standing condition (a session
 	// still waiting, a machine still down). It refreshes the item without
@@ -648,13 +717,13 @@ type Item struct {
 	Ongoing bool
 }
 
-const itemCols = `id, kind, status, title, body, options, recommend, blocking, blocks, physical, due, COALESCE(dedupe_key,''), source, machine, session_id, lead, cwd, quote, created_at, updated_at, last_seen_at, mention_count, COALESCE(snoozed_until,0), COALESCE(resolved_at,0), resolution, answer, COALESCE(answered_at,0), COALESCE(pushed_at,0), chief_note`
+const itemCols = `id, kind, status, title, body, options, recommend, blocking, blocks, physical, due, COALESCE(dedupe_key,''), source, machine, session_id, lead, cwd, quote, created_at, updated_at, last_seen_at, mention_count, COALESCE(snoozed_until,0), COALESCE(resolved_at,0), resolution, answer, COALESCE(answered_at,0), COALESCE(pushed_at,0), chief_note, project, component, place, urgency, urgent_since, expires_at, pinned`
 
 func scanItem(sc interface{ Scan(...any) error }) (Item, error) {
 	var it Item
 	var opts string
 	var blocking, physical int
-	err := sc.Scan(&it.ID, &it.Kind, &it.Status, &it.Title, &it.Body, &opts, &it.Recommend, &blocking, &it.Blocks, &physical, &it.Due, &it.DedupeKey, &it.Source, &it.Machine, &it.SessionID, &it.Lead, &it.Cwd, &it.Quote, &it.CreatedAt, &it.UpdatedAt, &it.LastSeenAt, &it.MentionCount, &it.SnoozedUntil, &it.ResolvedAt, &it.Resolution, &it.Answer, &it.AnsweredAt, &it.PushedAt, &it.ChiefNote)
+	err := sc.Scan(&it.ID, &it.Kind, &it.Status, &it.Title, &it.Body, &opts, &it.Recommend, &blocking, &it.Blocks, &physical, &it.Due, &it.DedupeKey, &it.Source, &it.Machine, &it.SessionID, &it.Lead, &it.Cwd, &it.Quote, &it.CreatedAt, &it.UpdatedAt, &it.LastSeenAt, &it.MentionCount, &it.SnoozedUntil, &it.ResolvedAt, &it.Resolution, &it.Answer, &it.AnsweredAt, &it.PushedAt, &it.ChiefNote, &it.Project, &it.Component, &it.Place, &it.Urgency, &it.UrgentSince, &it.ExpiresAt, &it.Pinned)
 	it.Blocking, it.Physical = blocking != 0, physical != 0
 	_ = json.Unmarshal([]byte(opts), &it.Options)
 	return it, err
@@ -670,6 +739,12 @@ func boolInt(b bool) int {
 // UpsertItem inserts it, or, when an active item already has the same
 // dedupe key, records another mention of that item instead. It returns the
 // stored item's id and whether it was newly created.
+//
+// On a key match only what the filer actually gave is changed (empty means
+// "keep"): an agent re-filing to add detail can't accidentally lower its
+// urgency. The project never changes on a re-file, fields the human set by
+// hand (Pinned) are never overwritten, and an ongoing watchdog re-check
+// never touches urgency.
 func (s *Store) UpsertItem(it Item) (string, bool, error) {
 	t := now()
 	if it.CreatedAt == 0 {
@@ -682,26 +757,87 @@ func (s *Store) UpsertItem(it Item) (string, bool, error) {
 		var id string
 		err := s.DB.QueryRow(`SELECT id FROM items WHERE dedupe_key=? AND status IN ('maybe','open','snoozed','answered')`, it.DedupeKey).Scan(&id)
 		if err == nil {
-			// Same thing again: count the mention and refresh the wording.
-			_, err = s.DB.Exec(`UPDATE items SET mention_count=CASE WHEN ? THEN 1 ELSE mention_count+1 END, last_seen_at=?, updated_at=?,
+			if it.Ongoing {
+				// A watchdog re-check of a condition that still holds: refresh
+				// the wording, but only a changed title counts as a change, so
+				// an unchanged queue stays unchanged (page reloads, context.json
+				// resends and pushes all key off that).
+				_, err = s.DB.Exec(`UPDATE items SET last_seen_at=?, mention_count=1,
+					updated_at=CASE WHEN ?<>'' AND title<>? THEN ? ELSE updated_at END,
+					title=CASE WHEN ?<>'' THEN ? ELSE title END,
+					body=CASE WHEN ?<>'' THEN ? ELSE body END
+					WHERE id=?`, t, it.Title, it.Title, t, it.Title, it.Title, it.Body, it.Body, id)
+				return id, false, err
+			}
+			opts := ""
+			if len(it.Options) > 0 {
+				b, _ := json.Marshal(it.Options)
+				opts = string(b)
+			}
+			urg := it.Urgency
+			// SQLite evaluates every SET expression against the old row, so
+			// the urgency comparisons below see the previous value. Raising
+			// an item to "now" also brings it back from snoozed: the filer is
+			// saying it can't wait. (An answered item stays answered: its
+			// answer is already on the way.)
+			const toNow = `?='now' AND urgency<>'now' AND instr(pinned,'urgency')=0`
+			_, err = s.DB.Exec(`UPDATE items SET mention_count=mention_count+1, last_seen_at=?, updated_at=?,
 				title=CASE WHEN ?<>'' THEN ? ELSE title END,
 				body=CASE WHEN ?<>'' THEN ? ELSE body END,
-				status=CASE WHEN status='maybe' AND ?='open' THEN 'open' ELSE status END
-				WHERE id=?`, boolInt(it.Ongoing), t, t, it.Title, it.Title, it.Body, it.Body, it.Status, id)
+				status=CASE WHEN status='maybe' AND ?='open' THEN 'open' WHEN `+toNow+` AND status='snoozed' THEN 'open' ELSE status END,
+				snoozed_until=CASE WHEN `+toNow+` THEN NULL ELSE snoozed_until END,
+				kind=CASE WHEN ?<>'' THEN ? ELSE kind END,
+				component=CASE WHEN ?<>'' AND instr(pinned,'component')=0 THEN ? ELSE component END,
+				place=CASE WHEN ?<>'' AND instr(pinned,'place')=0 THEN ? ELSE place END,
+				due=CASE WHEN ?<>'' THEN ? ELSE due END,
+				recommend=CASE WHEN ?<>'' THEN ? ELSE recommend END,
+				options=CASE WHEN ?<>'' THEN ? ELSE options END,
+				blocks=CASE WHEN ?<>'' THEN ? ELSE blocks END,
+				blocking=CASE WHEN ? THEN 1 ELSE blocking END,
+				physical=CASE WHEN ? THEN 1 ELSE physical END,
+				expires_at=CASE WHEN ?>0 THEN ? ELSE expires_at END,
+				session_id=CASE WHEN ?<>'' THEN ? ELSE session_id END,
+				machine=CASE WHEN ?<>'' AND ?<>'' THEN ? ELSE machine END,
+				cwd=CASE WHEN ?<>'' AND ?<>'' THEN ? ELSE cwd END,
+				urgent_since=CASE WHEN `+toNow+` THEN ? ELSE urgent_since END,
+				pushed_at=CASE WHEN `+toNow+` THEN NULL ELSE pushed_at END,
+				urgency=CASE WHEN ?<>'' AND instr(pinned,'urgency')=0 THEN ? ELSE urgency END
+				WHERE id=?`,
+				t, t,
+				it.Title, it.Title, it.Body, it.Body,
+				it.Status, urg,
+				urg,
+				it.Kind, it.Kind,
+				it.Component, it.Component, it.Place, it.Place, it.Due, it.Due, it.Recommend, it.Recommend, opts, opts,
+				it.Blocks, it.Blocks, boolInt(it.Blocking), boolInt(it.Physical), it.ExpiresAt, it.ExpiresAt,
+				it.SessionID, it.SessionID, it.SessionID, it.Machine, it.Machine, it.SessionID, it.Cwd, it.Cwd,
+				urg, t, urg, urg, urg, id)
 			return id, false, err
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return "", false, err
 		}
 	}
+	if it.Urgency == "" {
+		it.Urgency = "normal"
+	}
+	if it.Urgency == "now" && it.UrgentSince == 0 {
+		it.UrgentSince = t
+	}
 	opts, _ := json.Marshal(nonNil(it.Options))
 	var dedupe any
 	if it.DedupeKey != "" {
 		dedupe = it.DedupeKey
 	}
-	res, err := s.DB.Exec(`INSERT OR IGNORE INTO items(id, kind, status, title, body, options, recommend, blocking, blocks, physical, due, dedupe_key, source, machine, session_id, lead, cwd, quote, created_at, updated_at, last_seen_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		it.ID, it.Kind, it.Status, it.Title, it.Body, string(opts), it.Recommend, boolInt(it.Blocking), it.Blocks, boolInt(it.Physical), it.Due, dedupe, it.Source, it.Machine, it.SessionID, it.Lead, it.Cwd, it.Quote, it.CreatedAt, t, t)
+	var resolvedAt any
+	if it.Status == "dismissed" || it.Status == "done" {
+		resolvedAt = t
+	}
+	res, err := s.DB.Exec(`INSERT OR IGNORE INTO items(id, kind, status, title, body, options, recommend, blocking, blocks, physical, due, dedupe_key, source, machine, session_id, lead, cwd, quote, created_at, updated_at, last_seen_at,
+		project, component, place, urgency, urgent_since, expires_at, resolution, resolved_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?)`,
+		it.ID, it.Kind, it.Status, it.Title, it.Body, string(opts), it.Recommend, boolInt(it.Blocking), it.Blocks, boolInt(it.Physical), it.Due, dedupe, it.Source, it.Machine, it.SessionID, it.Lead, it.Cwd, it.Quote, it.CreatedAt, t, t,
+		it.Project, it.Component, it.Place, it.Urgency, it.UrgentSince, it.ExpiresAt, it.Resolution, resolvedAt)
 	if err != nil {
 		return "", false, err
 	}
@@ -753,7 +889,7 @@ func (s *Store) Items(statuses ...string) ([]Item, error) {
 
 // RecentlyClosed lists items resolved since `since`.
 func (s *Store) RecentlyClosed(since int64, limit int) ([]Item, error) {
-	rows, err := s.DB.Query(`SELECT `+itemCols+` FROM items WHERE status IN ('done','dismissed','delivered') AND COALESCE(resolved_at, answered_at, updated_at) >= ? ORDER BY updated_at DESC LIMIT ?`, since, limit)
+	rows, err := s.DB.Query(`SELECT `+itemCols+` FROM items WHERE status IN ('done','dismissed','delivered','expired') AND COALESCE(resolved_at, answered_at, updated_at) >= ? ORDER BY updated_at DESC LIMIT ?`, since, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -771,6 +907,15 @@ func (s *Store) RecentlyClosed(since int64, limit int) ([]Item, error) {
 
 // SetStatus changes an item's status, logging the change so it can be undone.
 func (s *Store) SetStatus(id, status, resolution, action string) error {
+	return s.SetStatusWith(id, status, resolution, action, "")
+}
+
+// Closed statuses: the item no longer needs anyone.
+func closedStatus(st string) bool { return st == "done" || st == "dismissed" || st == "expired" }
+
+// SetStatusWith is SetStatus that also keeps a note in the decision log (the
+// human's reason for a "not worth my time", for example).
+func (s *Store) SetStatusWith(id, status, resolution, action, answer string) error {
 	tx, err := s.DB.Begin()
 	if err != nil {
 		return err
@@ -780,9 +925,14 @@ func (s *Store) SetStatus(id, status, resolution, action string) error {
 	if err := tx.QueryRow(`SELECT status FROM items WHERE id=?`, id).Scan(&prev); err != nil {
 		return err
 	}
+	// Checked inside the transaction (one writer at a time), so two clicks
+	// racing can't both close it.
+	if closedStatus(status) && closedStatus(prev) && action != "" {
+		return errors.New("this item is already closed")
+	}
 	t := now()
 	var resolvedAt any
-	if status == "done" || status == "dismissed" {
+	if closedStatus(status) {
 		resolvedAt = t
 	}
 	if _, err := tx.Exec(`UPDATE items SET status=?, resolution=CASE WHEN ?<>'' THEN ? ELSE resolution END, resolved_at=?, updated_at=?, snoozed_until=CASE WHEN ?='snoozed' THEN snoozed_until ELSE NULL END WHERE id=?`,
@@ -793,7 +943,7 @@ func (s *Store) SetStatus(id, status, resolution, action string) error {
 		return err
 	}
 	if action != "" {
-		if _, err := tx.Exec(`INSERT INTO decisions(item_id, ts, action, prev_status) VALUES (?,?,?,?)`, id, t, action, prev); err != nil {
+		if _, err := tx.Exec(`INSERT INTO decisions(item_id, ts, action, answer, prev_status) VALUES (?,?,?,?,?)`, id, t, action, answer, prev); err != nil {
 			return err
 		}
 	}
@@ -834,6 +984,10 @@ func (s *Store) SetAnswer(id, answer, action string) error {
 	if err := tx.QueryRow(`SELECT status FROM items WHERE id=?`, id).Scan(&prev); err != nil {
 		return err
 	}
+	// Checked here too, so an answer racing a close can't reopen it.
+	if closedStatus(prev) {
+		return errors.New("this item is already closed")
+	}
 	t := now()
 	if _, err := tx.Exec(`UPDATE items SET status='answered', answer=?, answered_at=?, updated_at=? WHERE id=?`, answer, t, t, id); err != nil {
 		return err
@@ -851,9 +1005,9 @@ func (s *Store) Undo(id string) (string, error) {
 		return "", err
 	}
 	defer tx.Rollback()
-	var did int64
-	var action, prev string
-	err = tx.QueryRow(`SELECT id, action, prev_status FROM decisions WHERE item_id=? ORDER BY id DESC LIMIT 1`, id).Scan(&did, &action, &prev)
+	var did, dts int64
+	var action, prev, answer string
+	err = tx.QueryRow(`SELECT id, action, prev_status, answer, ts FROM decisions WHERE item_id=? ORDER BY id DESC LIMIT 1`, id).Scan(&did, &action, &prev, &answer, &dts)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", errors.New("nothing to undo")
 	}
@@ -865,10 +1019,37 @@ func (s *Store) Undo(id string) (string, error) {
 	if undeliverable > 0 && (action == "answer" || action == "approve" || action == "decline" || action == "choose") {
 		return "", errors.New("the answer has already been delivered to the agent; send a correction instead")
 	}
-	if _, err := tx.Exec(`UPDATE items SET status=?, resolved_at=NULL, snoozed_until=NULL, updated_at=?, answer=CASE WHEN ? IN ('answer','approve','decline','choose') THEN '' ELSE answer END WHERE id=?`, prev, now(), action, id); err != nil {
+	if action == "reclassify" {
+		if err := undoReclassify(tx, id, answer); err != nil {
+			return "", err
+		}
+		if _, err := tx.Exec(`DELETE FROM decisions WHERE id=?`, did); err != nil {
+			return "", err
+		}
+		return action, tx.Commit()
+	}
+	// A snooze can't be restored without its time: bring it back open.
+	if prev == "snoozed" {
+		prev = "open"
+	}
+	// Back to an open state: the closing note no longer describes it.
+	if _, err := tx.Exec(`UPDATE items SET status=?, snoozed_until=NULL, updated_at=?, answer=CASE WHEN ? IN ('answer','approve','decline','choose') THEN '' ELSE answer END,
+		expires_at=CASE WHEN ?='expire' THEN 0 ELSE expires_at END,
+		resolution=CASE WHEN ? IN ('open','answered','maybe') THEN '' ELSE resolution END,
+		resolved_at=CASE WHEN ? IN ('done','dismissed','expired') THEN ? ELSE NULL END WHERE id=?`, prev, now(), action, action, prev, prev, now(), id); err != nil {
+		if isDedupeConflict(err) {
+			return "", errors.New("can't undo: an open item with the same key has been filed since")
+		}
 		return "", err
 	}
-	tx.Exec(`DELETE FROM deliveries WHERE item_id=? AND status='pending'`, id)
+	// Withdraw what the undone action queued (an answer, a "marked done", a
+	// noise note); never another action's delivery, like an answer still on
+	// its way when an expiry is undone.
+	// (Only deliveries queued from that decision on: an earlier answer still
+	// on its way stays.)
+	if action == "answer" || action == "approve" || action == "decline" || action == "choose" || action == "done" || action == "noise" {
+		tx.Exec(`DELETE FROM deliveries WHERE item_id=? AND status='pending' AND created_at>=?`, id, dts)
+	}
 	if _, err := tx.Exec(`DELETE FROM decisions WHERE id=?`, did); err != nil {
 		return "", err
 	}
@@ -965,19 +1146,32 @@ type Delivery struct {
 	ID, ItemID, Machine, SessionID, Text, Nonce, Method, Status, Error string
 	CreatedAt, SentAt, ConfirmedAt                                     int64
 	Attempts                                                           int
+	// LiveOnly deliveries go to a running session's mailbox or nowhere: never
+	// pasted into tmux, never resuming an ended session.
+	LiveOnly bool
+	// Quiet deliveries never wake an idle session (see mailbox.Delivery).
+	Quiet bool
 }
 
-const deliveryCols = `id, item_id, machine, session_id, text, nonce, method, status, error, created_at, COALESCE(sent_at,0), COALESCE(confirmed_at,0), attempts`
+const deliveryCols = `id, item_id, machine, session_id, text, nonce, method, status, error, created_at, COALESCE(sent_at,0), COALESCE(confirmed_at,0), attempts, live_only, quiet`
 
 func scanDelivery(sc interface{ Scan(...any) error }) (Delivery, error) {
 	var d Delivery
-	err := sc.Scan(&d.ID, &d.ItemID, &d.Machine, &d.SessionID, &d.Text, &d.Nonce, &d.Method, &d.Status, &d.Error, &d.CreatedAt, &d.SentAt, &d.ConfirmedAt, &d.Attempts)
+	var live, quiet int
+	err := sc.Scan(&d.ID, &d.ItemID, &d.Machine, &d.SessionID, &d.Text, &d.Nonce, &d.Method, &d.Status, &d.Error, &d.CreatedAt, &d.SentAt, &d.ConfirmedAt, &d.Attempts, &live, &quiet)
+	d.LiveOnly, d.Quiet = live != 0, quiet != 0
 	return d, err
 }
 
 func (s *Store) AddDelivery(d Delivery) error {
-	_, err := s.DB.Exec(`INSERT INTO deliveries(id, item_id, machine, session_id, text, nonce, status, created_at) VALUES (?,?,?,?,?,?,'pending',?)`,
-		d.ID, d.ItemID, d.Machine, d.SessionID, d.Text, d.Nonce, now())
+	_, err := s.DB.Exec(`INSERT INTO deliveries(id, item_id, machine, session_id, text, nonce, status, created_at, live_only, quiet) VALUES (?,?,?,?,?,?,'pending',?,?,?)`,
+		d.ID, d.ItemID, d.Machine, d.SessionID, d.Text, d.Nonce, now(), boolInt(d.LiveOnly), boolInt(d.Quiet))
+	return err
+}
+
+// DeliveryDropped gives up on a live-only delivery whose session is gone.
+func (s *Store) DeliveryDropped(id, why string) error {
+	_, err := s.DB.Exec(`UPDATE deliveries SET status='dropped', error=? WHERE id=?`, why, id)
 	return err
 }
 
@@ -1231,7 +1425,7 @@ type Decision struct {
 // DecisionsSince returns decisions and corrections since ts, oldest first.
 func (s *Store) DecisionsSince(ts int64, limit int) ([]Decision, error) {
 	rows, err := s.DB.Query(`SELECT d.item_id, d.action, d.answer, d.context, COALESCE(i.title,''), d.ts FROM decisions d
-		LEFT JOIN items i ON i.id = d.item_id WHERE d.ts >= ? AND d.action IN ('answer','approve','decline','choose','correction','dismiss')
+		LEFT JOIN items i ON i.id = d.item_id WHERE d.ts >= ? AND d.action IN ('answer','approve','decline','choose','correction','dismiss','noise')
 		ORDER BY d.ts LIMIT ?`, ts, limit)
 	if err != nil {
 		return nil, err

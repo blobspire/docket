@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/blobspire/docket/internal/agentctx"
 	"github.com/blobspire/docket/internal/mailbox"
 	"github.com/blobspire/docket/internal/sessions"
 	"github.com/blobspire/docket/internal/spool"
@@ -154,6 +155,7 @@ func (s *Server) pull(ctx context.Context, m Machine) error {
 	}
 	s.fetchBlobs(ctx, m)
 	s.collectHealth(ctx, m)
+	s.syncContext(ctx, m)
 	return nil
 }
 
@@ -166,18 +168,26 @@ func (s *Server) applySessions(machine string, data []byte) {
 	seen := map[string]bool{}
 	for _, l := range live {
 		seen[l.ID] = true
+		prev, _, _ := s.st.GetSession(l.ID)
+		patch := store.SessionPatch{Machine: store.Str(machine), Cwd: store.Str(l.Cwd), Name: store.Str(l.Name),
+			PID: store.Int(int64(l.PID)), Kind: store.Str(l.Kind)}
 		state := l.Status
 		if state == "" {
-			state = "idle"
+			// The registry didn't say: keep what the session's hooks reported
+			// (a notification may have marked it waiting).
+			state = firstNonEmptyStr(prev.State, "idle")
+			if state == "ended" {
+				state = "idle"
+			}
+		} else {
+			patch.WaitingFor = store.Str(l.Waiting)
 		}
-		patch := store.SessionPatch{Machine: store.Str(machine), Cwd: store.Str(l.Cwd), Name: store.Str(l.Name), State: store.Str(state),
-			PID: store.Int(int64(l.PID)), Kind: store.Str(l.Kind), WaitingFor: store.Str(l.Waiting)}
-		prev, _, _ := s.st.GetSession(l.ID)
+		patch.State = store.Str(state)
 		// Claude Code stamps the registry file when the status changes, so
 		// its updated time is when the wait began, even if docket only
 		// noticed later.
 		since := time.Now().Unix()
-		if u := l.Updated / 1000; u > 0 && u < since && since-u < 30*86400 {
+		if u := l.Updated / 1000; l.Status == "waiting" && u > 0 && u < since && since-u < 30*86400 {
 			since = u
 		}
 		switch {
@@ -268,12 +278,17 @@ type SyncReply struct {
 	Cursor     string             `json:"cursor"`
 	Deliveries []mailbox.Delivery `json:"deliveries"`
 	WantBlobs  []string           `json:"want_blobs"`
-	Rules      *string            `json:"rules,omitempty"` // new ~/.docket/rules.md, when it changed
+	Rules      *string            `json:"rules,omitempty"`   // new ~/.docket/rules.md, when it changed
+	Context    *string            `json:"context,omitempty"` // new ~/.docket/context.json, when it changed
 }
+
+// Hashes is what a laptop already has: the hashes of its rules.md and
+// context.json. "-" means an older client that doesn't report them.
+type Hashes struct{ Rules, Context string }
 
 // Receive ingests a push machine's export (read from r) and its session
 // registry, and hands back the answers waiting for its sessions.
-func (s *Server) Receive(machine string, r io.Reader, sessionsJSON []byte) (SyncReply, error) {
+func (s *Server) Receive(machine string, r io.Reader, sessionsJSON []byte, have Hashes) (SyncReply, error) {
 	m, ok := s.cfg.Machine(machine)
 	if !ok || m.Mode != "push" {
 		return SyncReply{}, fmt.Errorf("machine %q isn't configured with mode = \"push\"", machine)
@@ -297,11 +312,17 @@ func (s *Server) Receive(machine string, r io.Reader, sessionsJSON []byte) (Sync
 		if d.Machine != machine {
 			continue
 		}
+		sess, _, _ := s.st.GetSession(d.SessionID)
+		// A live-only message (feedback, a notice) is for a running session
+		// or nobody: it must not wait for, or cause, a resume.
+		if d.LiveOnly && (!sess.HasPlugin || sess.State == "ended") {
+			s.st.DeliveryDropped(d.ID, "the session isn't running")
+			continue
+		}
 		// Hand it over even if the session has ended: resuming it later runs
 		// the SessionStart hook, which delivers what is waiting.
-		sess, _, _ := s.st.GetSession(d.SessionID)
 		if sess.HasPlugin {
-			reply.Deliveries = append(reply.Deliveries, mailbox.Delivery{ID: d.ID, ItemID: d.ItemID, SessionID: d.SessionID, Nonce: d.Nonce, Text: d.Text})
+			reply.Deliveries = append(reply.Deliveries, mailbox.Delivery{ID: d.ID, ItemID: d.ItemID, SessionID: d.SessionID, Nonce: d.Nonce, Text: d.Text, Quiet: d.Quiet})
 			// Writing a local mailbox file can't meaningfully fail; if it ever
 			// does, the missing receipt makes the deliverer resend it, and the
 			// mailbox ignores ids it has already delivered.
@@ -309,10 +330,21 @@ func (s *Server) Receive(machine string, r io.Reader, sessionsJSON []byte) (Sync
 		}
 	}
 	reply.WantBlobs, _ = s.st.MissingBlobs(machine)
-	if v := s.st.Get("rules:version"); v != "" && s.st.Get("rules:sent:"+machine) != v {
-		md := s.RulesMarkdown()
+	if have.Rules == "-" {
+		// An older client: send rules when they changed, as before.
+		if v := s.st.Get("rules:version"); v != "" && s.st.Get("rules:sent:"+machine) != v {
+			md := s.RulesMarkdown()
+			reply.Rules = &md
+			s.st.Set("rules:sent:"+machine, v)
+		}
+	} else if md := s.RulesMarkdown(); agentctx.Hash([]byte(md)) != have.Rules {
 		reply.Rules = &md
-		s.st.Set("rules:sent:"+machine, v)
+	}
+	if have.Context != "-" {
+		if data, err := s.ContextFor(machine); err == nil && agentctx.Hash(data) != have.Context {
+			c := string(data)
+			reply.Context = &c
+		}
 	}
 	s.st.Bump()
 	return reply, nil
@@ -320,48 +352,6 @@ func (s *Server) Receive(machine string, r io.Reader, sessionsJSON []byte) (Sync
 
 // PutBlob stores an evidence file pushed by `docket sync`.
 func (s *Server) PutBlob(sha string, r io.Reader) error { return s.saveBlob(sha, r) }
-
-// BackfillText is the one-time prompt asking a live session to file what it
-// is already waiting on.
-func (s *Server) BackfillText() string {
-	return fmt.Sprintf("[docket] One-time setup: %[1]s now uses docket, a single queue for everything agents need from %[1]s. "+
-		"Please file each thing you are currently waiting on %[1]s for (held approvals, blockers, decisions, human-only tasks, open issues), "+
-		"one item each, with `~/.local/bin/docket ask \"<question>\" --options \"a|b\" --why \"<context>\" --key <short-stable-id>` "+
-		"(or `docket task` / `docket issue`; run `~/.local/bin/docket help` for details), then carry on with your work. "+
-		"Filing never blocks. If nothing is waiting on %[1]s, just say so and continue.", s.cfg.Person)
-}
-
-// BackfillPrompt sends BackfillText to every live, idle session the server
-// can type into safely. It returns one line per session describing the result.
-func (s *Server) BackfillPrompt(ctx context.Context, dryRun bool) []string {
-	var report []string
-	live, _ := s.st.Sessions(false, 500)
-	for _, x := range live {
-		m, ok := s.cfg.Machine(x.Machine)
-		label := x.Machine + "/" + firstNonEmptyStr(x.Name, x.ID)
-		switch {
-		case !ok || m.Mode == "push":
-			report = append(report, label+": skipped (the server can't reach it; it will file going forward)")
-			continue
-		case x.Tmux == "":
-			report = append(report, label+": skipped (not in tmux)")
-			continue
-		case x.State != "idle" && x.State != "waiting":
-			report = append(report, label+": skipped ("+x.State+")")
-			continue
-		}
-		if dryRun {
-			report = append(report, label+": would prompt")
-			continue
-		}
-		if _, err := s.remote(ctx, m, strings.NewReader(s.BackfillText()), "session", "send", "--pane", x.Tmux); err != nil {
-			report = append(report, label+": not sent ("+err.Error()+")")
-			continue
-		}
-		report = append(report, label+": prompted")
-	}
-	return report
-}
 
 func firstNonEmptyStr(v ...string) string {
 	for _, s := range v {
