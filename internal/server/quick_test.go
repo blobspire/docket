@@ -99,29 +99,66 @@ func TestQuickActionsEdgeRows(t *testing.T) {
 	}
 }
 
-// Undoing a rule's approval (one click from the toast) makes it a proposal
-// again: agents stop getting it.
-func TestUndoingARuleApprovalRetractsIt(t *testing.T) {
+// Undoing (or reopening) a rule decision, one click from the toast or the
+// Done page, makes it a proposal again: agents stop getting it, and the
+// machines are told (the rules version moves).
+func TestUndoingARuleDecisionRetractsIt(t *testing.T) {
+	for _, c := range []struct{ decide, back string }{
+		{"approve", "undo"}, {"decline", "undo"}, {"approve", "reopen"}, {"decline", "reopen"},
+	} {
+		t.Run(c.decide+"/"+c.back, func(t *testing.T) {
+			e := newEnv(t, "")
+			st := e.s.st
+			st.UpsertItem(store.Item{ID: "dk-q0000021", Kind: "rule", Title: "Don't file merged-PR reports", Project: "w"})
+			if err := e.s.Decide("dk-q0000021", Action{Kind: c.decide}); err != nil {
+				t.Fatal(err)
+			}
+			if rs, _ := st.Rules(""); len(rs) != 1 {
+				t.Fatalf("the decision didn't land: %+v", rs)
+			}
+			v := st.Get("rules:version")
+			if err := e.s.Decide("dk-q0000021", Action{Kind: c.back}); err != nil {
+				t.Fatal(err)
+			}
+			if rs, _ := st.Rules(""); len(rs) != 0 {
+				t.Fatalf("the taken-back rule is still recorded: %+v", rs)
+			}
+			if it, _, _ := st.GetItem("dk-q0000021"); it.Status != "open" {
+				t.Fatalf("the rule isn't a proposal again: %s", it.Status)
+			}
+			if md := e.s.RulesMarkdown(); strings.Contains(md, "merged-PR") {
+				t.Fatalf("rules.md still carries it:\n%s", md)
+			}
+			if st.Get("rules:version") == v {
+				t.Fatal("the rules version didn't move, so machines keep the old rules.md")
+			}
+		})
+	}
+}
+
+// An answer still on its way can't be sent again (a double press, a second
+// tab); undo is how it changes.
+func TestASecondAnswerIsRefused(t *testing.T) {
 	e := newEnv(t, "")
 	st := e.s.st
-	st.UpsertItem(store.Item{ID: "dk-q0000021", Kind: "rule", Title: "Don't file merged-PR reports", Project: "w"})
-	if err := e.s.Decide("dk-q0000021", Action{Kind: "approve"}); err != nil {
+	st.UpsertItem(store.Item{ID: "dk-q0000031", Kind: "approval", Title: "push to main?", Project: "w", SessionID: "s", Machine: "box", Source: "cli", Options: []string{"Yes", "No"}})
+	if err := e.s.Decide("dk-q0000031", Action{Kind: "approve"}); err != nil {
 		t.Fatal(err)
 	}
-	if rs, _ := st.Rules("approved"); len(rs) != 1 {
-		t.Fatalf("approval didn't land: %+v", rs)
+	for _, a := range []Action{{Kind: "approve"}, {Kind: "decline"}, {Kind: "choose", Option: 1}, {Kind: "answer", Text: "yes"}} {
+		if err := e.s.Decide("dk-q0000031", a); err == nil {
+			t.Errorf("a second %s was accepted", a.Kind)
+		}
 	}
-	if err := e.s.Decide("dk-q0000021", Action{Kind: "undo"}); err != nil {
+	if ds, _ := st.ItemDeliveries("dk-q0000031"); len(ds) != 1 {
+		t.Fatalf("%d answers queued for the agent, want 1", len(ds))
+	}
+	// Undo, then a changed answer, still works.
+	if err := e.s.Decide("dk-q0000031", Action{Kind: "undo"}); err != nil {
 		t.Fatal(err)
 	}
-	if rs, _ := st.Rules(""); len(rs) != 0 {
-		t.Fatalf("the undone rule is still recorded: %+v", rs)
-	}
-	if it, _, _ := st.GetItem("dk-q0000021"); it.Status != "open" {
-		t.Fatalf("the rule isn't a proposal again: %s", it.Status)
-	}
-	if md := e.s.RulesMarkdown(); strings.Contains(md, "merged-PR") {
-		t.Fatalf("rules.md still carries the undone rule:\n%s", md)
+	if err := e.s.Decide("dk-q0000031", Action{Kind: "decline"}); err != nil {
+		t.Fatalf("a changed answer after undo: %v", err)
 	}
 }
 

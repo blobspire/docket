@@ -51,9 +51,11 @@ func (s *Server) Decide(id string, a Action) error {
 		if a.Kind == "reopen" {
 			// The human closed it here: reopening is undoing that close, with
 			// everything it set off (a queued "marked done", a noise mark and
-			// its note, an expiry). Otherwise an agent or docket closed it.
-			switch s.st.LastDecision(id) {
-			case "done", "dismiss", "noise", "expire":
+			// its note, an expiry, a rule's approval). Otherwise an agent or
+			// docket closed it.
+			switch d := s.st.LastDecision(id); {
+			case d == "done", d == "dismiss", d == "noise", d == "expire",
+				it.Kind == "rule" && (d == "approve" || d == "decline"):
 				return s.Decide(id, Action{Kind: "undo"})
 			}
 			return s.st.Reopen(id)
@@ -64,6 +66,13 @@ func (s *Server) Decide(id string, a Action) error {
 	case "delivered":
 		if a.Kind != "undo" && a.Kind != "reclassify" && a.Kind != "answer" {
 			return errors.New("this item was answered and delivered; send a follow-up answer instead")
+		}
+	case "answered":
+		// Its answer is still on the way: a second one (a double press, a
+		// second tab) would reach the agent twice. Undo changes an answer.
+		switch a.Kind {
+		case "approve", "decline", "choose", "answer":
+			return errors.New("you've already answered this and it's on its way to the agent; undo it to change the answer")
 		}
 	}
 	switch a.Kind {
@@ -123,7 +132,7 @@ func (s *Server) Decide(id string, a Action) error {
 		}
 		// A rule's approval (or rejection) wrote its row in the rules table;
 		// undoing it makes it a proposal again, so agents stop getting it.
-		if it.Kind == "rule" && (action == "approve" || action == "answer" || action == "decline") {
+		if it.Kind == "rule" && (action == "approve" || action == "decline") { // an edited rule is logged as approve
 			if err := s.st.DeleteRule(id); err != nil {
 				return err
 			}
