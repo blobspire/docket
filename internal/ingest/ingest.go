@@ -360,6 +360,9 @@ func fileItem(s *store.Store, r record.Record, base store.Item, o Options) error
 	in := r.Item
 	it := base
 	it.ID = in.ID
+	if !itemIDOK.MatchString(it.ID) { // an id goes into URLs and pages: only a plain one
+		it.ID = ulid.ItemID()
+	}
 	it.Kind = in.Kind
 	it.Source = SrcCLI
 	it.Title = clip(oneLine(in.Title, 500), 500)
@@ -469,6 +472,9 @@ func keyNorm(k string) string {
 	}
 	return k[:cut]
 }
+
+// itemIDOK is a plain item id, like the CLI makes (dk-…).
+var itemIDOK = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 
 func active(status string) bool {
 	return status == "maybe" || status == "open" || status == "snoozed" || status == "answered"

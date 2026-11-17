@@ -335,8 +335,12 @@ type attachment struct {
 	Doc   template.HTML // a text document's contents, rendered
 }
 
-// maxDoc is the largest text attachment shown inline.
-const maxDoc = 512 << 10
+// maxDoc is the largest text attachment shown inline; maxMarkdown the
+// largest rendered as markdown (bigger ones show as plain text).
+const (
+	maxDoc      = 256 << 10
+	maxMarkdown = 24 << 10
+)
 
 // replyForm is the dock's answer box.
 type replyForm struct {
@@ -428,13 +432,18 @@ func (s *Server) pageItem(w http.ResponseWriter, r *http.Request) {
 			images++
 		case strings.HasPrefix(e.Mime, "video/"):
 			a.Kind = "video"
-		case textDoc(e) && e.Size <= maxDoc:
-			if b, err := os.ReadFile(s.blobPath(e.SHA256)); err == nil {
-				a.Kind = "doc"
-				if strings.HasSuffix(strings.ToLower(e.Name), ".md") || strings.Contains(e.Mime, "markdown") {
-					a.Doc = renderMarkdown(string(b))
-				} else {
-					a.Doc = template.HTML("<pre>" + template.HTMLEscapeString(string(b)) + "</pre>")
+		case textDoc(e):
+			// Sized from the file itself, not what the agent declared.
+			// Markdown renders only while small (some inputs take the
+			// renderer seconds per kilobyte); a bigger file shows as text.
+			if info, err := os.Stat(s.blobPath(e.SHA256)); err == nil && info.Size() <= maxDoc {
+				if b, err := os.ReadFile(s.blobPath(e.SHA256)); err == nil {
+					a.Kind = "doc"
+					if (strings.HasSuffix(strings.ToLower(e.Name), ".md") || strings.Contains(strings.ToLower(e.Mime), "markdown")) && len(b) <= maxMarkdown {
+						a.Doc = renderMarkdown(string(b))
+					} else {
+						a.Doc = template.HTML("<pre>" + template.HTMLEscapeString(strings.ToValidUTF8(string(b), "\uFFFD")) + "</pre>")
+					}
 				}
 			}
 		}
@@ -739,10 +748,10 @@ func (s *Server) blob(w http.ResponseWriter, r *http.Request) {
 	if mime == "" || strings.ContainsAny(mime, "\r\n") {
 		mime = "application/octet-stream"
 	}
-	if strings.Contains(mime, "html") || strings.Contains(mime, "svg") || strings.Contains(mime, "xml") {
-		// Agent-made pages are untrusted: render them inert.
-		w.Header().Set("Content-Security-Policy", "sandbox")
-	}
+	// Agent-made files are untrusted: whatever type they claim, in any
+	// letter case, a page opened from one is inert (no script, no origin).
+	// Embedding as <img> or <video> is unaffected.
+	w.Header().Set("Content-Security-Policy", "sandbox")
 	w.Header().Set("Content-Type", mime)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	info, _ := f.Stat()

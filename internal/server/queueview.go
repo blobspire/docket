@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -225,12 +226,16 @@ func (v itemView) SessionState() string {
 	return v.Session.State
 }
 
+// sessionIDOK is what a Claude Code session id looks like. Anything else
+// (an agent can report any id) never goes into a command to paste.
+var sessionIDOK = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+
 // ResumeCommand resumes the item's ended session in a terminal.
 func (v itemView) ResumeCommand() string {
-	if v.Session.ID == "" || v.Session.State != "ended" {
+	if v.Session.State != "ended" || !sessionIDOK.MatchString(v.Session.ID) {
 		return ""
 	}
-	cmd := "claude --resume " + v.Session.ID
+	cmd := "claude --resume " + shellQuote(v.Session.ID)
 	if cwd := v.Session.Cwd; cwd != "" {
 		cmd = "cd " + shellQuote(cwd) + " && " + cmd
 	}
