@@ -896,9 +896,11 @@ func (s *Store) Items(statuses ...string) ([]Item, error) {
 // when it left the Stash.
 func (s *Store) RecentlyClosed(since int64, limit int) ([]Item, error) {
 	cut := StashCutoff()
+	// A delivered answer is on the docket, waiting on its agent, for a day.
 	rows, err := s.DB.Query(`SELECT `+itemCols+` FROM items WHERE status IN ('done','dismissed','delivered','expired') AND stashed_at < ?
+		AND NOT (status='delivered' AND COALESCE(answered_at, updated_at) >= ?)
 		AND (COALESCE(resolved_at, answered_at, updated_at) >= ? OR (stashed_at > 0 AND stashed_at + ? >= ?))
-		ORDER BY MAX(COALESCE(resolved_at, answered_at, updated_at), CASE WHEN stashed_at > 0 THEN stashed_at + ? ELSE 0 END) DESC LIMIT ?`, cut, since, StashSeconds, since, StashSeconds, limit)
+		ORDER BY MAX(COALESCE(resolved_at, answered_at, updated_at), CASE WHEN stashed_at > 0 THEN stashed_at + ? ELSE 0 END) DESC LIMIT ?`, cut, now()-WaitWindow, since, StashSeconds, since, StashSeconds, limit)
 	if err != nil {
 		return nil, err
 	}
