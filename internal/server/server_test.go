@@ -146,7 +146,7 @@ func TestHumanTaskDoneTellsTheAgent(t *testing.T) {
 	e.s.st.UpsertItem(store.Item{ID: "dk-cccccccc", Kind: "human_task", Title: "Insert the SSD", Machine: "box", SessionID: "s", Source: "cli"})
 	e.s.Decide("dk-cccccccc", Action{Kind: "done"})
 	ds, _ := e.s.st.ItemDeliveries("dk-cccccccc")
-	if len(ds) != 1 || !strings.Contains(ds[0].Text, "marked this done") {
+	if len(ds) != 1 || !strings.Contains(ds[0].Text, "marked your docket item done:") {
 		t.Fatalf("deliveries = %+v", ds)
 	}
 }

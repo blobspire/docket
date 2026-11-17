@@ -33,7 +33,7 @@ func (s *Store) Stash(id string) (closed bool, err error) {
 	if err := tx.QueryRow(`SELECT status, stashed_at FROM items WHERE id=?`, id).Scan(&prev, &was); err != nil {
 		return false, err
 	}
-	if was >= StashCutoff() {
+	if was >= StashCutoff() && !needsHuman(prev) {
 		return false, errors.New("it's already on your Stash")
 	}
 	t := now()
@@ -68,7 +68,7 @@ func (s *Store) Unstash(id string, toDone bool) error {
 	if err := tx.QueryRow(`SELECT status, stashed_at FROM items WHERE id=?`, id).Scan(&prev, &was); err != nil {
 		return err
 	}
-	if was == 0 {
+	if was == 0 || needsHuman(prev) {
 		return errors.New("it isn't on your Stash")
 	}
 	t := now()
@@ -84,6 +84,17 @@ func (s *Store) Unstash(id string, toDone bool) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+func needsHuman(status string) bool {
+	return status == "open" || status == "snoozed" || status == "maybe"
+}
+
+// ClearStaleStash forgets stash times on items that need the human again
+// (an older docket's Undo or Reopen leaves them behind).
+func (s *Store) ClearStaleStash() error {
+	_, err := s.DB.Exec(`UPDATE items SET stashed_at=0 WHERE stashed_at<>0 AND status IN ('open','snoozed','maybe')`)
+	return err
 }
 
 // onStash is what the Stash holds: stashed in the last 30 days, and not
@@ -109,37 +120,30 @@ func (s *Store) DropStash(id string) error {
 	return err
 }
 
-// TopDecision is the latest logged decision on an item, and the status the
-// item had before it.
-func (s *Store) TopDecision(id string) (action, prev string) {
-	s.DB.QueryRow(`SELECT action, prev_status FROM decisions WHERE item_id=? ORDER BY id DESC LIMIT 1`, id).Scan(&action, &prev)
+// TopDecision is the latest logged decision on an item: its id, action and
+// time, and the status the item had before it.
+func (s *Store) TopDecision(id string) (did int64, action, prev string, ts int64) {
+	s.DB.QueryRow(`SELECT id, action, prev_status, ts FROM decisions WHERE item_id=? ORDER BY id DESC LIMIT 1`, id).Scan(&did, &action, &prev, &ts)
 	return
 }
 
-// DeliveredByKey finds the latest item with a delivered answer filed with
-// this key: the exact project-scoped key first, then (unless the project
-// was named) the agent's own key from its session or machine.
+// DeliveredByKey finds the item with a delivered answer that `docket done
+// --key` means: the caller's own (its session) first, by the exact
+// project-scoped key or, unless the project was named, its agent key; then
+// the exact key from the same machine, delivered within the last week.
 func (s *Store) DeliveredByKey(projectKey, k, session, machine string, anyProject bool) (Item, bool) {
-	if projectKey != "" {
-		if it, err := scanItem(s.DB.QueryRow(`SELECT `+itemCols+` FROM items WHERE dedupe_key=? AND status='delivered' ORDER BY updated_at DESC LIMIT 1`, projectKey)); err == nil {
-			return it, true
-		}
-	}
-	if !anyProject {
-		return Item{}, false
-	}
-	for _, q := range []struct{ col, val string }{{"session_id", session}, {"machine", machine}} {
-		if q.val == "" {
-			continue
-		}
-		rs, err := s.items(`SELECT `+itemCols+` FROM items WHERE dedupe_key LIKE 'key:%' AND status='delivered' AND `+q.col+`=? ORDER BY updated_at DESC`, q.val)
-		if err != nil {
-			continue
-		}
+	if session != "" {
+		rs, _ := s.items(`SELECT `+itemCols+` FROM items WHERE dedupe_key LIKE 'key:%' AND status='delivered' AND session_id=? ORDER BY updated_at DESC, rowid DESC`, session)
 		for _, it := range rs {
-			if AgentKey(it.DedupeKey) == k {
+			if it.DedupeKey == projectKey || (anyProject && AgentKey(it.DedupeKey) == k) {
 				return it, true
 			}
+		}
+	}
+	if projectKey != "" && machine != "" {
+		if it, err := scanItem(s.DB.QueryRow(`SELECT `+itemCols+` FROM items WHERE dedupe_key=? AND status='delivered' AND machine=? AND updated_at>=?
+			ORDER BY updated_at DESC, rowid DESC LIMIT 1`, projectKey, machine, now()-7*24*60*60)); err == nil {
+			return it, true
 		}
 	}
 	return Item{}, false
@@ -221,7 +225,7 @@ func (s *Store) LatestDeliveries(ids []string) map[string]Delivery {
 		return out
 	}
 	q, args := in(ids)
-	rows, err := s.DB.Query(`SELECT `+deliveryCols+` FROM deliveries WHERE live_only=0 AND item_id IN (`+q+`) ORDER BY created_at`, args...)
+	rows, err := s.DB.Query(`SELECT `+deliveryCols+` FROM deliveries WHERE live_only=0 AND item_id IN (`+q+`) ORDER BY created_at, rowid`, args...)
 	if err != nil {
 		return out
 	}

@@ -27,6 +27,8 @@ type Action struct {
 	Until   time.Time
 	Project string // for reclassify
 	Urgency string // for reclassify
+	// For undo: only if this is still the latest decision (0: whatever is).
+	Decision int64
 }
 
 // Decide applies the human's action to an item and, when the agent should
@@ -124,14 +126,19 @@ func (s *Server) Decide(id string, a Action) error {
 		}
 		return s.st.Reclassify(id, p, u)
 	case "undo":
+		// What the decision being undone already told the agent.
+		_, _, _, dts := s.st.TopDecision(id)
 		sentNoise, sentDone := false, false
 		if ds, _ := s.st.ItemDeliveries(id); len(ds) > 0 {
 			for _, d := range ds {
-				sentNoise = sentNoise || (d.LiveOnly && d.Status != "pending" && strings.Contains(d.Text, "not worth their time"))
-				sentDone = sentDone || (d.LiveOnly && d.Status != "pending" && strings.Contains(d.Text, "marked your docket item"))
+				if d.Status == "pending" || d.CreatedAt < dts {
+					continue
+				}
+				sentNoise = sentNoise || (d.LiveOnly && strings.Contains(d.Text, "not worth their time"))
+				sentDone = sentDone || strings.Contains(d.Text, doneMark)
 			}
 		}
-		action, err := s.st.Undo(id)
+		action, err := s.st.UndoIf(id, a.Decision)
 		if err != nil {
 			return err
 		}
@@ -206,12 +213,12 @@ func (s *Server) reopen(it store.Item) error {
 	// Peel the Stash off the top of the log, one undo at a time, so each
 	// restores what it changed: a Remove, a stash that only kept the item, or
 	// the stash that closed it (which reopens it, taking back its note).
-	for i := 0; i < 50; i++ {
-		top, prev := s.st.TopDecision(it.ID)
+	for i := 0; i < 1000; i++ {
+		did, top, prev, _ := s.st.TopDecision(it.ID)
 		if top != "stash" && top != "unstash" {
 			break
 		}
-		if err := s.Decide(it.ID, Action{Kind: "undo"}); err != nil {
+		if err := s.Decide(it.ID, Action{Kind: "undo", Decision: did}); err != nil {
 			return err
 		}
 		undid = true
@@ -232,15 +239,19 @@ func (s *Server) reopen(it store.Item) error {
 		}
 		return errors.New("this item is still open")
 	}
-	switch d := s.st.LastDecision(it.ID); {
+	switch did, d, _, _ := s.st.TopDecision(it.ID); {
 	case d == "done", d == "dismiss", d == "noise", d == "expire",
 		it.Kind == "rule" && (d == "approve" || d == "decline"):
-		return s.Decide(it.ID, Action{Kind: "undo"})
+		return s.Decide(it.ID, Action{Kind: "undo", Decision: did})
 	}
 	return s.st.Reopen(it.ID)
 }
 
 func closedStatus(st string) bool { return st == "done" || st == "dismissed" || st == "expired" }
+
+// doneMark is in every "marked done" message to an agent, so an undo can
+// tell one apart from the other notes it sends.
+const doneMark = "marked your docket item done:"
 
 // tellDone lets the agent that filed an item know the human marked it done,
 // so it doesn't keep waiting on it or file it again. An agent paused on a
@@ -253,17 +264,17 @@ func (s *Server) tellDone(it store.Item, note string) error {
 		return nil
 	}
 	if it.Kind == "human_task" || it.Kind == "blocker" {
-		return s.queue(it, fmt.Sprintf("%s marked this done: %q.%s", s.cfg.Person, it.Title, comment(note)))
+		return s.queue(it, fmt.Sprintf("%s %s %q.%s", s.cfg.Person, doneMark, it.Title, comment(note)))
 	}
 	loud := it.Blocking // the agent is paused on it: tell it now, waking it
 	var msg string
 	switch it.Kind {
 	case "review", "fyi":
-		msg = fmt.Sprintf("%s marked your docket item %q done: they've looked at it, and nothing more is needed on it.", s.cfg.Person, it.Title)
+		msg = fmt.Sprintf("%s %s %q: they've looked at it, and nothing more is needed on it.", s.cfg.Person, doneMark, it.Title)
 	case "ask", "approval":
-		msg = fmt.Sprintf("%s marked your docket item %q done without choosing an answer. They may have handled it themselves; don't take it as a yes.", s.cfg.Person, it.Title)
+		msg = fmt.Sprintf("%s %s %q without choosing an answer. They may have handled it themselves; don't take it as a yes.", s.cfg.Person, doneMark, it.Title)
 	default:
-		msg = fmt.Sprintf("%s marked your docket item %q done.", s.cfg.Person, it.Title)
+		msg = fmt.Sprintf("%s %s %q.", s.cfg.Person, doneMark, it.Title)
 	}
 	if n := strings.TrimSpace(note); n != "" {
 		msg += " Their note: " + n

@@ -93,7 +93,9 @@ func (v itemView) Closed() bool { return closedStatus(v.Status) }
 func (v itemView) Kept() bool { return v.Stashed() || v.Closed() }
 
 // Stashed reports an item on the Stash.
-func (v itemView) Stashed() bool { return v.StashedAt >= store.StashCutoff() }
+func (v itemView) Stashed() bool {
+	return v.StashedAt >= store.StashCutoff() && v.Status != "open" && v.Status != "snoozed" && v.Status != "maybe"
+}
 
 // Thumbs is the images a row shows (two at most).
 func (v itemView) Thumbs() []store.Evidence {

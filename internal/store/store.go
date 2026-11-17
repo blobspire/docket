@@ -1014,7 +1014,11 @@ func (s *Store) SetAnswer(id, answer, action string) error {
 }
 
 // Undo reverts the most recent decision on an item. It returns the action undone.
-func (s *Store) Undo(id string) (string, error) {
+func (s *Store) Undo(id string) (string, error) { return s.UndoIf(id, 0) }
+
+// UndoIf is Undo, but only if the latest decision is still the one with id
+// expect (0: any). Two clicks racing can't undo two decisions.
+func (s *Store) UndoIf(id string, expect int64) (string, error) {
 	tx, err := s.DB.Begin()
 	if err != nil {
 		return "", err
@@ -1028,6 +1032,9 @@ func (s *Store) Undo(id string) (string, error) {
 	}
 	if err != nil {
 		return "", err
+	}
+	if expect != 0 && did != expect {
+		return "", errors.New("it changed meanwhile; look again")
 	}
 	var undeliverable int
 	tx.QueryRow(`SELECT COUNT(*) FROM deliveries WHERE item_id=? AND status IN ('sent','confirmed')`, id).Scan(&undeliverable)
@@ -1065,7 +1072,7 @@ func (s *Store) Undo(id string) (string, error) {
 	// An answer whose delivery has confirmed since is delivered, not on its way.
 	if prev == "answered" {
 		var last string
-		tx.QueryRow(`SELECT status FROM deliveries WHERE item_id=? AND live_only=0 ORDER BY created_at DESC LIMIT 1`, id).Scan(&last)
+		tx.QueryRow(`SELECT status FROM deliveries WHERE item_id=? AND live_only=0 ORDER BY created_at DESC, rowid DESC LIMIT 1`, id).Scan(&last)
 		if last == "confirmed" {
 			prev = "delivered"
 		}

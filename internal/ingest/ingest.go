@@ -11,6 +11,8 @@
 package ingest
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -207,7 +209,7 @@ func apply(s *store.Store, e store.RawEvent, o Options) error {
 			// (a folder default vs. an explicit --project then); only an
 			// explicitly named project rules out looking elsewhere.
 			if !ok && !d.Explicit {
-				it, ok = s.ActiveByAgentKey(k, sid, r.Machine)
+				it, ok = s.ActiveByAgentKey(k, sid, "") // this session's own first
 			}
 			// An answer the agent has, waiting for it to close the loop.
 			if !ok {
@@ -216,6 +218,9 @@ func apply(s *store.Store, e store.RawEvent, o Options) error {
 					pk = "key:" + p + ":" + k
 				}
 				it, ok = s.DeliveredByKey(pk, k, sid, r.Machine, !d.Explicit)
+			}
+			if !ok && !d.Explicit {
+				it, ok = s.ActiveByAgentKey(k, "", r.Machine)
 			}
 		}
 		// Only an item that still needs someone (or one whose answer the
@@ -361,7 +366,8 @@ func fileItem(s *store.Store, r record.Record, base store.Item, o Options) error
 	it := base
 	it.ID = in.ID
 	if !itemIDOK.MatchString(it.ID) { // an id goes into URLs and pages: only a plain one
-		it.ID = ulid.ItemID()
+		sum := sha256.Sum256([]byte(it.ID)) // the same every time, so a resend is the same item
+		it.ID = "dk-" + hex.EncodeToString(sum[:])[:12]
 	}
 	it.Kind = in.Kind
 	it.Source = SrcCLI

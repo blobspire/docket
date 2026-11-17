@@ -49,7 +49,7 @@ func TestDoneTellsTheAgentQuietly(t *testing.T) {
 	// A task the agent is paused on: a regular delivery, which resumes it.
 	st.UpsertItem(store.Item{ID: "dk-dn000005", Kind: "human_task", Title: "plug it in", Project: "w", SessionID: "s", Machine: "box", Source: "cli"})
 	e.s.Decide("dk-dn000005", Action{Kind: "done"})
-	if ds, _ := st.ItemDeliveries("dk-dn000005"); len(ds) != 1 || ds[0].LiveOnly || !strings.Contains(ds[0].Text, "marked this done") {
+	if ds, _ := st.ItemDeliveries("dk-dn000005"); len(ds) != 1 || ds[0].LiveOnly || !strings.Contains(ds[0].Text, "marked your docket item done:") {
 		t.Errorf("task deliveries = %+v", ds)
 	}
 	// Already answered: the agent has what it needs.

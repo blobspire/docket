@@ -50,6 +50,9 @@ func Open(cfg *Config) (*Server, error) {
 		}
 		s.log.Printf("config: ignoring %s (%s)", k, why)
 	}
+	if err := st.ClearStaleStash(); err != nil {
+		s.log.Printf("clear stale stash times: %v", err)
+	}
 	// docket's own health items go here, so it's a project agents can see too.
 	st.EnsureProject(cfg.SystemProject, "docket's own alerts: logins, machines, usage limits")
 	return s, nil
