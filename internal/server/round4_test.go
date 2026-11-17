@@ -2,9 +2,9 @@ package server
 
 import (
 	"encoding/json"
-	"runtime"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
