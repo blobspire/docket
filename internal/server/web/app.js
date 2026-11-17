@@ -88,7 +88,7 @@
     const back = $("[data-back]", sh);
     if (!solo && back) $("span", back).textContent = listLabel();
     const pos = $("[data-pos]", sh);
-    if (!solo && i >= 0) {
+    if (!solo && i >= 0 && pos) {
       pos.textContent = `${i + 1} of ${order.length}`;
       $$("[data-nav]", sh).forEach((b) => {
         b.hidden = false;
@@ -106,12 +106,11 @@
           back.href = r.pathname + r.search;
           const names = { "/stash": "Stash", "/done": "Done", "/search": "Search", "/checklist": "Only you", "/brain": "Brain", "/leads": "Leads", "/evidence": "Evidence", "/health": "Health" };
           const q = r.searchParams;
-          $("span", back).textContent = r.pathname === "/" ? (q.get("p") || q.get("place") || (q.get("view") === "now" ? "Act now" : "docket")) : names[r.pathname] || "Back";
+          $("span", back).textContent = r.pathname === "/" ? (q.get("p") || q.get("place") || (q.get("view") === "now" ? "Act now" : "All")) : names[r.pathname] || "Back";
         }
       } catch (_) {}
     }
-    const opts = $(".dk-a", sh);
-    if (opts) opts.classList.toggle("over", opts.scrollHeight > opts.clientHeight + 2);
+    fadeOptions($(".dk-a", sh));
     // A long attachment folds, with a button to see all of it.
     $$(".doc-b.clamp", sh).forEach((d) => {
       const long = d.scrollHeight > d.clientHeight + 4;
@@ -120,6 +119,8 @@
     });
     placeToast();
   };
+  const fadeOptions = (opts) => { if (opts) opts.classList.toggle("over", opts.scrollTop + opts.clientHeight < opts.scrollHeight - 2); };
+  document.addEventListener("scroll", (e) => { if (e.target.matches && e.target.matches(".dk-a")) fadeOptions(e.target); }, true);
   const skeleton = (label) => {
     const sh = document.createElement("div");
     sh.className = "sheet";
@@ -136,7 +137,9 @@
     if (again) { const old = sheetEl(); if (old) { old.classList.add("busy"); old.inert = true; } }
     openId = sel = id;
     markSel(true);
+    let opened = 0;
     if (!again) {
+      opened = performance.now();
       scrim.replaceChildren(skeleton(listLabel()));
       scrim.hidden = false;
       scrim.firstElementChild.addEventListener("animationend", placeToast, { once: true });
@@ -151,9 +154,11 @@
     } catch (_) {}
     if (seq !== sheetSeq || openId !== id) return; // another item (or none) since
     if (!sh) { closeSheet(); toast("Couldn't open that item", { err: true }); return; }
-    // The skeleton already slid in: the real sheet takes its place without
-    // starting over.
-    sh.classList.add("again");
+    // The real sheet takes the skeleton's place mid-way through its slide,
+    // never starting over.
+    const elapsed = opened ? performance.now() - opened : Infinity;
+    if (elapsed < 320) sh.style.animationDelay = `-${Math.round(elapsed)}ms`;
+    else sh.classList.add("again");
     scrim.replaceChildren(sh);
     setupSheet(sh);
     const body = $(".sh-b", sh);
@@ -208,6 +213,7 @@
     if (!f) return;
     if ($("[data-reply-x]", f)) { f.hidden = true; $("[data-reply-err]")?.setAttribute("hidden", ""); placeToast(); }
     $("textarea", f).blur();
+    refocus();
   };
   const grow = (t) => { t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 160) + "px"; };
 
@@ -246,7 +252,8 @@
     sh?.classList.add("busy");
     const rw = $(`.rw[data-id="${escId(id)}"]`);
     const movedFrom = !inSheet && sel === id && leaves(action) && rw ? id : null;
-    if (movedFrom) { sel = nextAfter(id); markSel(true); }
+    let movedTo = null;
+    if (movedFrom) { sel = movedTo = nextAfter(id); markSel(true); }
     if (rw && leaves(action)) rw.classList.add("leaving");
     const msg = said(action, extra, id); // while the sheet still shows this item
     let err = "";
@@ -266,7 +273,7 @@
     }
     if (err) {
       rw?.classList.remove("leaving");
-      if (movedFrom && sel !== movedFrom) { sel = movedFrom; markSel(true); } // it's still there
+      if (movedFrom && sel === movedTo) { sel = movedFrom; markSel(true); } // it's still there, and you haven't moved on
       toast(err, { err: true });
       refresh();
       return false;
@@ -275,7 +282,8 @@
     const undo = action === "undo" || action === "reopen" ? null : id;
     ss.set("docket.last", undo || "");
     // After a done or an answer, the toast offers to keep it on the Stash.
-    const keep = action === "done" || answers.includes(action) ? id : null;
+    const noStash = !!(rw && rw.querySelector("[data-nostash]")) || !!(sh && sh.hasAttribute("data-nostash"));
+    const keep = (action === "done" || answers.includes(action)) && !noStash ? id : null;
     if (solo) {
       // From an item's own page: back to the list it came from (fresh), or
       // stay for an undo, a move or a reopen, which keep it here.
@@ -317,7 +325,8 @@
     nscrim.hidden = false;
     if (finePointer.matches) $("#note-ta").focus();
   };
-  const closeNote = () => { nscrim.hidden = true; noteFor = null; };
+  const refocus = () => { const b = !solo && sheetEl() && $(".sh-b", sheetEl()); if (b && b.tabIndex === -1) b.focus({ preventScroll: true }); };
+  const closeNote = () => { nscrim.hidden = true; noteFor = null; refocus(); };
 
   // ---- attachment viewer ----------------------------------------------------------------------
   let lbImgs = [], lbAt = 0;
@@ -377,7 +386,7 @@
   document.addEventListener("pointerdown", (e) => { downOn = e.target; }, true);
   let skipped = false; // a refresh waited for a menu to close
   const closeMenus = (except) => {
-    if (skipped && !except) { skipped = false; setTimeout(refresh, 0); }
+    if (skipped && !except && $$(".menu").some((x) => !x.hidden)) { skipped = false; setTimeout(refresh, 0); }
     $$(".menu").forEach((m) => {
       if (m === except) return;
       m.hidden = true;
@@ -391,7 +400,12 @@
     if (!t.closest(".menu, [aria-haspopup]")) closeMenus();
     if ((el = t.closest("[aria-haspopup]"))) {
       const m = el.parentElement.querySelector(".menu");
-      if (m) { closeMenus(m); m.hidden = !m.hidden; el.setAttribute("aria-expanded", String(!m.hidden)); }
+      if (m) {
+        closeMenus(m);
+        m.hidden = !m.hidden;
+        el.setAttribute("aria-expanded", String(!m.hidden));
+        if (m.hidden && skipped && !$$(".menu").some((x) => !x.hidden)) { skipped = false; refresh(); }
+      }
       return;
     }
     // The viewer and the note sit above everything else.
@@ -637,7 +651,7 @@
     if (k === "w" && qa("[data-noise]")) { e.preventDefault(); return openNote(sel); }
     const map = { d: "done", x: "dismiss" };
     if (map[k] && qa(`[data-act="${map[k]}"]`)) { e.preventDefault(); return act(sel, map[k]); }
-    if (k === "t" && (qa('[data-act="stash"]') || actionable(sel) || r.classList.contains("is-wait"))) { e.preventDefault(); return act(sel, "stash"); }
+    if (k === "t" && !r.hasAttribute("data-nostash") && (qa('[data-act="stash"]') || actionable(sel) || r.classList.contains("is-wait"))) { e.preventDefault(); return act(sel, "stash"); }
     if ((k === "s" || k === "S") && actionable(sel)) { e.preventDefault(); return act(sel, "snooze", { until: k === "S" ? "hour" : "tomorrow" }); }
   });
 
@@ -667,14 +681,19 @@
         const where = [".body", "main#main"].find((s) => $(s) && $(s, doc));
         if (!where) break;
         const side = $(".side"), sideAt = side && [side.scrollLeft, side.scrollTop];
-        const inQ = document.activeElement && document.activeElement.id === "q";
+        const q0 = document.activeElement && document.activeElement.id === "q" ? document.activeElement : null;
+        const caret = q0 && [q0.selectionStart, q0.selectionEnd, q0.selectionDirection, q0.scrollLeft];
         $(where).replaceWith($(where, doc));
         $("header.bar").replaceWith($("header.bar", doc));
         document.title = openId ? document.title : doc.title;
         v0 = document.body.dataset.version = doc.body.dataset.version;
         if ($(".side") && sideAt) [$(".side").scrollLeft, $(".side").scrollTop] = sideAt;
         applyFolds();
-        if (inQ) $("#q")?.focus({ preventScroll: true });
+        const q1 = q0 && $("#q");
+        if (q1) {
+          q1.focus({ preventScroll: true });
+          try { q1.setSelectionRange(caret[0], caret[1], caret[2]); q1.scrollLeft = caret[3]; } catch (_) {}
+        }
         // Pending actions keep their rows faded until they settle.
         pending.forEach((id) => $(`.rw[data-id="${escId(id)}"]`)?.classList.add("leaving"));
         if (sel && !pending.has(sel) && !rowIds().includes(sel)) sel = null;

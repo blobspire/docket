@@ -95,6 +95,7 @@ Lead with what you need from them and why, in a sentence or two. Then at most ~5
 It shows up as a message starting with `[docket dk-xxxxxxxx #nonce]`. Act on it:
 - If they approved an action auto mode refused earlier, retry it.
 - If they declined, don't do it.
+- If they **reopen** it (a done taken back, or something you closed), it's open again and still needs something: pick it back up, or wait for their answer.
 - If they marked it **done** without answering, you'll hear that at your next turn (right away if you filed it `--blocking`): a review was looked at and needs nothing more; a question marked done is not a yes (they may have handled it themselves). Don't act as if they approved.
 - If they marked your item **not worth their time**, take their note to heart: don't re-file it, and file fewer things like it.
 - When the item is resolved, run `docket done dk-xxxxxxxx --why "<what happened>"`.

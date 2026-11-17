@@ -116,7 +116,7 @@ Open your docket at `https://<server>.<tailnet>.ts.net`; the docket mark at the 
 - **Click a row** to open the item. The answer dock is pinned under it: the agent's options on top (the recommended one filled in), Reply beside them, and Done, Not worth it, Dismiss, Stash and Snooze in the same places on every item. After you act, the next item opens.
 - **Answers waiting on agents** fold under each project until the agent closes the item, or for a day after it was delivered (then they're in Done). One whose delivery is stuck says so.
 - **Stash** (`t`, or the toast after you answer or mark something done) keeps an item handy for 30 days without leaving it on your docket.
-- **Every action** can be undone from its toast. Press `?` for keys:
+- **Most actions** can be undone from their toast (`u` too); Back to docket is its own undo. Press `?` for keys:
 
 | Key | Action |
 |---|---|

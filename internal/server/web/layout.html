@@ -130,7 +130,7 @@
 {{define "row"}}{{$w := and (eq .List "docket") .Waiting}}
 <li class="rw" data-id="{{.ID}}">
   {{if eq .List "docket"}}<div class="swipe-bg" aria-hidden="true"><span>{{template "i" "check"}}Done</span><span>Dismiss{{template "i" "x"}}</span></div>{{end}}
-  <div class="row{{if and (eq .List "docket") (not $w)}} u-{{.Urgency}}{{end}}{{if $w}} is-wait{{end}}{{if and (eq .List "docket") .Stale}} stale{{end}}" data-id="{{.ID}}"{{with .Session.BridgeID}} data-session="{{rcURL .}}"{{end}}{{if or $w (eq .Status "snoozed")}} data-quiet="1"{{end}}{{if .Kept}} data-kept="1"{{end}}>
+  <div class="row{{if and (eq .List "docket") (not $w)}} u-{{.Urgency}}{{end}}{{if $w}} is-wait{{end}}{{if and (eq .List "docket") .Stale}} stale{{end}}" data-id="{{.ID}}"{{with .Session.BridgeID}} data-session="{{rcURL .}}"{{end}}{{if or $w (eq .Status "snoozed")}} data-quiet="1"{{end}}{{if .Kept}} data-kept="1"{{end}}{{if .NoStash}} data-nostash{{end}}>
     {{if $w}}<span class="chip k-wait">{{template "i" "clock"}}Waiting</span>{{else}}<span class="chip k-{{kindClass .Kind}}">{{kindName .Kind}}</span>{{end}}
     <div class="txt">
       <a class="t" href="/item/{{.ID}}">{{.Title}}</a>
@@ -161,7 +161,7 @@
         <button type="button" class="qb" data-act="unstash" title="Remove from the Stash (it moves to Done)">{{template "i" "x"}}<span>Remove</span></button>
       {{else if eq .List "done"}}
         {{if .Closed}}<button type="button" class="qb" data-act="reopen" title="Back to docket">{{template "i" "undo"}}<span>Back to docket</span></button>{{end}}
-        <button type="button" class="qb" data-act="stash" title="Keep it on your Stash">{{template "i" "stash"}}<span>Stash</span></button>
+        {{if not .NoStash}}<button type="button" class="qb" data-act="stash" title="Keep it on your Stash">{{template "i" "stash"}}<span>Stash</span></button>{{end}}
       {{else if $w}}
         <button type="button" class="qb" data-act="dismiss" title="Take it off your docket; the answer still goes to the agent">{{template "i" "x"}}<span>Dismiss</span></button>
       {{else if not .Kept}}
@@ -177,7 +177,7 @@
 {{/* The item sheet: the whole item, with the answer dock pinned under it.
      The docket opens it over the list; /item/{id} shows it as a page. */}}
 {{define "sheet"}}{{$it := .One}}
-<div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-label="{{$it.Title}}" data-id="{{$it.ID}}"{{with $it.Session.BridgeID}} data-session="{{rcURL .}}"{{end}}>
+<div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-label="{{$it.Title}}" data-id="{{$it.ID}}"{{with $it.Session.BridgeID}} data-session="{{rcURL .}}"{{end}}{{if $it.NoStash}} data-nostash{{end}}>
   <header class="sh-h">
     <a class="back" href="{{if $it.Stashed}}/stash{{else if $it.Closed}}/done{{else}}/{{end}}" data-back>{{template "i" "chev-l"}}<span>{{if $it.Stashed}}Stash{{else if $it.Closed}}Done{{else}}docket{{end}}</span></a>
     <span class="pos" data-pos></span>
@@ -258,7 +258,7 @@
   <div class="dk-c">
     {{template "fb" (list "reopen" "undo" "Back to docket" "" "" "Put it back on your docket")}}
     <span class="sp"></span>
-    {{if .Stashed}}{{template "fb" (list "unstash" "x" "Remove from Stash" "" "" "Take it off the Stash; it moves to Done")}}{{else}}{{template "fb" (list "stash" "stash" "Stash" "t" "" "Keep it on your Stash")}}{{end}}
+    {{if .Stashed}}{{template "fb" (list "unstash" "x" "Remove from Stash" "" "" "Take it off the Stash; it moves to Done")}}{{else if not .NoStash}}{{template "fb" (list "stash" "stash" "Stash" "t" "" "Keep it on your Stash")}}{{end}}
   </div>
 {{else if .Waiting}}
   {{if and .SessionID (eq .Status "delivered")}}{{template "reply" (reply .ID "Add a follow-up for the agent" false)}}{{end}}
@@ -267,7 +267,7 @@
     {{template "fb" (list "noise" "thumb" "Not worth it" "w" "1" "You've already answered it")}}
     {{template "fb" (list "dismiss" "x" "Dismiss" "x" "" "Take it off your docket; the answer still goes to the agent")}}
     <span class="sp"></span>
-    {{template "fb" (list "stash" "stash" "Stash" "t" "" "Take it off your docket and keep it on your Stash")}}
+    {{if not .NoStash}}{{template "fb" (list "stash" "stash" "Stash" "t" "" "Take it off your docket and keep it on your Stash")}}{{end}}
     {{template "fb" (list "snooze" "moon" "Snooze" "s" "1" "Its answer is with the agent")}}
   </div>
 {{else}}
@@ -291,7 +291,7 @@
     {{template "fb" (list "noise" "thumb" "Not worth it" "w" "" "Close it, and tell agents this didn't need you")}}{{end}}
     {{template "fb" (list "dismiss" "x" "Dismiss" "x" "" "Close it without telling anyone")}}
     <span class="sp"></span>
-    {{if not (or $rule (eq .Source "watchdog") (eq .Source "stop_failure"))}}{{template "fb" (list "stash" "stash" "Stash" "t" "" "Mark it done and keep it on your Stash for 30 days")}}{{end}}
+    {{if not (or $rule .NoStash)}}{{template "fb" (list "stash" "stash" "Stash" "t" "" "Mark it done and keep it on your Stash for 30 days")}}{{end}}
     {{template "fb" (list "snooze" "moon" "Snooze" "s" "" "Hide it until tomorrow at 9:00 (S: for an hour)")}}
   </div>
 {{end}}

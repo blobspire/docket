@@ -23,6 +23,10 @@ import (
 //go:embed web/*
 var webFS embed.FS
 
+// fontVer is the version in the font's URL (app.css, layout.html): change
+// all three together when the font file changes.
+const fontVer = "4"
+
 // staticVer changes whenever the stylesheet or script does, so their
 // versioned URLs can be cached for good.
 var staticVer = func() string {
@@ -275,7 +279,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /static/", func(w http.ResponseWriter, r *http.Request) {
 		// A versioned URL (?v=…) never changes, so browsers keep it; a new
 		// build links a new version.
-		if r.URL.Query().Get("v") != "" {
+		if strings.HasSuffix(r.URL.Path, "/") || strings.HasSuffix(r.URL.Path, ".html") {
+			http.NotFound(w, r) // no directory listings, no template sources
+			return
+		}
+		if v := r.URL.Query().Get("v"); v == staticVer || (v == fontVer && strings.HasSuffix(r.URL.Path, ".woff2")) {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		} else {
 			w.Header().Set("Cache-Control", "no-cache")

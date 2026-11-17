@@ -253,7 +253,14 @@ func (s *Server) reopen(it store.Item) error {
 		it.Kind == "rule" && (d == "approve" || d == "decline"):
 		return s.Decide(it.ID, Action{Kind: "undo", Decision: did})
 	}
-	return s.st.Reopen(it.ID)
+	if err := s.st.Reopen(it.ID); err != nil {
+		return err
+	}
+	// The agent closed it; the human says it still needs something.
+	if it.Status == "done" && it.Source == ingest.SrcCLI && it.SessionID != "" {
+		return s.notifyQuietly(it, fmt.Sprintf("%s reopened %q, which you closed: it still needs something. It's open again.", s.cfg.Person, it.Title))
+	}
+	return nil
 }
 
 func closedStatus(st string) bool { return st == "done" || st == "dismissed" || st == "expired" }

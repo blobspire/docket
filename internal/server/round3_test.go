@@ -212,3 +212,63 @@ func TestDoneRowsFoldsAndNoThirdParty(t *testing.T) {
 		}
 	}
 }
+
+// Reopening something the agent closed tells it it still needs something.
+func TestReopeningAnAgentCloseTellsTheAgent(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	e.file(t, "s", record.Item{ID: "dk-r3c00001", Kind: "issue", Title: "flaky CI", Project: "w"})
+	e.send(t, record.Record{Event: "cli.done", SessionID: "s", Done: &record.Done{ItemID: "dk-r3c00001", Note: "fixed"}}, ingest.Options{})
+	if err := e.s.Decide("dk-r3c00001", Action{Kind: "reopen"}); err != nil {
+		t.Fatal(err)
+	}
+	qs := quietNotes(t, st, "dk-r3c00001")
+	if len(qs) != 1 || !strings.Contains(qs[0].Text, "which you closed") {
+		t.Fatalf("notes = %+v", qs)
+	}
+}
+
+// Static files: cached for good only at the current version; no listings,
+// no template sources.
+func TestStaticFiles(t *testing.T) {
+	e := newEnv(t, "")
+	h := func(path string) (int, string) {
+		rec := httptest.NewRecorder()
+		e.s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		return rec.Code, rec.Header().Get("Cache-Control")
+	}
+	if code, cc := h("/static/app.css?v=" + staticVer); code != 200 || !strings.Contains(cc, "immutable") {
+		t.Errorf("current css: %d %q", code, cc)
+	}
+	if _, cc := h("/static/app.css?v=old"); strings.Contains(cc, "immutable") {
+		t.Error("a stale version is cached for good")
+	}
+	if code, cc := h("/static/inter.woff2?v=" + fontVer); code != 200 || !strings.Contains(cc, "immutable") {
+		t.Errorf("font: %d %q", code, cc)
+	}
+	for _, p := range []string{"/static/", "/static/layout.html"} {
+		if code, _ := h(p); code != 404 {
+			t.Errorf("%s = %d, want 404", p, code)
+		}
+	}
+	if page := get(e, "/"); !strings.Contains(page, "/static/app.css?v="+staticVer) || !strings.Contains(page, "inter.woff2?v="+fontVer) {
+		t.Error("the page doesn't link the current versions")
+	}
+}
+
+// Nowhere offers to stash an item docket closes itself.
+func TestNoStashOfferForWatchdogItems(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	st.UpsertItem(store.Item{ID: "dk-r3x00001", Kind: "health", Title: "lead down", Project: "admin", Source: ingest.SrcWatchdog})
+	e.s.Decide("dk-r3x00001", Action{Kind: "done"})
+	if q := quickHTML(rowHTML(t, get(e, "/done"), "dk-r3x00001")); strings.Contains(q, `data-act="stash"`) {
+		t.Error("the Done row offers Stash")
+	}
+	if d := dockHTML(t, e, "dk-r3x00001"); strings.Contains(d, `data-act="stash"`) {
+		t.Error("the closed item's dock offers Stash")
+	}
+	if !strings.Contains(sheetHTML(t, e, "dk-r3x00001"), "data-nostash") {
+		t.Error("the sheet doesn't say not to offer Stash after an action")
+	}
+}

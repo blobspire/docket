@@ -81,6 +81,12 @@ func (v itemView) AnswerWhat() string { _, b := v.Answered(); return b }
 func (v itemView) DeliveryText() string { a, _ := v.DeliveryNote(); return a }
 func (v itemView) Stuck() bool          { _, b := v.DeliveryNote(); return b }
 
+// NoStash reports an item docket closes itself once its condition clears
+// (a watchdog alert, a failing login): stashing it means nothing.
+func (v itemView) NoStash() bool {
+	return v.Source == "watchdog" || v.Source == "stop_failure" || v.Kind == "rule"
+}
+
 // Waiting reports a docket item whose answer is with its agent.
 func (v itemView) Waiting() bool {
 	return v.Status == "answered" || v.Status == "delivered"
