@@ -45,7 +45,7 @@ docket issue "ARC login expired: all training jobs are failing" --project vlm-te
 |---|---|
 | `ask` | A decision, or an action you're holding for approval. Give `--options` and `--recommend` when you have them. |
 | `task` | Something only they can do. `--blocks "<what it blocks>"` if it blocks work. |
-| `review` | Results or work for them to look at. Attach `--evidence` (screenshots, report, video). If you need a verdict, give `--options` ("Retrain\|Drop it"): Done only means they've seen it. |
+| `review` | Results or work for them to look at. Attach `--evidence` (screenshots, report, video). If you need a verdict, give `--options` (say, Retrain or Drop it): Done only means they've seen it. |
 | `issue` | Something broken that needs them. |
 
 ### Title: they read it in a second

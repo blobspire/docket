@@ -19,6 +19,7 @@ import (
 // Config is ~/.config/docket/docket.toml on the server. It is personal (host
 // names, push topic), so it never lives in the repository.
 type Config struct {
+	Ignored     []string `toml:"-"` // keys in the file docket doesn't use (logged at start)
 	DataDir     string   `toml:"data_dir"`
 	Listen      string   `toml:"listen"`
 	PublicURL   string   `toml:"public_url"`
@@ -124,8 +125,16 @@ func ConfigPath() string {
 // LoadConfig reads and validates the config, filling in defaults.
 func LoadConfig(path string) (*Config, error) {
 	var c Config
-	if _, err := toml.DecodeFile(path, &c); err != nil {
+	md, err := toml.DecodeFile(path, &c)
+	if err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
+	}
+	ignored := map[string]bool{}
+	for _, k := range md.Undecoded() {
+		if key := k.String(); !ignored[key] {
+			ignored[key] = true
+			c.Ignored = append(c.Ignored, key)
+		}
 	}
 	home, _ := os.UserHomeDir()
 	if c.DataDir == "" {

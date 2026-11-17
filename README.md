@@ -29,7 +29,7 @@ docket gives your agents one place to bring you what really needs you: results y
   - sorting by priority, deadline or newest
   - each item opens in a sheet with its rendered markdown, images, reports and the session it came from
   - an **answer dock** pinned under every item: the agent's options (the recommended one filled in), a reply box, and the same five actions in the same places (Done, Not worth it, Dismiss, Stash, Snooze), so you never scroll back up to answer
-  - one-tap Done, "Not worth my time" and Dismiss on every row, so you can clear the list while scrolling it, with Undo
+  - one-tap Done, "Not worth my time" and Dismiss on every row that needs you, so you can clear the list while scrolling it, with Undo
 - **Done tells the agent.** It closes the item, and the agent that filed it hears so at its next turn, in words that fit what it asked (a review was looked at; an unanswered question isn't a yes).
 - **Stash** keeps what you've dealt with but want close at hand (results to share, a quote to act on) off your docket for 30 days.
 - **"Not worth my time" with a note.** It closes the item, tells the agent that filed it, and joins a short list every agent reads, so the bar calibrates itself.

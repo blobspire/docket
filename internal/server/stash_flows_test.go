@@ -1,6 +1,7 @@
 package server
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -276,5 +277,43 @@ func TestDoneNoteNamesTheAgentsID(t *testing.T) {
 	qs := quietNotes(t, st, "dk-sf000016")
 	if len(qs) != 1 || !strings.Contains(qs[0].Text, "dk-sf000017") {
 		t.Fatalf("notes = %+v", qs)
+	}
+}
+
+// Done on an ask the agent is paused on wakes it (a regular delivery).
+func TestDoneOnABlockingAskWakesTheAgent(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	st.UpsertItem(store.Item{ID: "dk-sf000020", Kind: "ask", Title: "deploy?", Project: "w", SessionID: "s", Machine: "box", Source: "cli", Blocking: true})
+	e.s.Decide("dk-sf000020", Action{Kind: "done"})
+	ds, _ := st.ItemDeliveries("dk-sf000020")
+	if len(ds) != 1 || ds[0].LiveOnly || ds[0].Quiet || !strings.Contains(ds[0].Text, "don't take it as a yes") {
+		t.Fatalf("deliveries = %+v", ds)
+	}
+}
+
+// An answer sent and retried that the agent never confirmed is stuck.
+func TestUnconfirmedAnswerIsStuck(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	ask(e, "dk-sf000021")
+	e.s.Decide("dk-sf000021", Action{Kind: "choose", Option: 0})
+	st.DB.Exec(`UPDATE deliveries SET status='sent', attempts=4, sent_at=? WHERE item_id='dk-sf000021'`, time.Now().Add(-2*time.Hour).Unix())
+	if row := rowHTML(t, get(e, "/?p=w"), "dk-sf000021"); !strings.Contains(row, `class="stuck"`) {
+		t.Fatalf("an answer never confirmed isn't flagged: %s", row)
+	}
+}
+
+// Config keys docket doesn't use are named at start, the old robot guard
+// with why.
+func TestIgnoredConfigKeys(t *testing.T) {
+	p := t.TempDir() + "/docket.toml"
+	os.WriteFile(p, []byte("data_dir = \""+t.TempDir()+"\"\n[[machine]]\nname = \"lab\"\nmode = \"local\"\nphysical_keywords = [\"arm\"]\nremote_approve = false\n"), 0o600)
+	c, err := LoadConfig(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(c.Ignored, ","); !strings.Contains(got, "physical_keywords") || !strings.Contains(got, "remote_approve") {
+		t.Fatalf("ignored = %v", c.Ignored)
 	}
 }

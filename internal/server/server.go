@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,6 +39,16 @@ func Open(cfg *Config) (*Server, error) {
 		processKick: make(chan struct{}, 1), deliverKick: make(chan struct{}, 1), pullKick: map[string]chan struct{}{}}
 	for _, m := range cfg.Machines {
 		s.pullKick[m.Name] = make(chan struct{}, 1)
+	}
+	for _, k := range cfg.Ignored {
+		why := "not a docket setting"
+		switch {
+		case strings.HasSuffix(k, "physical_keywords"):
+			why = "docket no longer guards physical actions; agents name a --place, and the robot's own safety layer decides"
+		case strings.HasSuffix(k, "remote_approve"):
+			why = "no longer used"
+		}
+		s.log.Printf("config: ignoring %s (%s)", k, why)
 	}
 	// docket's own health items go here, so it's a project agents can see too.
 	st.EnsureProject(cfg.SystemProject, "docket's own alerts: logins, machines, usage limits")

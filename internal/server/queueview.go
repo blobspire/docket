@@ -144,6 +144,10 @@ func (v itemView) DeliveryNote() (note string, stuck bool) {
 	if e := strings.TrimSpace(v.Delivery.Error); e != "" && v.Delivery.Status == "pending" {
 		return "Not delivered yet: " + clip(e, 90), true
 	}
+	// Sent, retried, and still never confirmed: it may never have arrived.
+	if v.Delivery.Status == "sent" && v.Delivery.Attempts >= 4 && time.Since(time.Unix(v.Delivery.SentAt, 0)) > 15*time.Minute {
+		return "Sent, but the agent never confirmed it", true
+	}
 	return "On its way to the agent", false
 }
 
@@ -152,7 +156,10 @@ func (v itemView) ClosedHow() string {
 	res := strings.TrimRight(strings.TrimSpace(v.Resolution), ".")
 	if verb, what := v.Answered(); verb != "" && (v.Waiting() || v.LastAction == "answer" || v.LastAction == "choose" || v.LastAction == "approve" || v.LastAction == "decline") {
 		if what != "" {
-			return verb + " “" + what + "”"
+			verb += " “" + what + "”"
+		}
+		if v.Status == "done" && res != "" && res != "resolved by the agent" && res != "Stashed" {
+			verb += "; the agent closed it: " + res
 		}
 		return verb
 	}

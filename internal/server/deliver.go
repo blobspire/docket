@@ -255,6 +255,7 @@ func (s *Server) tellDone(it store.Item, note string) error {
 	if it.Kind == "human_task" || it.Kind == "blocker" {
 		return s.queue(it, fmt.Sprintf("%s marked this done: %q.%s", s.cfg.Person, it.Title, comment(note)))
 	}
+	loud := it.Blocking // the agent is paused on it: tell it now, waking it
 	var msg string
 	switch it.Kind {
 	case "review", "fyi":
@@ -266,6 +267,9 @@ func (s *Server) tellDone(it store.Item, note string) error {
 	}
 	if n := strings.TrimSpace(note); n != "" {
 		msg += " Their note: " + n
+	}
+	if loud {
+		return s.queue(it, msg)
 	}
 	return s.notifyQuietly(it, msg)
 }

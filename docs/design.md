@@ -96,7 +96,7 @@ The first version tried to catch every ask: a regex over agents' messages, a tra
 | Action | What happens | The agent hears |
 |---|---|---|
 | An option, Approve, Decline, a reply | The answer is delivered; the item waits under "Waiting on agents" until the agent closes it (or a day after delivery) | The answer, right away |
-| Done | Closed | That it's done, quietly at its next turn (a task it's paused on: right away). An unanswered question is not a yes. |
+| Done | Closed | That it's done, quietly at its next turn (a task, or anything it's paused on: right away). An unanswered question is not a yes. |
 | Not worth it | Closed, with an optional note | The note, quietly; every agent sees it in `rules.md` |
 | Dismiss | Closed | Nothing |
 | Stash | Kept on the Stash for 30 days, then in Done; an open item is also marked done | As for Done |
