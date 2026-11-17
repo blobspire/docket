@@ -97,7 +97,8 @@
   const skeleton = (label) => {
     const sh = document.createElement("div");
     sh.className = "sheet";
-    sh.innerHTML = `<header class="sh-h"><a class="back" href="${listURL}" data-back><svg class="ic" aria-hidden="true"><use href="#i-chev-l"/></svg><span></span></a></header><div class="sh-b"></div>`;
+    sh.innerHTML = `<header class="sh-h"><a class="back" data-back><svg class="ic" aria-hidden="true"><use href="#i-chev-l"/></svg><span></span></a></header><div class="sh-b"></div>`;
+    $("a", sh).href = listURL;
     $("span", sh).textContent = label;
     return sh;
   };
