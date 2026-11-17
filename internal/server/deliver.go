@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
@@ -22,7 +21,7 @@ const unconfirmedAfter = 3 * time.Minute
 
 // Action is a decision the human made on an item in the queue.
 type Action struct {
-	Kind    string // approve | decline | choose | answer | done | dismiss | noise | snooze | reclassify | undo
+	Kind    string // approve | decline | choose | answer | done | dismiss | noise | snooze | stash | unstash | reopen | reclassify | undo
 	Text    string // optional comment / free-form answer / the human's "not worth it" note
 	Option  int    // for choose: index into item.Options
 	Until   time.Time
@@ -42,30 +41,24 @@ func (s *Server) Decide(id string, a Action) error {
 		return errors.New("no such item")
 	}
 	defer s.st.Bump()
-	// A closed item can only be reopened or undone; acting on it again would
-	// quietly reopen it, and moving it would put a move between the close and
-	// the Reopen that undoes it. An answered-and-delivered one can still take
-	// a follow-up answer.
+	// A closed item can only be reopened, undone, or kept on (or taken off)
+	// the Stash; acting on it again would quietly reopen it, and moving it
+	// would put a move between the close and the Reopen that undoes it.
+	// One whose answer reached its agent can still take a follow-up, or be
+	// closed.
 	switch it.Status {
 	case "done", "dismissed", "expired":
 		if a.Kind == "reopen" {
-			// The human closed it here: reopening is undoing that close, with
-			// everything it set off (a queued "marked done", a noise mark and
-			// its note, an expiry, a rule's approval). Otherwise an agent or
-			// docket closed it.
-			switch d := s.st.LastDecision(id); {
-			case d == "done", d == "dismiss", d == "noise", d == "expire",
-				it.Kind == "rule" && (d == "approve" || d == "decline"):
-				return s.Decide(id, Action{Kind: "undo"})
-			}
-			return s.st.Reopen(id)
+			return s.reopen(it)
 		}
-		if a.Kind != "undo" {
+		if a.Kind != "undo" && a.Kind != "stash" && a.Kind != "unstash" {
 			return errors.New("this item is already closed; reopen it to act on it again")
 		}
 	case "delivered":
-		if a.Kind != "undo" && a.Kind != "reclassify" && a.Kind != "answer" {
-			return errors.New("this item was answered and delivered; send a follow-up answer instead")
+		switch a.Kind {
+		case "undo", "reclassify", "answer", "done", "dismiss", "stash", "unstash", "reopen":
+		default:
+			return errors.New("your answer has reached the agent; send a follow-up, or mark it done")
 		}
 	case "answered":
 		// Its answer is still on the way: a second one (a double press, a
@@ -91,19 +84,24 @@ func (s *Server) Decide(id string, a Action) error {
 		if err := s.st.SetStatus(id, status, a.Text, a.Kind); err != nil {
 			return err
 		}
-		// A human-only task an agent is waiting on: tell it the task is done.
-		// docket's own health items have no agent waiting (and telling one
-		// would resume a session the human may have ended).
-		if a.Kind == "done" && (it.Kind == "human_task" || it.Kind == "blocker") && it.SessionID != "" && it.Source == ingest.SrcCLI {
-			return s.queue(it, fmt.Sprintf("%s marked this done: %q.%s", s.cfg.Person, it.Title, comment(a.Text)))
+		if a.Kind == "done" {
+			return s.tellDone(it, a.Text)
 		}
 		return nil
+	case "stash":
+		closed, err := s.st.Stash(id)
+		if err != nil || !closed {
+			return err
+		}
+		return s.tellDone(it, "")
+	case "unstash":
+		return s.st.Unstash(id, true)
 	case "noise":
 		return s.noise(it, strings.TrimSpace(a.Text))
 	case "snooze":
 		return s.st.Snooze(id, a.Until.Unix())
 	case "reopen":
-		return errors.New("this item is still open")
+		return s.reopen(it)
 	case "reclassify":
 		p, u := store.Slug(a.Project), a.Urgency
 		if _, ok := urgencyRank[u]; u != "" && !ok {
@@ -161,18 +159,12 @@ func (s *Server) Decide(id string, a Action) error {
 	var answer string
 	switch a.Kind {
 	case "approve":
-		if s.physical(it) {
-			return errors.New("physical actions can't be approved from the queue; do it in person and mark it done")
-		}
 		answer = "Approved." + comment(a.Text)
 	case "decline":
 		answer = "Declined: don't do this." + comment(a.Text)
 	case "choose":
 		if a.Option < 0 || a.Option >= len(it.Options) {
 			return errors.New("no such option")
-		}
-		if s.physical(it) && !looksNegative(it.Options[a.Option]) {
-			return errors.New("physical actions can't be approved from the queue; do it in person and mark it done")
 		}
 		answer = "Chose: " + it.Options[a.Option] + "." + comment(a.Text)
 	case "answer":
@@ -196,27 +188,67 @@ func comment(t string) string {
 	return ""
 }
 
-var negative = regexp.MustCompile(`(?i)^\s*(no|don'?t|do not|wait|stop|cancel|skip|hold|not now|later)\b`)
-
-func looksNegative(s string) bool { return negative.MatchString(s) }
-
-// physical reports whether an item asks for a physical action that must not
-// be approved remotely (robot motion and the like).
-func (s *Server) physical(it store.Item) bool {
-	if it.Physical {
-		return true
-	}
-	m, ok := s.cfg.Machine(it.Machine)
-	if !ok {
-		return false
-	}
-	text := it.Title + " " + it.Body
-	for _, k := range m.Physical {
-		if k = strings.TrimSpace(k); k != "" && regexp.MustCompile(`(?i)(^|\W)`+regexp.QuoteMeta(k)+`($|\W)`).MatchString(text) {
-			return true
+// reopen puts an item back on the docket: off the Stash, and open again if
+// it was closed. A close the human made here is undone, with everything it
+// set off (a queued "marked done", a noise mark and its note, an expiry, a
+// rule's approval); one an agent or docket made is reopened.
+func (s *Server) reopen(it store.Item) error {
+	if it.StashedAt > 0 {
+		var err error
+		if s.st.LastDecision(it.ID) == "stash" {
+			_, err = s.st.Undo(it.ID)
+		} else {
+			err = s.st.Unstash(it.ID, false)
+		}
+		if err != nil {
+			return err
+		}
+		if it, _, err = s.st.GetItem(it.ID); err != nil {
+			return err
+		}
+		if !closedStatus(it.Status) {
+			return nil
 		}
 	}
-	return false
+	if !closedStatus(it.Status) {
+		return errors.New("this item is still open")
+	}
+	switch d := s.st.LastDecision(it.ID); {
+	case d == "done", d == "dismiss", d == "noise", d == "expire",
+		it.Kind == "rule" && (d == "approve" || d == "decline"):
+		return s.Decide(it.ID, Action{Kind: "undo"})
+	}
+	return s.st.Reopen(it.ID)
+}
+
+func closedStatus(st string) bool { return st == "done" || st == "dismissed" || st == "expired" }
+
+// tellDone lets the agent that filed an item know the human marked it done,
+// so it doesn't keep waiting on it or file it again. An agent paused on a
+// task only the human can do is told straight away (resuming it if need be);
+// any other is told quietly, at its next turn, if its session is still
+// running. One that already has the human's answer needs nothing more, and
+// docket's own items have no agent to tell.
+func (s *Server) tellDone(it store.Item, note string) error {
+	if it.SessionID == "" || it.Source != ingest.SrcCLI || (it.Status != "open" && it.Status != "snoozed") {
+		return nil
+	}
+	if it.Kind == "human_task" || it.Kind == "blocker" {
+		return s.queue(it, fmt.Sprintf("%s marked this done: %q.%s", s.cfg.Person, it.Title, comment(note)))
+	}
+	var msg string
+	switch it.Kind {
+	case "review", "fyi":
+		msg = fmt.Sprintf("%s marked your docket item %q done: they've looked at it, and nothing more is needed on it.", s.cfg.Person, it.Title)
+	case "ask", "approval":
+		msg = fmt.Sprintf("%s marked your docket item %q done without choosing an answer. They may have handled it themselves; don't take it as a yes.", s.cfg.Person, it.Title)
+	default:
+		msg = fmt.Sprintf("%s marked your docket item %q done.", s.cfg.Person, it.Title)
+	}
+	if n := strings.TrimSpace(note); n != "" {
+		msg += " Their note: " + n
+	}
+	return s.notifyQuietly(it, msg)
 }
 
 // noise is the human saying an item wasn't worth their time. It leaves the
@@ -261,9 +293,6 @@ func (s *Server) notifyQuietly(it store.Item, msg string) error {
 // queue creates a delivery of text to the item's session and kicks the deliverer.
 func (s *Server) queue(it store.Item, text string) error {
 	nonce := randomNonce()
-	if m, ok := s.cfg.Machine(it.Machine); ok && len(m.Physical) > 0 {
-		text += " This does not authorize any physical or robot motion."
-	}
 	// A re-filed item keeps its first id; say which id this agent was told.
 	if a := s.st.LatestAlias(it.ID, it.SessionID); a != "" {
 		text = "(this is the item you filed as " + a + ") " + text

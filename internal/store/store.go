@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -95,7 +96,8 @@ CREATE TABLE IF NOT EXISTS items (
   urgency TEXT NOT NULL DEFAULT 'normal',
   urgent_since INTEGER NOT NULL DEFAULT 0,
   expires_at INTEGER NOT NULL DEFAULT 0,
-  pinned TEXT NOT NULL DEFAULT ''
+  pinned TEXT NOT NULL DEFAULT '',
+  stashed_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS items_active_dedupe ON items(dedupe_key)
   WHERE dedupe_key IS NOT NULL AND status IN ('maybe','open','snoozed','answered');
@@ -290,6 +292,7 @@ var added = []struct{ table, column, ddl string }{
 	{"items", "urgent_since", "INTEGER NOT NULL DEFAULT 0"},
 	{"items", "expires_at", "INTEGER NOT NULL DEFAULT 0"},
 	{"items", "pinned", "TEXT NOT NULL DEFAULT ''"},
+	{"items", "stashed_at", "INTEGER NOT NULL DEFAULT 0"},
 	{"deliveries", "live_only", "INTEGER NOT NULL DEFAULT 0"},
 	{"deliveries", "quiet", "INTEGER NOT NULL DEFAULT 0"},
 	{"item_aliases", "machine", "TEXT NOT NULL DEFAULT ''"},
@@ -710,6 +713,7 @@ type Item struct {
 	UrgentSince  int64  // when urgency last became "now"
 	ExpiresAt    int64  // the item closes on its own after this (0: never)
 	Pinned       string // comma-separated fields the human set by hand
+	StashedAt    int64  // when the human put it on their Stash (0: never)
 
 	// Ongoing marks an upsert that re-checks a standing condition (a session
 	// still waiting, a machine still down). It refreshes the item without
@@ -717,13 +721,13 @@ type Item struct {
 	Ongoing bool
 }
 
-const itemCols = `id, kind, status, title, body, options, recommend, blocking, blocks, physical, due, COALESCE(dedupe_key,''), source, machine, session_id, lead, cwd, quote, created_at, updated_at, last_seen_at, mention_count, COALESCE(snoozed_until,0), COALESCE(resolved_at,0), resolution, answer, COALESCE(answered_at,0), COALESCE(pushed_at,0), chief_note, project, component, place, urgency, urgent_since, expires_at, pinned`
+const itemCols = `id, kind, status, title, body, options, recommend, blocking, blocks, physical, due, COALESCE(dedupe_key,''), source, machine, session_id, lead, cwd, quote, created_at, updated_at, last_seen_at, mention_count, COALESCE(snoozed_until,0), COALESCE(resolved_at,0), resolution, answer, COALESCE(answered_at,0), COALESCE(pushed_at,0), chief_note, project, component, place, urgency, urgent_since, expires_at, pinned, stashed_at`
 
 func scanItem(sc interface{ Scan(...any) error }) (Item, error) {
 	var it Item
 	var opts string
 	var blocking, physical int
-	err := sc.Scan(&it.ID, &it.Kind, &it.Status, &it.Title, &it.Body, &opts, &it.Recommend, &blocking, &it.Blocks, &physical, &it.Due, &it.DedupeKey, &it.Source, &it.Machine, &it.SessionID, &it.Lead, &it.Cwd, &it.Quote, &it.CreatedAt, &it.UpdatedAt, &it.LastSeenAt, &it.MentionCount, &it.SnoozedUntil, &it.ResolvedAt, &it.Resolution, &it.Answer, &it.AnsweredAt, &it.PushedAt, &it.ChiefNote, &it.Project, &it.Component, &it.Place, &it.Urgency, &it.UrgentSince, &it.ExpiresAt, &it.Pinned)
+	err := sc.Scan(&it.ID, &it.Kind, &it.Status, &it.Title, &it.Body, &opts, &it.Recommend, &blocking, &it.Blocks, &physical, &it.Due, &it.DedupeKey, &it.Source, &it.Machine, &it.SessionID, &it.Lead, &it.Cwd, &it.Quote, &it.CreatedAt, &it.UpdatedAt, &it.LastSeenAt, &it.MentionCount, &it.SnoozedUntil, &it.ResolvedAt, &it.Resolution, &it.Answer, &it.AnsweredAt, &it.PushedAt, &it.ChiefNote, &it.Project, &it.Component, &it.Place, &it.Urgency, &it.UrgentSince, &it.ExpiresAt, &it.Pinned, &it.StashedAt)
 	it.Blocking, it.Physical = blocking != 0, physical != 0
 	_ = json.Unmarshal([]byte(opts), &it.Options)
 	return it, err
@@ -887,9 +891,14 @@ func (s *Store) Items(statuses ...string) ([]Item, error) {
 	return out, rows.Err()
 }
 
-// RecentlyClosed lists items resolved since `since`.
+// RecentlyClosed lists items resolved since `since`, leaving out the ones on
+// the Stash. One whose time on the Stash ended since then counts as closed
+// when it left the Stash.
 func (s *Store) RecentlyClosed(since int64, limit int) ([]Item, error) {
-	rows, err := s.DB.Query(`SELECT `+itemCols+` FROM items WHERE status IN ('done','dismissed','delivered','expired') AND COALESCE(resolved_at, answered_at, updated_at) >= ? ORDER BY updated_at DESC LIMIT ?`, since, limit)
+	cut := StashCutoff()
+	rows, err := s.DB.Query(`SELECT `+itemCols+` FROM items WHERE status IN ('done','dismissed','delivered','expired') AND stashed_at < ?
+		AND (COALESCE(resolved_at, answered_at, updated_at) >= ? OR (stashed_at > 0 AND stashed_at + ? >= ?))
+		ORDER BY MAX(COALESCE(resolved_at, answered_at, updated_at), CASE WHEN stashed_at > 0 THEN stashed_at + ? ELSE 0 END) DESC LIMIT ?`, cut, since, StashSeconds, since, StashSeconds, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1032,11 +1041,17 @@ func (s *Store) Undo(id string) (string, error) {
 	if prev == "snoozed" {
 		prev = "open"
 	}
+	// A stash or unstash logs the item's earlier stash time as its answer.
+	var stashedAt int64
+	if action == "stash" || action == "unstash" {
+		stashedAt, _ = strconv.ParseInt(answer, 10, 64)
+	}
 	// Back to an open state: the closing note no longer describes it.
 	if _, err := tx.Exec(`UPDATE items SET status=?, snoozed_until=NULL, updated_at=?, answer=CASE WHEN ? IN ('answer','approve','decline','choose') THEN '' ELSE answer END,
 		expires_at=CASE WHEN ?='expire' THEN 0 ELSE expires_at END,
+		stashed_at=CASE WHEN ? IN ('stash','unstash') THEN ? ELSE stashed_at END,
 		resolution=CASE WHEN ? IN ('open','answered','maybe') THEN '' ELSE resolution END,
-		resolved_at=CASE WHEN ? IN ('done','dismissed','expired') THEN ? ELSE NULL END WHERE id=?`, prev, now(), action, action, prev, prev, now(), id); err != nil {
+		resolved_at=CASE WHEN ? IN ('done','dismissed','expired') THEN COALESCE(resolved_at, ?) ELSE NULL END WHERE id=?`, prev, now(), action, action, action, stashedAt, prev, prev, now(), id); err != nil {
 		if isDedupeConflict(err) {
 			return "", errors.New("can't undo: an open item with the same key has been filed since")
 		}
@@ -1047,7 +1062,9 @@ func (s *Store) Undo(id string) (string, error) {
 	// its way when an expiry is undone.
 	// (Only deliveries queued from that decision on: an earlier answer still
 	// on its way stays.)
-	if action == "answer" || action == "approve" || action == "decline" || action == "choose" || action == "done" || action == "noise" {
+	if action == "answer" || action == "approve" || action == "decline" || action == "choose" || action == "done" || action == "noise" ||
+		(action == "stash" && (prev == "open" || prev == "maybe")) { // a stash that closed it queued a "marked done"
+
 		tx.Exec(`DELETE FROM deliveries WHERE item_id=? AND status='pending' AND created_at>=?`, id, dts)
 	}
 	if _, err := tx.Exec(`DELETE FROM decisions WHERE id=?`, did); err != nil {

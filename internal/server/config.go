@@ -52,14 +52,12 @@ type Ntfy struct {
 //	mode = "push":  the machine runs `docket sync` against the server (laptops
 //	                that sleep; no inbound SSH to them needed)
 type Machine struct {
-	Name          string   `toml:"name"`
-	Mode          string   `toml:"mode"`
-	SSH           string   `toml:"ssh"`
-	Docket        string   `toml:"docket"`
-	Interval      Duration `toml:"interval"`
-	Sleepy        bool     `toml:"sleepy"`
-	RemoteApprove *bool    `toml:"remote_approve"`
-	Physical      []string `toml:"physical_keywords"`
+	Name     string   `toml:"name"`
+	Mode     string   `toml:"mode"`
+	SSH      string   `toml:"ssh"`
+	Docket   string   `toml:"docket"`
+	Interval Duration `toml:"interval"`
+	Sleepy   bool     `toml:"sleepy"`
 }
 
 // Lead is one long-running agent responsible for an area of work.
@@ -251,10 +249,6 @@ func (c *Config) Machine(name string) (Machine, bool) {
 	}
 	return Machine{}, false
 }
-
-// Approvable reports whether answers from the queue may approve actions on
-// this machine. Physical actions are never approvable remotely regardless.
-func (m Machine) Approvable() bool { return m.RemoteApprove == nil || *m.RemoteApprove }
 
 // Now is the current time in the configured zone.
 func (c *Config) Now() time.Time { return time.Now().In(c.loc) }

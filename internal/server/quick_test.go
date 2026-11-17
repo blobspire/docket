@@ -11,11 +11,12 @@ import (
 
 // quickHTML is a row's one-tap actions, or "" when it has none.
 func quickHTML(row string) string {
-	return regexp.MustCompile(`(?s)<div class="quick".*?</div>`).FindString(row)
+	return regexp.MustCompile(`(?s)<div class="qa".*?</div>`).FindString(row)
 }
 
-// Every open row can be closed from the list without expanding it: Done
-// where done makes sense, "Not worth my time", and Dismiss.
+// Every open row can be closed from the list without opening it: Done,
+// "Not worth it" and Dismiss, the same on every kind. An answered one waits
+// on its agent, folded under "Waiting on agents", and can only be dismissed.
 func TestRowsOfferOneTapCloses(t *testing.T) {
 	e := newEnv(t, "")
 	st := e.s.st
@@ -31,24 +32,20 @@ func TestRowsOfferOneTapCloses(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := get(e, "/?p=w")
+	every := []string{`data-act="done"`, `data-noise`, `data-act="dismiss"`}
 	want := map[string][]string{
-		"dk-q0000001": {`data-act="done"`, `data-noise`, `data-act="dismiss"`},
-		"dk-q0000002": {`data-act="done"`, `data-noise`, `data-act="dismiss"`},
-		// An approval needs a yes or no, not a silent "done".
-		"dk-q0000003": {`data-noise`, `data-act="dismiss"`},
-		// Answered: the answer is on its way; it can only be taken off the list.
+		"dk-q0000001": every,
+		"dk-q0000002": every,
+		"dk-q0000003": every,
 		"dk-q0000004": {`data-act="dismiss"`},
 	}
-	all := []string{`data-act="done"`, `data-noise`, `data-act="dismiss"`}
 	for id, has := range want {
-		row := rowHTML(t, page, id)
-		q := quickHTML(row)
+		q := quickHTML(rowHTML(t, page, id))
 		if q == "" {
-			t.Fatalf("%s: no quick actions in %s", id, row)
+			t.Fatalf("%s: no quick actions", id)
 		}
-		for _, a := range all {
-			in := strings.Contains(q, a)
-			should := false
+		for _, a := range every {
+			in, should := strings.Contains(q, a), false
 			for _, h := range has {
 				should = should || h == a
 			}
@@ -56,46 +53,67 @@ func TestRowsOfferOneTapCloses(t *testing.T) {
 				t.Errorf("%s: quick action %s present=%v, want %v", id, a, in, should)
 			}
 		}
-		// The note box must open under a collapsed row, so it can't live in
-		// the hidden detail.
-		if strings.Contains(q, "data-noise") {
-			nf, det := strings.Index(row, `class="noise-form"`), strings.Index(row, `class="detail"`)
-			if nf < 0 || nf > det {
-				t.Errorf("%s: the note box is inside the collapsed detail (or missing)", id)
+	}
+	if !strings.Contains(rowHTML(t, page, "dk-q0000004"), "You replied <b>the A100</b>") {
+		t.Error("the waiting row doesn't say what you answered")
+	}
+	// The dock has the same five actions on every open item, d included.
+	for _, id := range []string{"dk-q0000001", "dk-q0000002", "dk-q0000003"} {
+		d := dockHTML(t, e, id)
+		for _, a := range []string{`data-act="done"`, `data-noise`, `data-act="dismiss"`, `data-act="stash"`, `data-act="snooze"`} {
+			if !strings.Contains(d, a) {
+				t.Errorf("%s: the dock lacks %s", id, a)
 			}
 		}
 	}
-	// A review's card offers Done too, so d works on it; an approval's never
-	// does (d would close it without the yes or no its agent waits on).
-	if !strings.Contains(rowHTML(t, page, "dk-q0000002"), `data-act="done" data-key="d"`) {
-		t.Error("a review's card doesn't offer Done")
+	// An approval with no options gets Approve and Decline in the dock; a
+	// review has no "Looks good", only a reply box.
+	if d := dockHTML(t, e, "dk-q0000003"); !strings.Contains(d, `data-act="approve"`) || !strings.Contains(d, `data-act="decline"`) {
+		t.Errorf("an approval's dock: %s", d)
 	}
-	if strings.Contains(rowHTML(t, page, "dk-q0000003"), `data-act="done"`) {
-		t.Error("an approval offers Done")
+	if d := dockHTML(t, e, "dk-q0000002"); strings.Contains(d, "approve") || strings.Contains(d, "Looks good") {
+		t.Errorf("a review still offers Looks good: %s", d)
 	}
 }
 
-// Delivered answers and rules get no one-tap closes; a snoozed row keeps
-// its note box.
+// A delivered answer waits for its agent: a follow-up box and the closes,
+// but no second answer or snooze. A rule offers Approve and Reject, never
+// Done or a note. A snoozed row sits in its fold and keeps its note.
 func TestQuickActionsEdgeRows(t *testing.T) {
 	e := newEnv(t, "")
 	st := e.s.st
-	st.UpsertItem(store.Item{ID: "dk-q0000011", Kind: "ask", Title: "which GPU?", Project: "w", SessionID: "s", Machine: "box", Source: "cli"})
-	st.SetStatus("dk-q0000011", "delivered", "", "")
+	st.UpsertItem(store.Item{ID: "dk-q0000011", Kind: "ask", Title: "which GPU?", Project: "w", SessionID: "s", Machine: "box", Source: "cli", Options: []string{"A100", "H100"}})
+	if err := e.s.Decide("dk-q0000011", Action{Kind: "choose", Option: 1}); err != nil {
+		t.Fatal(err)
+	}
+	st.DB.Exec(`UPDATE items SET status='delivered' WHERE id='dk-q0000011'`)
 	st.UpsertItem(store.Item{ID: "dk-q0000012", Kind: "rule", Title: "Don't file merged-PR reports", Project: "w"})
 	st.UpsertItem(store.Item{ID: "dk-q0000013", Kind: "issue", Title: "flaky CI", Project: "w"})
 	st.Snooze("dk-q0000013", time.Now().Add(time.Hour).Unix())
 
-	if q := quickHTML(rowHTML(t, get(e, "/item/dk-q0000011"), "dk-q0000011")); q != "" {
-		t.Errorf("a delivered row offers quick actions: %s", q)
+	d := dockHTML(t, e, "dk-q0000011")
+	if !strings.Contains(d, "data-reply") || strings.Contains(d, `data-act="choose"`) || !strings.Contains(d, `data-act="done"`) {
+		t.Errorf("a delivered item's dock: %s", d)
 	}
-	rule := rowHTML(t, get(e, "/item/dk-q0000012"), "dk-q0000012")
-	if q := quickHTML(rule); strings.Contains(q, `data-act="done"`) || strings.Contains(q, "data-noise") || strings.Contains(rule, "noise-form") {
-		t.Errorf("a rule offers Done or a note: %s", rule)
+	if !strings.Contains(sheetHTML(t, e, "dk-q0000011"), "You chose “H100”") {
+		t.Error("the delivered item's sheet doesn't say what you chose")
 	}
-	snoozed := rowHTML(t, get(e, "/?p=w"), "dk-q0000013")
-	if !strings.Contains(quickHTML(snoozed), "data-noise") || !strings.Contains(snoozed, `class="noise-form"`) {
-		t.Errorf("a snoozed row lost its note box: %s", snoozed)
+	rule := dockHTML(t, e, "dk-q0000012")
+	if strings.Contains(rule, `data-act="done"`) || strings.Contains(rule, "data-noise") || !strings.Contains(rule, `data-act="approve"`) {
+		t.Errorf("a rule's dock: %s", rule)
+	}
+	page := get(e, "/?p=w")
+	snoozed := rowHTML(t, page, "dk-q0000013")
+	if !strings.Contains(quickHTML(snoozed), "data-noise") || strings.Index(page, `data-wt="snoozed"`) > strings.Index(page, `data-id="dk-q0000013"`) {
+		t.Errorf("a snoozed row lost its note, or its fold: %s", snoozed)
+	}
+	if !strings.Contains(rowHTML(t, page, "dk-q0000011"), "Delivered, no reply yet") {
+		t.Error("a delivered answer isn't waiting on the docket")
+	}
+	// Once the agent has had a day with it, it leaves the docket.
+	st.DB.Exec(`UPDATE items SET answered_at=? WHERE id='dk-q0000011'`, time.Now().Add(-25*time.Hour).Unix())
+	if strings.Contains(get(e, "/?p=w"), `data-id="dk-q0000011"`) {
+		t.Error("a day-old delivered answer is still on the docket")
 	}
 }
 
@@ -163,7 +181,7 @@ func TestASecondAnswerIsRefused(t *testing.T) {
 	}
 }
 
-// A closed item's row offers Reopen, never a one-tap close.
+// A closed item's sheet offers Back to docket and Stash, never a close.
 func TestClosedRowHasNoQuickActions(t *testing.T) {
 	e := newEnv(t, "")
 	st := e.s.st
@@ -171,8 +189,12 @@ func TestClosedRowHasNoQuickActions(t *testing.T) {
 	if err := e.s.Decide("dk-q0000009", Action{Kind: "done"}); err != nil {
 		t.Fatal(err)
 	}
-	row := rowHTML(t, get(e, "/item/dk-q0000009"), "dk-q0000009")
-	if quickHTML(row) != "" || strings.Contains(row, "noise-form") {
-		t.Fatalf("a closed row offers quick actions: %s", row)
+	d := dockHTML(t, e, "dk-q0000009")
+	if strings.Contains(d, `data-act="done"`) || strings.Contains(d, "data-noise") || !strings.Contains(d, `data-act="reopen"`) || !strings.Contains(d, `data-act="stash"`) {
+		t.Fatalf("a closed item's dock: %s", d)
+	}
+	row := rowHTML(t, get(e, "/done"), "dk-q0000009")
+	if q := quickHTML(row); strings.Contains(q, `data-act="done"`) || !strings.Contains(q, `data-act="reopen"`) {
+		t.Fatalf("a Done row's actions: %s", q)
 	}
 }

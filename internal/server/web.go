@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -50,6 +51,56 @@ var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 	},
 	"winName": func(w string) string {
 		return map[string]string{"five_hour": "5-hour", "seven_day": "weekly"}[w]
+	},
+	"closedAt": func(it store.Item) int64 {
+		switch {
+		case it.ResolvedAt > 0:
+			return it.ResolvedAt
+		case it.AnsweredAt > 0:
+			return it.AnsweredAt
+		}
+		return it.UpdatedAt
+	},
+	"bytes": func(n int64) string {
+		switch {
+		case n >= 1<<20:
+			return strconv.FormatFloat(float64(n)/(1<<20), 'f', 1, 64) + " MB"
+		case n >= 1<<10:
+			return strconv.FormatInt(n>>10, 10) + " KB"
+		}
+		return strconv.FormatInt(n, 10) + " B"
+	},
+	"tilde": func(p string) string {
+		for _, home := range []string{"/Users/", "/home/"} {
+			if rest, ok := strings.CutPrefix(p, home); ok {
+				if _, after, ok := strings.Cut(rest, "/"); ok {
+					return "~/" + after
+				}
+				return "~"
+			}
+		}
+		return p
+	},
+	"reply": func(id, placeholder string, hide bool) replyForm {
+		return replyForm{ID: id, Placeholder: placeholder, Hide: hide}
+	},
+	"replyHint": func(kind string) string {
+		switch kind {
+		case "review", "fyi":
+			return "Reply with anything to change"
+		case "human_task":
+			return "Reply to the agent, e.g. with what you found"
+		}
+		return "Reply to the agent"
+	},
+	"doneHint": func(v itemView) string {
+		switch {
+		case v.SessionID == "" || v.Source != "cli":
+			return "Close it"
+		case v.Kind == "human_task" || v.Kind == "blocker":
+			return "Close it, and tell the agent it's done"
+		}
+		return "Close it. The agent hears it's done the next time its session is active."
 	},
 	"isImage": func(m string) bool { return strings.HasPrefix(m, "image/") },
 	"isVideo": func(m string) bool { return strings.HasPrefix(m, "video/") },
@@ -161,6 +212,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /item/{id}/act", s.act)
 	mux.HandleFunc("POST /project/{name}", s.editProject)
 	mux.HandleFunc("GET /done", s.pageDone)
+	mux.HandleFunc("GET /stash", s.pageStash)
 	mux.HandleFunc("GET /search", s.pageSearch)
 	mux.HandleFunc("GET /evidence", s.pageEvidence)
 	mux.HandleFunc("GET /checklist", s.pageChecklist)
@@ -223,13 +275,14 @@ type page struct {
 	Nav         string
 	Person      string
 	Queue       *queueView
-	One         *Ranked
+	One         *itemView
+	Attachments []attachment
+	Rows        []itemView
 	Closed      []store.Item
 	Item        *store.Item
 	Session     *store.Session
 	Evidence    []store.Evidence
 	Delivery    []store.Delivery
-	Physical    bool
 	Machines    []machineRow
 	Sessions    []store.Session
 	Error       string
@@ -245,6 +298,26 @@ type page struct {
 	Corrections []store.Decision
 	Noise       []store.Noise
 	RuleCount   int
+	Count       int  // open items on the docket, for the mark's badge
+	Hot         bool // one of them needs action now
+	StashCount  int
+}
+
+// attachment is one piece of evidence as the item sheet shows it.
+type attachment struct {
+	store.Evidence
+	Kind  string        // image | video | doc | file | missing
+	Index int           // an image's place among the item's images, for the viewer
+	Doc   template.HTML // a text document's contents, rendered
+}
+
+// maxDoc is the largest text attachment shown inline.
+const maxDoc = 512 << 10
+
+// replyForm is the dock's answer box.
+type replyForm struct {
+	ID, Placeholder string
+	Hide            bool // folded until Reply (or r) opens it: the options come first
 }
 
 type leadRow struct {
@@ -267,11 +340,16 @@ func (s *Server) render(w http.ResponseWriter, name string, p page) {
 	p.Version = s.st.QueueDigest()
 	if items, err := s.st.Items("open"); err == nil {
 		for _, it := range items {
-			if it.Kind == "rule" {
+			switch {
+			case it.Kind == "rule":
 				p.RuleCount++
+			case it.StashedAt == 0:
+				p.Count++
+				p.Hot = p.Hot || it.Urgency == "now"
 			}
 		}
 	}
+	p.StashCount = s.st.StashCount()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := tmpl.ExecuteTemplate(w, name, p); err != nil {
 		s.log.Printf("render %s: %v", name, err)
@@ -288,7 +366,7 @@ func (s *Server) pageQueue(w http.ResponseWriter, r *http.Request) {
 	if q.Mode != "all" {
 		title = q.Heading
 	}
-	s.render(w, "queue.html", page{Title: title, Nav: "queue", Queue: q, Error: r.URL.Query().Get("err")})
+	s.render(w, "queue.html", page{Title: title, Nav: "docket", Queue: q, Error: r.URL.Query().Get("err")})
 }
 
 func (s *Server) pageItem(w http.ResponseWriter, r *http.Request) {
@@ -305,10 +383,55 @@ func (s *Server) pageItem(w http.ResponseWriter, r *http.Request) {
 	sess, _, _ := s.st.GetSession(it.SessionID)
 	ev, _ := s.st.Evidence(it.ID)
 	ds, _ := s.st.ItemDeliveries(it.ID)
-	q, _ := s.buildQueue(url.Values{})
-	one := Ranked{Item: it, Session: sess}
-	s.render(w, "item.html", page{Title: it.Title, Nav: "queue", One: &one, Queue: q, Session: &sess, Evidence: ev, Delivery: ds,
-		Physical: s.physical(it), Error: r.URL.Query().Get("err")})
+	projects, _ := s.st.Projects(false)
+	var names []string
+	for _, p := range projects {
+		if p.Name != store.Unsorted {
+			names = append(names, p.Name)
+		}
+	}
+	sort.Slice(names, func(i, j int) bool { return projectLess(names[i], names[j]) })
+	one := s.rows([]Ranked{{Item: it, Session: sess}}, "docket", true, names)[0]
+	one.LastAction = s.st.LastDecision(it.ID)
+	var atts []attachment
+	images := 0
+	for _, e := range ev {
+		a := attachment{Evidence: e, Kind: "file"}
+		switch {
+		case e.Gone || !e.Fetched:
+			a.Kind = "missing"
+		case strings.HasPrefix(e.Mime, "image/"):
+			a.Kind, a.Index = "image", images
+			images++
+		case strings.HasPrefix(e.Mime, "video/"):
+			a.Kind = "video"
+		case textDoc(e) && e.Size <= maxDoc:
+			if b, err := os.ReadFile(s.blobPath(e.SHA256)); err == nil {
+				a.Kind = "doc"
+				if strings.HasSuffix(strings.ToLower(e.Name), ".md") || strings.Contains(e.Mime, "markdown") {
+					a.Doc = renderMarkdown(string(b))
+				} else {
+					a.Doc = template.HTML("<pre>" + template.HTMLEscapeString(string(b)) + "</pre>")
+				}
+			}
+		}
+		atts = append(atts, a)
+	}
+	s.render(w, "item.html", page{Title: it.Title, Nav: "docket", One: &one, Attachments: atts, Session: &sess, Delivery: ds, Error: r.URL.Query().Get("err")})
+}
+
+// textDoc reports evidence that reads as text: markdown, plain text, logs, CSV.
+func textDoc(e store.Evidence) bool {
+	m, n := strings.ToLower(e.Mime), strings.ToLower(e.Name)
+	if strings.HasPrefix(m, "text/") && !strings.Contains(m, "html") {
+		return true
+	}
+	for _, ext := range []string{".md", ".markdown", ".txt", ".log", ".csv", ".json", ".yaml", ".yml"} {
+		if strings.HasSuffix(n, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 // editProject saves a project's description and archived flag, or renames it
@@ -361,7 +484,20 @@ func (s *Server) editProject(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) pageDone(w http.ResponseWriter, r *http.Request) {
 	closed, _ := s.st.RecentlyClosed(time.Now().Add(-7*24*time.Hour).Unix(), 300)
-	s.render(w, "done.html", page{Title: "Done", Nav: "done", Closed: closed})
+	s.render(w, "list.html", page{Title: "Done", Nav: "done", Rows: s.rows(ranked(closed), "done", true, nil)})
+}
+
+func (s *Server) pageStash(w http.ResponseWriter, r *http.Request) {
+	stashed, _ := s.st.Stashed(300)
+	s.render(w, "list.html", page{Title: "Stash", Nav: "stash", Rows: s.rows(ranked(stashed), "stash", true, nil)})
+}
+
+func ranked(items []store.Item) []Ranked {
+	out := make([]Ranked, len(items))
+	for i, it := range items {
+		out[i] = Ranked{Item: it}
+	}
+	return out
 }
 
 func (s *Server) pageSearch(w http.ResponseWriter, r *http.Request) {
@@ -370,7 +506,7 @@ func (s *Server) pageSearch(w http.ResponseWriter, r *http.Request) {
 	if q != "" {
 		res, _ = s.st.Search(q, 200)
 	}
-	s.render(w, "search.html", page{Title: "Search", Nav: "search", Query: q, Closed: res})
+	s.render(w, "search.html", page{Title: "Search", Nav: "search", Query: q, Rows: s.rows(ranked(res), "list", true, nil)})
 }
 
 func (s *Server) pageEvidence(w http.ResponseWriter, r *http.Request) {
@@ -381,7 +517,7 @@ func (s *Server) pageEvidence(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) pageChecklist(w http.ResponseWriter, r *http.Request) {
 	tasks, _ := s.st.HumanTasks()
-	s.render(w, "checklist.html", page{Title: "Only you", Nav: "checklist", Tasks: tasks})
+	s.render(w, "checklist.html", page{Title: "Only you", Nav: "checklist", Rows: s.rows(ranked(tasks), "list", true, nil)})
 }
 
 func (s *Server) pageLeads(w http.ResponseWriter, r *http.Request) {
