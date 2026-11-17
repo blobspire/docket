@@ -43,10 +43,12 @@ func (r Ranked) Stale() bool {
 	return time.Since(time.Unix(r.UpdatedAt, 0)) > 7*24*time.Hour
 }
 
-// Queue returns the active items (open, answered, snoozed), with sessions.
-// Rule proposals live on the Brain page, not here.
-func (s *Server) Queue() (active, snoozed []Ranked, err error) {
-	items, err := s.st.Items("open", "answered", "snoozed")
+// Queue returns what the docket shows, with sessions: the items that need
+// the human (open), the ones waiting on their agent (an answer on its way,
+// or delivered recently), and the snoozed ones. Rule proposals live on the
+// Brain page, and stashed items on the Stash.
+func (s *Server) Queue() (open, waiting, snoozed []Ranked, err error) {
+	items, err := s.st.DocketItems()
 	if err != nil {
 		return
 	}
@@ -60,10 +62,13 @@ func (s *Server) Queue() (active, snoozed []Ranked, err error) {
 		}
 		it.Lead = s.leadOf(it, sess)
 		r := Ranked{Item: it, Session: sess}
-		if it.Status == "snoozed" {
+		switch it.Status {
+		case "snoozed":
 			snoozed = append(snoozed, r)
-		} else {
-			active = append(active, r)
+		case "answered", "delivered":
+			waiting = append(waiting, r)
+		default:
+			open = append(open, r)
 		}
 	}
 	return

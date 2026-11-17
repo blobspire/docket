@@ -3,6 +3,9 @@ package server
 import (
 	"bytes"
 	"html/template"
+	"math"
+	"regexp"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/yuin/goldmark"
@@ -20,6 +23,24 @@ var md = goldmark.New(
 	goldmark.WithExtensions(extension.GFM),
 	goldmark.WithParserOptions(parser.WithASTTransformers(util.Prioritized(safeLinks{}, 500))),
 	goldmark.WithRendererOptions(html.WithHardWraps()),
+)
+
+// mdNoTables is md without tables: a table pads every row out to its
+// header's width, so a few kilobytes with thousands of columns would render
+// to hundreds of megabytes.
+var mdNoTables = goldmark.New(
+	goldmark.WithExtensions(extension.Strikethrough, extension.Linkify, extension.TaskList),
+	goldmark.WithParserOptions(parser.WithASTTransformers(util.Prioritized(safeLinks{}, 500))),
+	goldmark.WithRendererOptions(html.WithHardWraps()),
+)
+
+// maxTableColumns is the widest table rendered as one; maxTableCells caps a
+// rough count of cells (widest row × lines) a text may make tables of; and
+// only the first mdBudget bytes render as markdown, the rest as plain text.
+const (
+	maxTableColumns = 64
+	maxTableCells   = 20000
+	mdBudget        = 32 << 10
 )
 
 // safeLinks opens links in a new tab without handing over the opener, and
@@ -84,13 +105,84 @@ func external(n ast.Node) {
 	n.SetAttributeString("rel", []byte("noopener noreferrer"))
 }
 
+var (
+	delimRow = regexp.MustCompile(`^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$`)
+	quotes   = regexp.MustCompile(`^[ \t]*(>[ \t]?)*`) // blockquote markers before a table
+)
+
+// blank is a blank line as markdown sees it: ASCII whitespace only (a line
+// of non-breaking spaces is text, and a table runs on through it).
+func blank(line string) bool { return strings.Trim(line, " \t\v\f\r") == "" }
+
+// tableCells estimates the cells the tables in s would make: each header's
+// columns times its rows (a table runs to the next blank line), or
+// effectively infinite for a header wider than maxTableColumns.
+func tableCells(s string) int {
+	lines := strings.Split(s, "\n")
+	cells := 0
+	for i := 0; i+1 < len(lines); i++ {
+		next := quotes.ReplaceAllString(lines[i+1], "")
+		if !strings.Contains(lines[i], "|") || !strings.Contains(next, "-") || !delimRow.MatchString(next) {
+			continue
+		}
+		cols := strings.Count(lines[i], "|") + 1
+		if cols > maxTableColumns+2 { // n columns: up to n+1 pipes
+			return math.MaxInt32
+		}
+		j := i + 2
+		for j < len(lines) && !blank(lines[j]) {
+			j++
+		}
+		cells += cols * (j - i)
+		i = j
+	}
+	return cells
+}
+
+// maxTableFloor bounds widest-line × line-count for the whole text: a
+// backstop if some table shape slips past tableCells (it stays well above
+// any ordinary report, so it doesn't cost one its tables).
+const maxTableFloor = 300000
+
+func tableFloor(s string) int {
+	widest, lines := 0, 1
+	for _, line := range strings.Split(s, "\n") {
+		widest = max(widest, strings.Count(line, "|"))
+		lines++
+	}
+	return (widest + 1) * lines
+}
+
 // renderMarkdown turns an item body into HTML for the page.
 func renderMarkdown(s string) template.HTML {
-	var b bytes.Buffer
-	if err := md.Convert([]byte(s), &b); err != nil {
-		return template.HTML(template.HTMLEscapeString(s))
+	rest := ""
+	if len(s) > mdBudget {
+		cut := strings.LastIndexByte(s[:mdBudget], '\n')
+		if cut < mdBudget/2 {
+			cut = mdBudget
+			for cut > 0 && !utf8.RuneStart(s[cut]) {
+				cut--
+			}
+		}
+		s, rest = s[:cut], s[cut:]
 	}
-	return template.HTML(b.String()) // goldmark escapes raw HTML (no WithUnsafe)
+	// A table pads every row to its header's width: a wide header or a long
+	// run of rows under a wide one makes a node per cell.
+	conv := md
+	if tableCells(s) > maxTableCells || tableFloor(s) > maxTableFloor {
+		conv = mdNoTables
+	}
+	var b bytes.Buffer
+	out := template.HTML("")
+	if err := conv.Convert([]byte(s), &b); err != nil || b.Len() > 40*len(s)+(1<<20) {
+		out = template.HTML("<pre>" + template.HTMLEscapeString(s) + "</pre>")
+	} else {
+		out = template.HTML(b.String()) // goldmark escapes raw HTML (no WithUnsafe)
+	}
+	if rest != "" {
+		out += template.HTML("<pre>" + template.HTMLEscapeString(rest) + "</pre>")
+	}
+	return out
 }
 
 // shortBody is how much of a body a dashboard row carries; the item's own

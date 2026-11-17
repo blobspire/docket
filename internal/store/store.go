@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -95,7 +96,8 @@ CREATE TABLE IF NOT EXISTS items (
   urgency TEXT NOT NULL DEFAULT 'normal',
   urgent_since INTEGER NOT NULL DEFAULT 0,
   expires_at INTEGER NOT NULL DEFAULT 0,
-  pinned TEXT NOT NULL DEFAULT ''
+  pinned TEXT NOT NULL DEFAULT '',
+  stashed_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS items_active_dedupe ON items(dedupe_key)
   WHERE dedupe_key IS NOT NULL AND status IN ('maybe','open','snoozed','answered');
@@ -290,8 +292,10 @@ var added = []struct{ table, column, ddl string }{
 	{"items", "urgent_since", "INTEGER NOT NULL DEFAULT 0"},
 	{"items", "expires_at", "INTEGER NOT NULL DEFAULT 0"},
 	{"items", "pinned", "TEXT NOT NULL DEFAULT ''"},
+	{"items", "stashed_at", "INTEGER NOT NULL DEFAULT 0"},
 	{"deliveries", "live_only", "INTEGER NOT NULL DEFAULT 0"},
 	{"deliveries", "quiet", "INTEGER NOT NULL DEFAULT 0"},
+	{"deliveries", "kind", "TEXT NOT NULL DEFAULT ''"},
 	{"item_aliases", "machine", "TEXT NOT NULL DEFAULT ''"},
 	{"item_aliases", "created_at", "INTEGER NOT NULL DEFAULT 0"},
 	{"item_aliases", "session_id", "TEXT NOT NULL DEFAULT ''"},
@@ -710,6 +714,7 @@ type Item struct {
 	UrgentSince  int64  // when urgency last became "now"
 	ExpiresAt    int64  // the item closes on its own after this (0: never)
 	Pinned       string // comma-separated fields the human set by hand
+	StashedAt    int64  // when the human put it on their Stash (0: never)
 
 	// Ongoing marks an upsert that re-checks a standing condition (a session
 	// still waiting, a machine still down). It refreshes the item without
@@ -717,13 +722,13 @@ type Item struct {
 	Ongoing bool
 }
 
-const itemCols = `id, kind, status, title, body, options, recommend, blocking, blocks, physical, due, COALESCE(dedupe_key,''), source, machine, session_id, lead, cwd, quote, created_at, updated_at, last_seen_at, mention_count, COALESCE(snoozed_until,0), COALESCE(resolved_at,0), resolution, answer, COALESCE(answered_at,0), COALESCE(pushed_at,0), chief_note, project, component, place, urgency, urgent_since, expires_at, pinned`
+const itemCols = `id, kind, status, title, body, options, recommend, blocking, blocks, physical, due, COALESCE(dedupe_key,''), source, machine, session_id, lead, cwd, quote, created_at, updated_at, last_seen_at, mention_count, COALESCE(snoozed_until,0), COALESCE(resolved_at,0), resolution, answer, COALESCE(answered_at,0), COALESCE(pushed_at,0), chief_note, project, component, place, urgency, urgent_since, expires_at, pinned, stashed_at`
 
 func scanItem(sc interface{ Scan(...any) error }) (Item, error) {
 	var it Item
 	var opts string
 	var blocking, physical int
-	err := sc.Scan(&it.ID, &it.Kind, &it.Status, &it.Title, &it.Body, &opts, &it.Recommend, &blocking, &it.Blocks, &physical, &it.Due, &it.DedupeKey, &it.Source, &it.Machine, &it.SessionID, &it.Lead, &it.Cwd, &it.Quote, &it.CreatedAt, &it.UpdatedAt, &it.LastSeenAt, &it.MentionCount, &it.SnoozedUntil, &it.ResolvedAt, &it.Resolution, &it.Answer, &it.AnsweredAt, &it.PushedAt, &it.ChiefNote, &it.Project, &it.Component, &it.Place, &it.Urgency, &it.UrgentSince, &it.ExpiresAt, &it.Pinned)
+	err := sc.Scan(&it.ID, &it.Kind, &it.Status, &it.Title, &it.Body, &opts, &it.Recommend, &blocking, &it.Blocks, &physical, &it.Due, &it.DedupeKey, &it.Source, &it.Machine, &it.SessionID, &it.Lead, &it.Cwd, &it.Quote, &it.CreatedAt, &it.UpdatedAt, &it.LastSeenAt, &it.MentionCount, &it.SnoozedUntil, &it.ResolvedAt, &it.Resolution, &it.Answer, &it.AnsweredAt, &it.PushedAt, &it.ChiefNote, &it.Project, &it.Component, &it.Place, &it.Urgency, &it.UrgentSince, &it.ExpiresAt, &it.Pinned, &it.StashedAt)
 	it.Blocking, it.Physical = blocking != 0, physical != 0
 	_ = json.Unmarshal([]byte(opts), &it.Options)
 	return it, err
@@ -777,15 +782,17 @@ func (s *Store) UpsertItem(it Item) (string, bool, error) {
 			urg := it.Urgency
 			// SQLite evaluates every SET expression against the old row, so
 			// the urgency comparisons below see the previous value. Raising
-			// an item to "now" also brings it back from snoozed: the filer is
-			// saying it can't wait. (An answered item stays answered: its
-			// answer is already on the way.)
+			// an item to "now" also brings it back from snoozed or the Stash:
+			// the filer is saying it can't wait. (An answered item stays
+			// answered: the human's answer is already on its way, and paging
+			// them for it again would be noise.)
 			const toNow = `?='now' AND urgency<>'now' AND instr(pinned,'urgency')=0`
 			_, err = s.DB.Exec(`UPDATE items SET mention_count=mention_count+1, last_seen_at=?, updated_at=?,
 				title=CASE WHEN ?<>'' THEN ? ELSE title END,
 				body=CASE WHEN ?<>'' THEN ? ELSE body END,
 				status=CASE WHEN status='maybe' AND ?='open' THEN 'open' WHEN `+toNow+` AND status='snoozed' THEN 'open' ELSE status END,
 				snoozed_until=CASE WHEN `+toNow+` THEN NULL ELSE snoozed_until END,
+				stashed_at=CASE WHEN `+toNow+` THEN 0 ELSE stashed_at END,
 				kind=CASE WHEN ?<>'' THEN ? ELSE kind END,
 				component=CASE WHEN ?<>'' AND instr(pinned,'component')=0 THEN ? ELSE component END,
 				place=CASE WHEN ?<>'' AND instr(pinned,'place')=0 THEN ? ELSE place END,
@@ -806,6 +813,7 @@ func (s *Store) UpsertItem(it Item) (string, bool, error) {
 				t, t,
 				it.Title, it.Title, it.Body, it.Body,
 				it.Status, urg,
+				urg,
 				urg,
 				it.Kind, it.Kind,
 				it.Component, it.Component, it.Place, it.Place, it.Due, it.Due, it.Recommend, it.Recommend, opts, opts,
@@ -887,9 +895,18 @@ func (s *Store) Items(statuses ...string) ([]Item, error) {
 	return out, rows.Err()
 }
 
-// RecentlyClosed lists items resolved since `since`.
+// RecentlyClosed lists items resolved since `since`, leaving out the ones on
+// the Stash. One whose time on the Stash ended since then counts as closed
+// when it left the Stash.
 func (s *Store) RecentlyClosed(since int64, limit int) ([]Item, error) {
-	rows, err := s.DB.Query(`SELECT `+itemCols+` FROM items WHERE status IN ('done','dismissed','delivered','expired') AND COALESCE(resolved_at, answered_at, updated_at) >= ? ORDER BY updated_at DESC LIMIT ?`, since, limit)
+	cut := StashCutoff()
+	// A delivered answer is on the docket, waiting on its agent, for a day
+	// after it was delivered (or last touched).
+	const closedAt = `CASE WHEN status='delivered' THEN updated_at ELSE COALESCE(resolved_at, answered_at, updated_at) END`
+	rows, err := s.DB.Query(`SELECT `+itemCols+` FROM items WHERE status IN ('done','dismissed','delivered','expired') AND stashed_at < ?
+		AND NOT (status='delivered' AND updated_at >= ?)
+		AND (`+closedAt+` >= ? OR (stashed_at > 0 AND stashed_at + ? >= ?))
+		ORDER BY MAX(`+closedAt+`, CASE WHEN stashed_at > 0 THEN stashed_at + ? ELSE 0 END) DESC LIMIT ?`, cut, now()-WaitWindow, since, StashSeconds, since, StashSeconds, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -999,7 +1016,11 @@ func (s *Store) SetAnswer(id, answer, action string) error {
 }
 
 // Undo reverts the most recent decision on an item. It returns the action undone.
-func (s *Store) Undo(id string) (string, error) {
+func (s *Store) Undo(id string) (string, error) { return s.UndoIf(id, 0) }
+
+// UndoIf is Undo, but only if the latest decision is still the one with id
+// expect (0: any). Two clicks racing can't undo two decisions.
+func (s *Store) UndoIf(id string, expect int64) (string, error) {
 	tx, err := s.DB.Begin()
 	if err != nil {
 		return "", err
@@ -1014,8 +1035,11 @@ func (s *Store) Undo(id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if expect != 0 && did != expect {
+		return "", errors.New("it changed meanwhile; look again")
+	}
 	var undeliverable int
-	tx.QueryRow(`SELECT COUNT(*) FROM deliveries WHERE item_id=? AND status IN ('sent','confirmed')`, id).Scan(&undeliverable)
+	tx.QueryRow(`SELECT COUNT(*) FROM deliveries WHERE item_id=? AND status IN ('sent','confirmed') AND live_only=0 AND created_at>=? AND `+isAnswer, id, dts).Scan(&undeliverable)
 	if undeliverable > 0 && (action == "answer" || action == "approve" || action == "decline" || action == "choose") {
 		return "", errors.New("the answer has already been delivered to the agent; send a correction instead")
 	}
@@ -1032,11 +1056,35 @@ func (s *Store) Undo(id string) (string, error) {
 	if prev == "snoozed" {
 		prev = "open"
 	}
+	// A stash or unstash logs the item's earlier stash time as its answer.
+	// Its status comes back only if the stash (or unstash) changed it, and
+	// nothing has changed it since: a stash of an answered item mustn't undo
+	// the delivery that confirmed meanwhile, or the agent's close.
+	var stashedAt int64
+	if action == "stash" || action == "unstash" {
+		stashedAt, _ = strconv.ParseInt(answer, 10, 64)
+		var cur string
+		tx.QueryRow(`SELECT status FROM items WHERE id=?`, id).Scan(&cur)
+		closedIt := action == "stash" && (prev == "open" || prev == "maybe") && cur == "done"
+		doneIt := action == "unstash" && !closedStatus(prev) && cur == "done"
+		if !closedIt && !doneIt {
+			prev = cur
+		}
+	}
+	// An answer whose delivery has confirmed since is delivered, not on its way.
+	if prev == "answered" {
+		var last string
+		tx.QueryRow(`SELECT status FROM deliveries WHERE item_id=? AND live_only=0 AND `+isAnswer+` ORDER BY created_at DESC, rowid DESC LIMIT 1`, id).Scan(&last)
+		if last == "confirmed" {
+			prev = "delivered"
+		}
+	}
 	// Back to an open state: the closing note no longer describes it.
 	if _, err := tx.Exec(`UPDATE items SET status=?, snoozed_until=NULL, updated_at=?, answer=CASE WHEN ? IN ('answer','approve','decline','choose') THEN '' ELSE answer END,
 		expires_at=CASE WHEN ?='expire' THEN 0 ELSE expires_at END,
-		resolution=CASE WHEN ? IN ('open','answered','maybe') THEN '' ELSE resolution END,
-		resolved_at=CASE WHEN ? IN ('done','dismissed','expired') THEN ? ELSE NULL END WHERE id=?`, prev, now(), action, action, prev, prev, now(), id); err != nil {
+		stashed_at=CASE WHEN ? IN ('stash','unstash') THEN ? ELSE stashed_at END,
+		resolution=CASE WHEN ? IN ('open','answered','delivered','maybe') THEN '' ELSE resolution END,
+		resolved_at=CASE WHEN ? IN ('done','dismissed','expired') THEN COALESCE(resolved_at, ?) ELSE NULL END WHERE id=?`, prev, now(), action, action, action, stashedAt, prev, prev, now(), id); err != nil {
 		if isDedupeConflict(err) {
 			return "", errors.New("can't undo: an open item with the same key has been filed since")
 		}
@@ -1047,8 +1095,17 @@ func (s *Store) Undo(id string) (string, error) {
 	// its way when an expiry is undone.
 	// (Only deliveries queued from that decision on: an earlier answer still
 	// on its way stays.)
-	if action == "answer" || action == "approve" || action == "decline" || action == "choose" || action == "done" || action == "noise" {
-		tx.Exec(`DELETE FROM deliveries WHERE item_id=? AND status='pending' AND created_at>=?`, id, dts)
+	kind := ""
+	switch {
+	case action == "answer" || action == "approve" || action == "decline" || action == "choose":
+		kind = "answer"
+	case action == "done" || (action == "stash" && (prev == "open" || prev == "maybe")): // a stash that closed it queued a "marked done"
+		kind = "done"
+	case action == "noise":
+		kind = "noise"
+	}
+	if kind != "" {
+		tx.Exec(`DELETE FROM deliveries WHERE item_id=? AND status='pending' AND created_at>=? AND `+kindIs[kind], id, dts)
 	}
 	if _, err := tx.Exec(`DELETE FROM decisions WHERE id=?`, did); err != nil {
 		return "", err
@@ -1159,21 +1216,24 @@ type Delivery struct {
 	LiveOnly bool
 	// Quiet deliveries never wake an idle session (see mailbox.Delivery).
 	Quiet bool
+	// Kind is what it carries: answer (the human's), done, noise or note.
+	// Older rows have none; their text tells.
+	Kind string
 }
 
-const deliveryCols = `id, item_id, machine, session_id, text, nonce, method, status, error, created_at, COALESCE(sent_at,0), COALESCE(confirmed_at,0), attempts, live_only, quiet`
+const deliveryCols = `id, item_id, machine, session_id, text, nonce, method, status, error, created_at, COALESCE(sent_at,0), COALESCE(confirmed_at,0), attempts, live_only, quiet, kind`
 
 func scanDelivery(sc interface{ Scan(...any) error }) (Delivery, error) {
 	var d Delivery
 	var live, quiet int
-	err := sc.Scan(&d.ID, &d.ItemID, &d.Machine, &d.SessionID, &d.Text, &d.Nonce, &d.Method, &d.Status, &d.Error, &d.CreatedAt, &d.SentAt, &d.ConfirmedAt, &d.Attempts, &live, &quiet)
+	err := sc.Scan(&d.ID, &d.ItemID, &d.Machine, &d.SessionID, &d.Text, &d.Nonce, &d.Method, &d.Status, &d.Error, &d.CreatedAt, &d.SentAt, &d.ConfirmedAt, &d.Attempts, &live, &quiet, &d.Kind)
 	d.LiveOnly, d.Quiet = live != 0, quiet != 0
 	return d, err
 }
 
 func (s *Store) AddDelivery(d Delivery) error {
-	_, err := s.DB.Exec(`INSERT INTO deliveries(id, item_id, machine, session_id, text, nonce, status, created_at, live_only, quiet) VALUES (?,?,?,?,?,?,'pending',?,?,?)`,
-		d.ID, d.ItemID, d.Machine, d.SessionID, d.Text, d.Nonce, now(), boolInt(d.LiveOnly), boolInt(d.Quiet))
+	_, err := s.DB.Exec(`INSERT INTO deliveries(id, item_id, machine, session_id, text, nonce, status, created_at, live_only, quiet, kind) VALUES (?,?,?,?,?,?,'pending',?,?,?,?)`,
+		d.ID, d.ItemID, d.Machine, d.SessionID, d.Text, d.Nonce, now(), boolInt(d.LiveOnly), boolInt(d.Quiet), d.Kind)
 	return err
 }
 
@@ -1241,8 +1301,19 @@ func (s *Store) ConfirmDelivery(nonce string) (bool, error) {
 		return false, err
 	}
 	t := now()
-	if _, err := s.DB.Exec(`UPDATE deliveries SET status='confirmed', confirmed_at=? WHERE id=? AND status!='confirmed'`, t, id); err != nil {
+	res, err := s.DB.Exec(`UPDATE deliveries SET status='confirmed', confirmed_at=? WHERE id=? AND status!='confirmed'`, t, id)
+	if err != nil {
 		return false, err
+	}
+	// Only the item's latest answer arriving makes it delivered: not a
+	// note's receipt, nor an older answer's seen again.
+	if n, _ := res.RowsAffected(); n == 0 {
+		return true, nil
+	}
+	var latest string
+	s.DB.QueryRow(`SELECT id FROM deliveries WHERE item_id=? AND live_only=0 AND `+isAnswer+` ORDER BY created_at DESC, rowid DESC LIMIT 1`, itemID).Scan(&latest)
+	if latest != id {
+		return true, nil
 	}
 	_, err = s.DB.Exec(`UPDATE items SET status='delivered', updated_at=? WHERE id=? AND status='answered'`, t, itemID)
 	return true, err

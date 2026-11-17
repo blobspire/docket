@@ -1,6 +1,6 @@
 {{define "leads.html"}}{{template "head" .}}
-<main class="page">
-<h1>Leads</h1>
+<main class="main solo" id="main"><div class="pg">
+<div class="mh"><div><h1>Leads</h1></div></div>
 {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
 {{if not .Leads}}<p class="empty">No leads yet. Add <code>[[lead]]</code> sections to the server config: one long-running agent per area of work.</p>{{end}}
 {{range .Leads}}
@@ -34,5 +34,5 @@
   {{end}}
   </tbody>
 </table>
-</main>
+</div></main>
 {{template "foot" .}}{{end}}

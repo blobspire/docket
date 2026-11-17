@@ -1,37 +1,5 @@
-{{define "item.html"}}{{template "head" .}}{{$q := .Queue}}
-<div class="shell">
-{{template "sidebar" $q}}
-<main class="main" data-detail>
-  <p class="crumbs"><a href="{{$q.Link .One.Project "" false}}">← {{if .One.Project}}{{.One.Project}}{{else}}Dashboard{{end}}</a> · {{.One.Status}}</p>
-  {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
-  <ol class="rows single">{{template "row" ($q.Open .One)}}</ol>
-
-  {{if .Evidence}}
-  <section class="evidence">
-    {{range .Evidence}}
-      <figure>
-      {{if .Gone}}<div class="muted">{{.Name}}: the file was gone from its machine before it could be copied.</div>
-      {{else if not .Fetched}}<div class="muted">{{.Name}}: still being copied from its machine…</div>
-      {{else if isImage .Mime}}<a href="/blob/{{.SHA256}}?type={{.Mime}}" target="_blank"><img src="/blob/{{.SHA256}}?type={{.Mime}}" alt="{{.Name}}"></a>
-      {{else if isVideo .Mime}}<video controls preload="metadata" src="/blob/{{.SHA256}}?type={{.Mime}}"></video>
-      {{else}}<a class="filecard" href="/blob/{{.SHA256}}?type={{.Mime}}" target="_blank">{{.Name}}</a>{{end}}
-      <figcaption>{{.Name}}</figcaption>
-      </figure>
-    {{end}}
-  </section>
-  {{end}}
-
-  {{with .One.Answer}}<p class="recommend"><b>Your answer:</b> {{.}}</p>{{end}}
-  {{range .Delivery}}<p class="muted small">Delivery {{.Status}}{{with .Method}} via {{.}}{{end}}{{if .ConfirmedAt}}, received {{clock .ConfirmedAt}}{{end}}{{with .Error}}. {{.}}{{end}}</p>{{end}}
-
-  {{with .Session}}{{if .ID}}
-  <section class="session">
-    <h2>Session</h2>
-    <p>{{if .Name}}<b>{{.Name}}</b> · {{end}}{{.Machine}} · {{project .Cwd}} · {{.State}}{{with .WaitingFor}} ({{.}}){{end}}</p>
-    {{if .Tmux}}<p class="muted small">tmux pane {{.Tmux}} on {{.Machine}}</p>{{end}}
-    {{with .LastMessage}}<details><summary>Its last message</summary><div class="prose last">{{md .}}</div></details>{{end}}
-  </section>
-  {{end}}{{end}}
+{{define "item.html"}}{{template "head" .}}
+<main class="sheet-page">
+{{template "sheet" .}}
 </main>
-</div>
 {{template "foot" .}}{{end}}

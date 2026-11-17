@@ -88,7 +88,7 @@ func TestAskAnswerDeliverReceipt(t *testing.T) {
 	hook.Run("Stop", strings.NewReader(`{"session_id":"sess-1","last_assistant_message":"Filed the question."}`), io.Discard, io.Discard, agent)
 	e.cycle()
 
-	now, _, _ := e.s.Queue()
+	now, _, _, _ := e.s.Queue()
 	if len(now) != 1 || now[0].Title != "Ship the redesign today?" || now[0].Session.State != "idle" {
 		t.Fatalf("queue = %+v", now)
 	}
@@ -115,27 +115,29 @@ func TestAskAnswerDeliverReceipt(t *testing.T) {
 	}
 }
 
-func TestPhysicalItemsCannotBeApproved(t *testing.T) {
+// docket relays the human's answer as given: an item that mentions an arm
+// (an experiment arm, or the robot's) is approved like any other, and the
+// answer carries no disclaimer. Whether a robot may move is for the agent
+// and the robot's own safety layer to decide, not a keyword list.
+func TestApprovalsAreNotKeywordGated(t *testing.T) {
 	e := newEnv(t, `[[machine]]
 name = "box"
 mode = "local"
 physical_keywords = ["robot", "arm"]
 `)
-	e.s.st.UpsertItem(store.Item{ID: "dk-aaaaaaaa", Kind: "approval", Title: "Move the robot arm to home", Machine: "box", SessionID: "s"})
-	if err := e.s.Decide("dk-aaaaaaaa", Action{Kind: "approve"}); err == nil {
-		t.Fatal("approved a physical action remotely")
+	e.s.st.UpsertItem(store.Item{ID: "dk-aaaaaaaa", Kind: "approval", Title: "Run the fix-test arms on the anchor arm", Machine: "box", SessionID: "s", Physical: true})
+	if err := e.s.Decide("dk-aaaaaaaa", Action{Kind: "approve"}); err != nil {
+		t.Fatalf("an approval was refused: %v", err)
 	}
-	e.s.st.UpsertItem(store.Item{ID: "dk-ffffffff", Kind: "approval", Title: "Silence the disk alarm and fix the harmless warning", Machine: "box", SessionID: "s"})
-	if err := e.s.Decide("dk-ffffffff", Action{Kind: "approve"}); err != nil {
-		t.Fatalf("'alarm'/'harmless' were mistaken for 'arm': %v", err)
-	}
-	e.s.st.UpsertItem(store.Item{ID: "dk-bbbbbbbb", Kind: "ask", Title: "Skip the 34 cells?", Machine: "box", SessionID: "s", Options: []string{"skip", "keep"}})
+	e.s.st.UpsertItem(store.Item{ID: "dk-bbbbbbbb", Kind: "ask", Title: "Move the arm home?", Machine: "box", SessionID: "s", Options: []string{"move it", "leave it"}})
 	if err := e.s.Decide("dk-bbbbbbbb", Action{Kind: "choose", Option: 0}); err != nil {
-		t.Fatalf("an ordinary decision on the same machine was refused: %v", err)
+		t.Fatalf("a choice was refused: %v", err)
 	}
-	ds, _ := e.s.st.ItemDeliveries("dk-bbbbbbbb")
-	if len(ds) != 1 || !strings.Contains(ds[0].Text, "does not authorize any physical or robot motion") {
-		t.Fatalf("delivery = %+v", ds)
+	for _, id := range []string{"dk-aaaaaaaa", "dk-bbbbbbbb"} {
+		ds, _ := e.s.st.ItemDeliveries(id)
+		if len(ds) != 1 || strings.Contains(ds[0].Text, "physical") {
+			t.Fatalf("%s delivery = %+v", id, ds)
+		}
 	}
 }
 
@@ -144,7 +146,7 @@ func TestHumanTaskDoneTellsTheAgent(t *testing.T) {
 	e.s.st.UpsertItem(store.Item{ID: "dk-cccccccc", Kind: "human_task", Title: "Insert the SSD", Machine: "box", SessionID: "s", Source: "cli"})
 	e.s.Decide("dk-cccccccc", Action{Kind: "done"})
 	ds, _ := e.s.st.ItemDeliveries("dk-cccccccc")
-	if len(ds) != 1 || !strings.Contains(ds[0].Text, "marked this done") {
+	if len(ds) != 1 || !strings.Contains(ds[0].Text, "marked your docket item done:") {
 		t.Fatalf("deliveries = %+v", ds)
 	}
 }

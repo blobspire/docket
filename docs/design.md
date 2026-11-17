@@ -61,8 +61,8 @@ The first version tried to catch every ask: a regex over agents' messages, a tra
 - **Projects** are chosen by agents.
   - `~/.docket/context.json`, which the server sends every machine, lists the projects with descriptions, components and places in use. It also lists the folder→project map and that machine's own open items.
   - The first explicit filing from a repository maps that repository (worktrees map to their main repo), so later filings can leave `--project` out.
-  - The human can rename or merge projects on the dashboard.
-- **Places** group physical tasks, so one trip covers them.
+  - The human can rename or merge projects from the docket.
+- **Places** group things the human must do in person, so one trip covers them. Agents name the place; docket doesn't guess it from the text.
 - **Urgency:**
   - `now` puts an item in the red band and pushes the phone 90 seconds after it becomes urgent, at any hour.
   - `soon` and `normal` never push.
@@ -89,7 +89,18 @@ The first version tried to catch every ask: a regex over agents' messages, a tra
   - It orders the queue and expires moot items.
   - It pushes act-now items.
 - **Brain:** one optional, capped model job proposes preference rules from the human's corrections, decisions and "not worth my time" notes. The human approves each rule. It never answers an item.
-- **Safety:** items that involve physical actions (for example robot motion) can't be approved remotely.
+- **No keyword guards.** docket relays the human's answer as given. Whether a robot may move is for the agent that asks and the robot's own safety layer, which bind every path to it; a word list on the docket can't tell an experiment arm from a robot arm.
+
+## The docket's actions
+
+| Action | What happens | The agent hears |
+|---|---|---|
+| An option, Approve, Decline, a reply | The answer is delivered; the item waits under "Waiting on agents" until the agent closes it (or a day after delivery) | The answer, right away |
+| Done | Closed | That it's done, quietly at its next turn (a task, or anything it's paused on: right away). An unanswered question is not a yes. |
+| Not worth it | Closed, with an optional note | The note, quietly; every agent sees it in `rules.md` |
+| Dismiss | Closed | Nothing |
+| Stash | Kept on the Stash for 30 days, then in Done; an open item is also marked done | As for Done |
+| Snooze | Hidden until tomorrow at 9:00 (or an hour) | Nothing |
 
 ## What was learned building it
 

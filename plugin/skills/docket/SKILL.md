@@ -5,7 +5,7 @@ description: Reach the human through docket, their dashboard of decisions and ac
 
 # docket: reaching the human
 
-The human runs many agents and decides from one dashboard: docket. It groups items by project, puts anything urgent in a red **Act now** band at the top, and pushes their phone only for act-now items. Their attention is the scarcest resource in this whole system. Every item you file costs them a context switch. If docket fills with things that didn't need them, they stop reading it, and the one item that mattered gets missed. So the bar is high, and you are trusted to judge it.
+The human runs many agents and decides from one list: their docket. It groups items by project, puts anything urgent in a red **Act now** band at the top, and pushes their phone only for act-now items. Each item opens with an answer dock: your `--options` as buttons (the `--recommend` one filled in), a reply box, and Done. Their attention is the scarcest resource in this whole system. Every item you file costs them a context switch. If docket fills with things that didn't need them, they stop reading it, and the one item that mattered gets missed. So the bar is high, and you are trusted to judge it.
 
 ## Should this go to docket?
 
@@ -45,7 +45,7 @@ docket issue "ARC login expired: all training jobs are failing" --project vlm-te
 |---|---|
 | `ask` | A decision, or an action you're holding for approval. Give `--options` and `--recommend` when you have them. |
 | `task` | Something only they can do. `--blocks "<what it blocks>"` if it blocks work. |
-| `review` | Results or work for them to look at. Attach `--evidence` (screenshots, report, video). |
+| `review` | Results or work for them to look at. Attach `--evidence` (screenshots, report, video). If you need a verdict, give `--options` (say, Retrain or Drop it): Done only means they've seen it. |
 | `issue` | Something broken that needs them. |
 
 ### Title: they read it in a second
@@ -66,7 +66,7 @@ Lead with what you need from them and why, in a sentence or two. Then at most ~5
 
 - `--project <name>`: run `docket projects` to see the projects, with descriptions. Reuse one when it fits. If nothing fits, start one: `--project <short-name> --new-project "<one-line description>"`. A project is a body of work, not a repo: several repos can share one. A repository's default project is the one named there most often recently; once it has one (`docket projects` tells you), you can leave `--project` out for work that belongs to it.
 - `--component <name>`: optional, the part of the project ("FR5 hardware", "billing", "CI"). Reuse names `docket projects` shows.
-- `--place <name>`: only for things they must physically be somewhere to do ("tealab", "home", "office"). Items are grouped by place so one trip covers them, because a missed physical task can cost a trip back. Reuse existing place names.
+- `--place <name>`: for things they must do in person, somewhere specific ("tealab", "home", "office"). This is how you say something needs them physically there; docket doesn't guess it from your words. Items are grouped by place so one trip covers them, because a missed in-person task can cost a trip back. Reuse existing place names.
 
 ### Urgency: `--urgency now|soon|normal` (default normal)
 
@@ -81,14 +81,13 @@ Lead with what you need from them and why, in a sentence or two. Then at most ~5
 
 ### Other flags
 
-- `--key <stable-id>`: re-filing with the same key updates the one item instead of adding another: a new title, body or urgency, and answers go to the session that re-filed it. Escalate this way (`--urgency now`): raising an item to now brings it back if it was snoozed or answered, and pushes their phone (unless they set its urgency by hand, which wins). Use it for anything you re-check on a schedule, and close it with `docket done --key <key>`.
+- `--key <stable-id>`: re-filing with the same key updates the one item instead of adding another: a new title, body or urgency, and answers go to the session that re-filed it. Escalate this way (`--urgency now`): raising an item to now brings it back if it was snoozed, and pushes their phone (unless they set its urgency by hand, which wins). Use it for anything you re-check on a schedule, and close it with `docket done --key <key>`.
 - `--blocking`: you're paused until they answer.
-- `--physical`: needs physical action (robots, hardware). It can never be approved remotely; they'll do it in person.
 
-## After filing: keep the dashboard true
+## After filing: keep the docket true
 
 - `docket list` shows open items from this machine. `*` marks yours, so you can find their ids after a context compaction.
-- `docket done <id> --why "<what happened>"` as soon as an item is answered in chat, done, fixed, or moot. Use `docket done --key <key>` if you filed it with a key. Leaving stale items open is the fastest way to make the dashboard useless.
+- `docket done <id> --why "<what happened>"` as soon as an item is answered in chat, done, fixed, or moot. Use `docket done --key <key>` if you filed it with a key. Leaving stale items open is the fastest way to make the docket useless.
 - `docket add <id> --why "..." --evidence file.png` when you learn more, instead of filing again.
 
 ## When their answer arrives
@@ -96,6 +95,8 @@ Lead with what you need from them and why, in a sentence or two. Then at most ~5
 It shows up as a message starting with `[docket dk-xxxxxxxx #nonce]`. Act on it:
 - If they approved an action auto mode refused earlier, retry it.
 - If they declined, don't do it.
+- If they **reopen** it (a done taken back, or something you closed), it's open again and still needs something: pick it back up, or wait for their answer.
+- If they marked it **done** without answering, you'll hear that at your next turn (right away if you filed it `--blocking`): a review was looked at and needs nothing more; a question marked done is not a yes (they may have handled it themselves). Don't act as if they approved.
 - If they marked your item **not worth their time**, take their note to heart: don't re-file it, and file fewer things like it.
 - When the item is resolved, run `docket done dk-xxxxxxxx --why "<what happened>"`.
 
@@ -109,4 +110,4 @@ docket job beat nightly-backtest --why "epoch 4/12"
 docket job done nightly-backtest --why "sharpe 1.4"     # add --failed if it failed
 ```
 
-A job that misses two beats shows up on their dashboard, and its lead is woken to look. When it finishes, file the **results** with `docket review` if they're waiting on them.
+A job that misses two beats shows up on their docket, and its lead is woken to look. When it finishes, file the **results** with `docket review` if they're waiting on them.

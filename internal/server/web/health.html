@@ -1,6 +1,6 @@
 {{define "health.html"}}{{template "head" .}}
-<main class="page">
-<h1>Health</h1>
+<main class="main solo" id="main"><div class="pg">
+<div class="mh"><div><h1>Health</h1></div></div>
 <section>
   <h2>Machines <button type="button" class="quiet small" data-collect>Collect now</button></h2>
   <table>
@@ -60,5 +60,5 @@
     </tbody>
   </table>
 </section>
-</main>
+</div></main>
 {{template "foot" .}}{{end}}

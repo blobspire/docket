@@ -150,25 +150,29 @@ func TestDashboardViews(t *testing.T) {
 		return rec.Body.String()
 	}
 	all := get("/")
-	if !strings.Contains(all, "band-now") || !strings.Contains(all, "ARC login expired") || !strings.Contains(all, "Send the ProphetX reply") {
+	if !strings.Contains(all, `class="band"`) || !strings.Contains(all, "ARC login expired") || !strings.Contains(all, "Send the ProphetX reply") {
 		t.Fatal("the All view is missing the act-now band or a project")
 	}
 	if strings.Contains(all, "A proposed rule") {
-		t.Fatal("rule proposals belong on the Brain page, not the dashboard")
+		t.Fatal("rule proposals belong on the Brain page, not the docket")
 	}
-	if strings.Index(all, ">cwant<") > strings.Index(all, ">vlm-teacher<") {
-		t.Fatal("projects aren't in alphabetical order")
+	// Projects come in the order of their most pressing item: vlm-teacher
+	// has deadlines, cwant doesn't.
+	if strings.Index(all, `">vlm-teacher</a>`) > strings.Index(all, `">cwant</a>`) {
+		t.Fatal("projects aren't ordered by their most pressing item")
 	}
-	// Markdown renders, and agent-written HTML and script links don't.
-	if !strings.Contains(all, "<strong>Result:</strong>") || !strings.Contains(all, "<li>seed 1000</li>") {
+	// Markdown renders on the item's sheet, and agent-written HTML and
+	// script links don't.
+	sheet := get("/item/dk-v0000004")
+	if !strings.Contains(sheet, "<strong>Result:</strong>") || !strings.Contains(sheet, "<li>seed 1000</li>") {
 		t.Fatal("markdown didn't render")
 	}
-	if strings.Contains(all, "<script>alert") || strings.Contains(all, `href="javascript:`) {
+	if strings.Contains(sheet, "<script>alert") || strings.Contains(sheet, `href="javascript:`) {
 		t.Fatal("unsafe markdown got through")
 	}
 	proj := get("/?p=vlm-teacher")
-	if strings.Contains(proj, "Send the ProphetX reply") || !strings.Contains(proj, "<h3>FR5</h3>") {
-		t.Fatal("the project view shows other projects or lacks component groups")
+	if strings.Contains(proj, "Send the ProphetX reply") || !strings.Contains(proj, "Measure the tool") {
+		t.Fatal("the project view shows other projects, or misses its own")
 	}
 	place := get("/?place=tealab")
 	if !strings.Contains(place, "Swap the gripper pads") || strings.Contains(place, "Measure the tool") {

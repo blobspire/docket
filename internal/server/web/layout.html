@@ -2,150 +2,298 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>{{.Title}}{{if ne .Title "docket"}} · docket{{end}}</title>
-<link rel="stylesheet" href="/static/app.css">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2' y='2' width='12' height='12' rx='3' fill='%23d97757'/%3E%3C/svg%3E">
+<link rel="preload" href="/static/inter.woff2?v=4" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/app.css?v={{staticVer}}">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='1.5' y='1.5' width='21' height='21' rx='6.5' fill='%23c2603c'/%3E%3Cpath d='M7 8.3h10M7 12h10M7 15.7h5.5' stroke='%23fff' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
 </head>
-<body data-version="{{.Version}}">
-<header class="top">
-  <a class="brand" href="/">docket</a>
-  <nav>
-    <a href="/" {{if eq .Nav "queue"}}class="on"{{end}}>Dashboard</a>
-    <a href="/done" {{if eq .Nav "done"}}class="on"{{end}}>Done</a>
-    <a href="/search" {{if eq .Nav "search"}}class="on"{{end}}>Search</a>
-    <a href="/checklist" {{if eq .Nav "checklist"}}class="on"{{end}}>Only you</a>
-    <a href="/brain" {{if eq .Nav "brain"}}class="on"{{end}}>Brain{{if .RuleCount}} <span class="pill">{{.RuleCount}}</span>{{end}}</a>
-    <a href="/leads" {{if eq .Nav "leads"}}class="on"{{end}}>Leads</a>
-    <a href="/evidence" {{if eq .Nav "evidence"}}class="on"{{end}}>Evidence</a>
-    <a href="/health" {{if eq .Nav "health"}}class="on"{{end}}>Health</a>
+<body data-version="{{.Version}}" data-page="{{.Nav}}">
+{{template "icons"}}
+<header class="bar">
+  <nav class="tabs" aria-label="Pages">
+    <a class="brand{{if eq .Nav "docket"}} on{{end}}" href="/" aria-label="docket: what needs you"><svg class="mk" viewBox="0 0 24 24" aria-hidden="true"><rect x="1.5" y="1.5" width="21" height="21" rx="6.5" fill="var(--accent)"/><path d="M7 8.3h10M7 12h10M7 15.7h5.5" stroke="var(--accent-fg)" stroke-width="2" stroke-linecap="round" fill="none"/></svg><span>docket</span>{{if .Count}}<b class="bc{{if .Hot}} hot{{end}}" title="{{.Count}} need{{if eq .Count 1}}s{{end}} you">{{.Count}}</b>{{end}}</a>
+    <a href="/stash"{{if eq .Nav "stash"}} class="on"{{end}}>Stash{{if .StashCount}} <b class="tc">{{.StashCount}}</b>{{end}}</a>
+    <a href="/done"{{if eq .Nav "done"}} class="on"{{end}}>Done</a>
+    <a class="x{{if eq .Nav "checklist"}} on{{end}}" href="/checklist">Only you</a>
+    <a class="x{{if eq .Nav "brain"}} on{{end}}" href="/brain">Brain{{if .RuleCount}} <b class="pill">{{.RuleCount}}</b>{{end}}</a>
+    <a class="x{{if eq .Nav "leads"}} on{{end}}" href="/leads">Leads</a>
+    <a class="x{{if eq .Nav "evidence"}} on{{end}}" href="/evidence">Evidence</a>
+    <a class="x{{if eq .Nav "health"}} on{{end}}" href="/health">Health</a>
   </nav>
-  <button class="keys" type="button" data-help aria-label="Keyboard shortcuts">?</button>
+  <div class="bar-r">
+    <a class="ib{{if eq .Nav "search"}} on{{end}}" href="/search" aria-label="Search" title="Search (/)">{{template "i" "search"}}</a>
+    <button class="ib keys" type="button" data-help aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">{{template "i" "key"}}</button>
+    <div class="morew"><button class="ib more-b" type="button" aria-label="More pages" aria-haspopup="menu" aria-expanded="false">{{template "i" "more"}}</button>
+      <div class="menu more-m" role="menu" hidden>
+        <a role="menuitem" href="/checklist"{{if eq .Nav "checklist"}} class="on"{{end}}>Only you</a>
+        <a role="menuitem" href="/brain"{{if eq .Nav "brain"}} class="on"{{end}}>Brain{{if .RuleCount}} <b class="pill">{{.RuleCount}}</b>{{end}}</a>
+        <a role="menuitem" href="/leads"{{if eq .Nav "leads"}} class="on"{{end}}>Leads</a>
+        <a role="menuitem" href="/evidence"{{if eq .Nav "evidence"}} class="on"{{end}}>Evidence</a>
+        <a role="menuitem" href="/health"{{if eq .Nav "health"}} class="on"{{end}}>Health</a>
+      </div>
+    </div>
+  </div>
 </header>
 {{end}}
 
 {{define "foot"}}
+<div class="scrim" id="scrim" hidden></div>
+<div class="nscrim" id="nscrim" hidden>
+  <form class="note" id="note">
+    <h3>Not worth your time</h3>
+    <p id="note-t"></p>
+    <textarea id="note-ta" placeholder="Optional: why didn't this need you? It goes to the agent and shapes what every agent files."></textarea>
+    <div class="acts"><button type="button" class="sb" data-note-skip>Close without a note</button><button type="submit" class="sb pri">Close it</button></div>
+  </form>
+</div>
+<div class="lb" id="lb" hidden role="dialog" aria-label="Attachment viewer">
+  <div class="lb-top"><span class="lb-cap" id="lb-cap"></span><span class="lb-cnt" id="lb-cnt"></span><a class="lb-b lb-dl" id="lb-dl" href="#" target="_blank" rel="noopener" aria-label="Open the full-size image">{{template "i" "ext"}}</a><button class="lb-b lb-x" type="button" aria-label="Close viewer">{{template "i" "x"}}</button></div>
+  <div class="lb-tr" id="lb-tr"></div>
+  <button class="lb-p" type="button" aria-label="Previous">{{template "i" "chev-l"}}</button>
+  <button class="lb-n" type="button" aria-label="Next">{{template "i" "chev-r"}}</button>
+</div>
 <div class="help" hidden>
   <div class="help-card" role="dialog" aria-label="Keyboard shortcuts">
-    <button class="help-close" type="button" data-help-close aria-label="Close">×</button>
+    <button class="help-close" type="button" data-help-close aria-label="Close">{{template "i" "x"}}</button>
     <h2>Keyboard</h2>
     <dl>
       <dt>j / k</dt><dd>next / previous item</dd>
-      <dt>enter</dt><dd>expand or collapse</dd>
-      <dt>[ / ]</dt><dd>previous / next project</dd>
-      <dt>y / n</dt><dd>approve / decline</dd>
-      <dt>1–9</dt><dd>pick an option</dd>
-      <dt>a</dt><dd>answer in your own words</dd>
+      <dt>enter</dt><dd>open the item</dd>
+      <dt>esc</dt><dd>back to the list</dd>
+      <dt>1–9</dt><dd>pick one of the agent's options</dd>
+      <dt>r</dt><dd>reply in your own words</dd>
       <dt>d</dt><dd>done</dd>
       <dt>w</dt><dd>not worth my time (with a note)</dd>
       <dt>x</dt><dd>dismiss</dd>
-      <dt>s / S</dt><dd>snooze 1 hour / until tomorrow</dd>
+      <dt>t</dt><dd>stash</dd>
+      <dt>s / S</dt><dd>snooze until tomorrow / for an hour</dd>
       <dt>o</dt><dd>open the agent's session</dd>
       <dt>u</dt><dd>undo the last action</dd>
+      <dt>[ / ]</dt><dd>previous / next project</dd>
       <dt>/</dt><dd>search</dd>
-      <dt>g d · g c · g b · g h</dt><dd>dashboard · only you · brain · health</dd>
+      <dt>g d · g t · g c · g h</dt><dd>docket · stash · only you · health</dd>
     </dl>
     <p class="muted">Press ? or Esc, or click outside, to close.</p>
   </div>
 </div>
-<div class="toast" hidden></div>
-<div class="updated" hidden><span>The queue changed.</span> <button type="button" data-refresh>Refresh</button></div>
-<script src="/static/app.js"></script>
+<div class="toast" id="toast" hidden role="status"><span id="toast-t"></span><button type="button" id="toast-k" hidden>Stash</button><button type="button" id="toast-u" hidden>Undo</button></div>
+<div class="updated" hidden><span>The list changed.</span> <button type="button" data-refresh>Refresh</button></div>
+<script src="/static/app.js?v={{staticVer}}"></script>
 </body>
 </html>
 {{end}}
 
+{{define "i"}}<svg class="ic" aria-hidden="true"><use href="#i-{{.}}"/></svg>{{end}}
+
+{{define "icons"}}<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
+  <symbol id="i-thumb" viewBox="0 0 24 24"><path d="M3.5 4h3v9.5h-3z"/><path d="M6.5 13.5l3.6 6.4a1.9 1.9 0 0 0 3.5-1.3l-.8-4.1h5.2a2 2 0 0 0 2-2.4l-1.3-6.6a2 2 0 0 0-2-1.5H6.5"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+  <symbol id="i-chev-l" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="i-chev-r" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></symbol>
+  <symbol id="i-chev-d" viewBox="0 0 24 24"><path d="M6 9.5l6 6 6-6"/></symbol>
+  <symbol id="i-chev-u" viewBox="0 0 24 24"><path d="M6 14.5l6-6 6 6"/></symbol>
+  <symbol id="i-sort" viewBox="0 0 24 24"><path d="M8 5v14M8 19l-3-3M8 19l3-3M16 19V5M16 5l-3 3M16 5l3 3"/></symbol>
+  <symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 21s-6.5-5.7-6.5-10.8a6.5 6.5 0 0 1 13 0C18.5 15.3 12 21 12 21z"/><circle cx="12" cy="10.2" r="2.3"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="6" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="18" cy="12" r="1.3"/></symbol>
+  <symbol id="i-ext" viewBox="0 0 24 24"><path d="M14 5h5v5M19 5l-8 8M18 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6a1 1 0 0 0-1-1H6a1 1 0 0 0-1 1v8.5a1 1 0 0 0 1 1h2.5"/></symbol>
+  <symbol id="i-term" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M7 10l3 2.5L7 15M12.5 15H17"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A7.5 7.5 0 1 1 9.5 4.5a6 6 0 0 0 10 10z"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4.5l8.5 15h-17z"/><path d="M12 10v4M12 16.8h.01"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M7 3.5h7l4.5 4.5v12.5H7z"/><path d="M14 3.5V8h4.5M9.5 12.5h6M9.5 16h6"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+  <symbol id="i-clip" viewBox="0 0 24 24"><path d="M15.5 7.5l-6.8 6.8a1.8 1.8 0 0 0 2.5 2.5l7-7a3.5 3.5 0 0 0-5-5l-7 7a5.2 5.2 0 0 0 7.4 7.4l6.4-6.4"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 19.5a7 7 0 0 1 14 0"/></symbol>
+  <symbol id="i-stash" viewBox="0 0 24 24"><path d="M4 13.5V18a1.5 1.5 0 0 0 1.5 1.5h13A1.5 1.5 0 0 0 20 18v-4.5"/><path d="M4 13.5h4.5l1.5 2h4l1.5-2H20"/><path d="M12 4v8M8.8 9l3.2 3 3.2-3"/></symbol>
+  <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14.5L4.5 10 9 5.5"/><path d="M4.5 10H15a4.5 4.5 0 0 1 0 9h-3"/></symbol>
+  <symbol id="i-pen" viewBox="0 0 24 24"><path d="M4.5 19.5l1-4.2L15.8 5a2 2 0 0 1 2.8 0l.4.4a2 2 0 0 1 0 2.8L8.7 18.5z"/><path d="M13.5 7.3l3.2 3.2"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M6.5 10h.01M10 10h.01M13.5 10h.01M17 10h.01M7.5 14h9"/></symbol>
+</svg>{{end}}
+
 {{define "sidebar"}}
-<aside class="side" aria-label="Projects">
-  {{if .NowCount}}<a class="side-now{{if eq .Mode "now"}} on{{end}}" href="{{.Link "" "" true}}"><span>Act now</span><b>{{.NowCount}}</b></a>{{end}}
-  <a class="side-all{{if eq .Mode "all"}} on{{end}}" href="{{.Link "" "" false}}"><span>All</span><b>{{.AllCount}}</b></a>
-  {{if .SideProjects}}<div class="side-h">Projects</div>{{end}}
-  {{range .SideProjects}}<a class="side-p{{if .On}} on{{end}}{{if not .Count}} empty{{end}}" href="{{.URL}}" data-project="{{.Name}}"{{with .Desc}} title="{{.}}"{{end}}><span>{{.Name}}{{if .HasNow}}<i class="dot" title="Has act-now items"></i>{{end}}</span><b>{{if .Count}}{{.Count}}{{end}}</b></a>{{end}}
-  {{if .SidePlaces}}<div class="side-h">Places</div>{{end}}
-  {{range .SidePlaces}}<a class="side-p{{if .On}} on{{end}}" href="{{.URL}}"><span>📍 {{.Name}}</span><b>{{.Count}}</b></a>{{end}}
-</aside>
+<nav class="side" aria-label="Views">
+  {{if .NowCount}}<a class="sl s-now{{if eq .Mode "now"}} on{{end}}" href="{{.Link "" "" true}}"><span>Act now</span><b>{{.NowCount}}</b></a>{{end}}
+  <a class="sl{{if eq .Mode "all"}} on{{end}}" href="{{.Link "" "" false}}"><span>All</span><b>{{if .AllCount}}{{.AllCount}}{{end}}</b></a>
+  {{if .SideProjects}}<div class="sh">Projects</div>{{end}}
+  {{range .SideProjects}}<a class="sl{{if .On}} on{{end}}{{if not .Count}} zero{{end}}" href="{{.URL}}" data-project="{{.Name}}"{{with .Desc}} title="{{.}}"{{end}}><span>{{.Name}}{{if .HasNow}}<i class="dot" title="Has act-now items"></i>{{end}}</span><b>{{if .Count}}{{.Count}}{{end}}</b></a>{{end}}
+  {{if .SidePlaces}}<div class="sh">Places</div>{{end}}
+  {{range .SidePlaces}}<a class="sl{{if .On}} on{{end}}" href="{{.URL}}">{{template "i" "pin"}}<span>{{.Name}}</span><b>{{.Count}}</b></a>{{end}}
+</nav>
 {{end}}
 
-{{define "actions"}}
-{{if or (eq .Kind "approval") (eq .Kind "rule")}}
-  <button data-act="approve" data-key="y" class="primary">Approve</button>
-  <button data-act="decline" data-key="n">Decline</button>
-{{else if eq .Kind "review"}}
-  <button data-act="approve" data-key="y" class="primary">Looks good</button>
-{{else if .Options}}
-  {{$rec := .Recommend}}{{range $i, $o := .Options}}<button data-act="choose" data-option="{{$i}}" data-key="{{add $i 1}}"{{if recommended $o $rec}} class="primary" title="The agent recommends this"{{end}}>{{add $i 1}}. {{$o}}{{if recommended $o $rec}} <span class="rec-tag">recommended</span>{{end}}</button>{{end}}
-{{end}}
-{{if and (ne .Kind "approval") (ne .Kind "rule")}}
-  <button data-act="done" data-key="d" {{if or (eq .Kind "human_task") (eq .Kind "health")}}class="primary"{{end}}>Done</button>
-{{end}}
-<button data-act="snooze" data-key="s" class="quiet">Snooze</button>
-{{if ne .Kind "rule"}}<button data-noise data-key="w" class="quiet" title="Close it and tell the agents why it didn't need you">Not worth my time</button>{{end}}
-<button data-act="dismiss" data-key="x" class="quiet">Dismiss</button>
-{{end}}
-
-{{/* One-tap closes on a collapsed row, so the list can be cleared while
-     scrolling it. The expanded card has the full set (and the keys). */}}
-{{define "quick"}}{{if and (not (closed .Status)) (ne .Status "delivered")}}
-<div class="quick" role="group" aria-label="Quick actions">
-  {{if and (ne .Status "answered") (ne .Kind "approval") (ne .Kind "rule")}}<button type="button" data-act="done" title="Done" aria-label="Done"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12.5l5 5 10-11"/></svg></button>{{end}}
-  {{if and (ne .Status "answered") (ne .Kind "rule")}}<button type="button" data-noise title="Not worth my time" aria-label="Not worth my time"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3.5h3.5v10H3z"/><path d="M6.5 13.5l3.7 6.6a1.9 1.9 0 0 0 3.5-1.3l-.8-4.3h5.4a2 2 0 0 0 2-2.4l-1.3-6.8a2 2 0 0 0-2-1.6H6.5"/></svg></button>{{end}}
-  <button type="button" data-act="dismiss" title="Dismiss" aria-label="Dismiss"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
-</div>{{end}}{{end}}
-
-{{define "row"}}{{$it := .Item}}
-<li class="row u-{{.Urgency}}{{if .Expanded}} open{{end}}{{if .Stale}} stale{{end}}" data-id="{{.ID}}" data-href="/item/{{.ID}}"{{with .Session.BridgeID}} data-session="{{rcURL .}}"{{end}}{{if closed .Status}} data-closed="1"{{end}}>
-  <div class="row-head" role="button" tabindex="-1" aria-expanded="{{if .Expanded}}true{{else}}false{{end}}">
-    <span class="kind k-{{kindClass .Kind}}">{{kindName .Kind}}</span>
-    <div class="row-text">
-      <a class="title" href="/item/{{.ID}}">{{.Title}}</a>
-      <div class="meta">
-        {{if eq .Urgency "now"}}{{if not .InBand}}<span class="m-now">Act now</span>{{end}}{{else if eq .Urgency "soon"}}<span class="m-soon">Soon</span>{{end}}
-        {{if not .HideComponent}}{{with .Component}}<span class="m-comp">{{.}}</span>{{end}}{{end}}
-        {{with .Place}}<span class="m-place">📍 {{.}}</span>{{end}}
-        {{with .Due}}<span class="m-due due-{{dueState .}}">due {{dueLabel .}}</span>{{end}}
-        {{if .ExpiresAt}}<span class="m-exp" title="It closes on its own after this">expires in {{until .ExpiresAt}}</span>{{end}}
-        {{if .Paused}}<span class="m-paused" title="The agent is waiting on your answer">agent paused</span>{{end}}
-        {{if eq .Status "answered"}}<span>answer sent</span>{{end}}
-        {{if eq .Status "snoozed"}}<span>snoozed until {{clock .SnoozedUntil}}</span>{{end}}
-        <span class="m-age" title="Filed {{clock .CreatedAt}}">{{age .CreatedAt}}</span>
+{{/* One row of a list. Clicking it opens the item; the quick actions close
+     it from the list. */}}
+{{define "row"}}{{$w := and (eq .List "docket") .Waiting}}
+<li class="rw" data-id="{{.ID}}">
+  {{if eq .List "docket"}}<div class="swipe-bg" aria-hidden="true"><span>{{template "i" "check"}}Done</span><span>Dismiss{{template "i" "x"}}</span></div>{{end}}
+  <div class="row{{if and (eq .List "docket") (not $w)}} u-{{.Urgency}}{{end}}{{if $w}} is-wait{{end}}{{if and (eq .List "docket") .Stale}} stale{{end}}" data-id="{{.ID}}"{{with .Session.BridgeID}} data-session="{{rcURL .}}"{{end}}{{if or $w (eq .Status "snoozed")}} data-quiet="1"{{end}}{{if .Kept}} data-kept="1"{{end}}{{if .NoStash}} data-nostash{{end}}>
+    {{if $w}}<span class="chip k-wait">{{template "i" "clock"}}Waiting</span>{{else}}<span class="chip k-{{kindClass .Kind}}">{{kindName .Kind}}</span>{{end}}
+    <div class="txt">
+      <a class="t" href="/item/{{.ID}}">{{.Title}}</a>
+      <div class="m">
+        {{if .ShowProject}}<span>{{projectName .Item}}</span>{{end}}
+        {{if eq .List "stash"}}<span>stashed {{ago .StashedAt}}</span>
+        {{else if eq .List "done"}}<span>closed {{ago (closedAt .Item)}}</span>
+        {{else if $w}}<span>{{.AnswerVerb}}{{with .AnswerWhat}} <b>{{.}}</b>{{end}}</span><span{{if .Stuck}} class="stuck"{{end}}>{{.DeliveryText}}</span>
+        {{else}}
+          {{if and (eq .Urgency "now") (ne .List "docket")}}<span class="now">Act now</span>{{else if eq .Urgency "soon"}}<span class="soon">Soon</span>{{end}}
+          {{with .Component}}<span>{{.}}</span>{{end}}
+          {{with .Place}}<span>{{template "i" "pin"}}{{.}}</span>{{end}}
+          {{with .Due}}<span class="due-{{dueState .}}">due {{dueLabel .}}</span>{{end}}
+          {{if .ExpiresAt}}<span title="It closes on its own after this">expires in {{until .ExpiresAt}}</span>{{end}}
+          {{if .Paused}}<span class="paused" title="The agent is waiting on your answer">agent paused</span>{{end}}
+          {{if eq .Status "snoozed"}}<span>snoozed until {{clock .SnoozedUntil}}</span>{{end}}
+          {{if .Closed}}<span>{{.Status}}</span>{{end}}
+          <span title="Filed {{clock .CreatedAt}}">{{ago .CreatedAt}}</span>
+        {{end}}
+        {{if and .Docs (not .Images)}}<span title="{{.Docs}} attachment{{if gt .Docs 1}}s{{end}}">{{template "i" "clip"}}{{.Docs}}</span>{{end}}
       </div>
+      {{if or (eq .List "stash") (eq .List "done")}}<div class="m2">{{.ClosedHow}}</div>{{end}}
     </div>
-    {{template "quick" $it}}
-  </div>
-  {{if and (not (closed .Status)) (ne .Kind "rule")}}
-  <form class="noise-form" hidden>
-    <label>Why didn't this need you? <span class="muted">Optional. It goes to the agent and shapes what every agent files.</span>
-    <textarea name="text" rows="2" placeholder="e.g. Post-merge reports don't need me; only send results I asked for."></textarea></label>
-    <div class="actions"><button class="primary" type="submit">Close it</button><button type="button" class="quiet" data-noise-cancel>Cancel</button></div>
-  </form>
-  {{end}}
-  <div class="detail"{{if not .Expanded}} hidden{{end}}>
-    {{if .Recommend}}{{if not .Options}}<p class="recommend"><b>Recommends:</b> {{.Recommend}}</p>{{end}}{{end}}
-    {{if .Blocks}}<p class="blocks"><b>Blocks:</b> {{.Blocks}}</p>{{end}}
-    {{with .Body}}<div class="prose">{{if $.Expanded}}{{md .}}{{else}}{{mdShort . $.ID}}{{end}}</div>{{end}}
-    {{if .Physical}}<p class="warn">Physical action: it can't be approved from here. Do it in person, then mark it done.</p>{{end}}
-    {{if closed .Status}}<div class="closed-note"><span class="muted small">Closed{{with .Resolution}}: {{trimDot .}}{{else}} ({{.Status}}){{end}}.</span> <button data-act="reopen" class="small">Reopen</button></div>
-    {{else}}
-    {{if eq .Status "answered"}}<div class="actions"><button data-act="dismiss" data-key="x" class="quiet" title="Take it off the dashboard; the answer still goes to the agent">Dismiss</button></div>
-    {{else if ne .Status "delivered"}}<div class="actions">{{template "actions" $it}}</div>{{end}}
-    {{if and .SessionID (ne .Status "answered") (ne .Kind "rule")}}
-    <form class="answer-form" method="post" action="/item/{{.ID}}/act">
-      <input type="hidden" name="action" value="answer"><input type="hidden" name="back" value="{{.Back}}">
-      <textarea name="text" rows="2" placeholder="Answer in your own words. It goes straight to the agent."></textarea>
-      <button type="submit">Send answer</button>
-    </form>
-    {{end}}
-    {{end}}
-    <div class="foot">
-      <span>{{.ID}}</span>
-      {{with .Machine}}<span>{{.}}</span>{{end}}
-      <span>filed {{clock .CreatedAt}}{{if gt .MentionCount 1}} · {{.MentionCount}} times{{end}}</span>
-      {{with .Session.BridgeID}}<a href="{{rcURL .}}" target="_blank" rel="noopener">Open session ↗</a>{{end}}
-      {{if and .Projects (not (closed .Status))}}
-      <label class="move">Project <select data-reclassify="project">{{$p := projectName .Item}}{{range .Projects}}<option{{if eq . $p}} selected{{end}}>{{.}}</option>{{end}}<option value="__new">New…</option></select></label>
-      <label class="move">Urgency <select data-reclassify="urgency">{{$u := .Urgency}}{{range $v := list "now" "soon" "normal"}}<option{{if eq $v $u}} selected{{end}}>{{$v}}</option>{{end}}</select></label>
+    <div class="th"{{with .Images}} data-imgs="{{imgs .}}"{{end}}>{{$id := .ID}}{{range $k, $e := .Thumbs}}<button type="button" class="thb" data-lb="{{$id}}:{{$k}}" aria-label="View {{$e.Name}}"><img src="/blob/{{$e.SHA256}}?type={{$e.Mime}}" alt="" loading="lazy"></button>{{end}}{{with .MoreImages}}<span class="more">+{{.}}</span>{{end}}</div>
+    <div class="qa" role="group" aria-label="Quick actions">
+      {{if eq .List "stash"}}
+        <button type="button" class="qb" data-act="reopen" title="Back to docket">{{template "i" "undo"}}<span>Back to docket</span></button>
+        <button type="button" class="qb" data-act="unstash" title="Remove from the Stash (it moves to Done)">{{template "i" "x"}}<span>Remove</span></button>
+      {{else if eq .List "done"}}
+        {{if .Closed}}<button type="button" class="qb" data-act="reopen" title="Back to docket">{{template "i" "undo"}}<span>Back to docket</span></button>{{end}}
+        {{if not .NoStash}}<button type="button" class="qb" data-act="stash" title="Keep it on your Stash">{{template "i" "stash"}}<span>Stash</span></button>{{end}}
+      {{else if $w}}
+        <button type="button" class="qb" data-act="dismiss" title="Take it off your docket; the answer still goes to the agent">{{template "i" "x"}}<span>Dismiss</span></button>
+      {{else if not .Kept}}
+        <button type="button" class="qb q-done" data-act="done" title="Done">{{template "i" "check"}}<span>Done</span></button>
+        {{if and (ne .Kind "rule") (ne .Status "answered") (ne .Status "delivered")}}<button type="button" class="qb q-noise" data-noise title="Not worth my time">{{template "i" "thumb"}}<span>Not worth it</span></button>{{end}}
+        <button type="button" class="qb" data-act="dismiss" title="Dismiss">{{template "i" "x"}}<span>Dismiss</span></button>
       {{end}}
     </div>
   </div>
 </li>
+{{end}}
+
+{{/* The item sheet: the whole item, with the answer dock pinned under it.
+     The docket opens it over the list; /item/{id} shows it as a page. */}}
+{{define "sheet"}}{{$it := .One}}
+<div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-label="{{$it.Title}}" data-id="{{$it.ID}}"{{with $it.Session.BridgeID}} data-session="{{rcURL .}}"{{end}}{{if $it.NoStash}} data-nostash{{end}}>
+  <header class="sh-h">
+    <a class="back" href="{{if $it.Stashed}}/stash{{else if $it.Closed}}/done{{else}}/{{end}}" data-back>{{template "i" "chev-l"}}<span>{{if $it.Stashed}}Stash{{else if $it.Closed}}Done{{else}}All{{end}}</span></a>
+    <span class="pos" data-pos></span>
+    <button type="button" class="ib" data-nav="-1" aria-label="Previous item" hidden>{{template "i" "chev-u"}}</button>
+    <button type="button" class="ib" data-nav="1" aria-label="Next item" hidden>{{template "i" "chev-d"}}</button>
+  </header>
+  <div class="sh-b"><div class="sh-in">
+    {{if .Error}}<p class="banner stuck">{{template "i" "alert"}}<span>{{.Error}}</span></p>{{end}}
+    {{$verb := $it.AnswerVerb}}{{$what := $it.AnswerWhat}}
+    {{if $it.Stashed}}<div class="banner kept">{{template "i" "stash"}}<div><b>On your Stash.</b> You stashed it {{ago $it.StashedAt}}. It moves to Done after 30 days.{{if $verb}} {{$verb}}{{with $what}} “{{.}}”{{end}}.{{end}}</div></div>
+    {{else if $it.Closed}}<div class="banner">{{template "i" "check"}}<div><b>Closed {{ago (closedAt $it.Item)}}.</b> {{$it.ClosedHow}}.</div></div>
+    {{else if $it.Waiting}}{{$note := $it.DeliveryText}}
+      {{if $it.Stuck}}<div class="banner stuck">{{template "i" "alert"}}<div><b>Your answer hasn't reached the agent.</b> {{$verb}}{{with $what}} “{{.}}”{{end}} {{ago $it.AnsweredAt}}. {{$note}}.{{with $it.ResumeCommand}}<div class="acts"><button type="button" class="sb" data-copy="{{.}}">{{template "i" "copy"}}Copy the command to resume it</button></div>{{end}}</div></div>
+      {{else}}<div class="banner">{{template "i" "clock"}}<div><b>Waiting on the agent.</b> {{$verb}}{{with $what}} “{{.}}”{{end}} {{ago $it.AnsweredAt}}. {{$note}}. Nothing to do until it updates.</div></div>{{end}}
+    {{else if eq $it.Status "snoozed"}}<div class="banner">{{template "i" "moon"}}<div><b>Snoozed until {{clock $it.SnoozedUntil}}.</b> It comes back on its own.</div></div>
+    {{end}}
+    <div class="kick">
+      {{if and $it.Waiting (not $it.Kept)}}<span class="chip k-wait">{{template "i" "clock"}}Waiting</span>{{else}}<span class="chip k-{{kindClass $it.Kind}}">{{kindName $it.Kind}}</span>{{end}}
+      <span>{{projectName $it.Item}}{{with $it.Component}} · {{.}}{{end}}</span>
+      {{if not $it.Kept}}{{if eq $it.Urgency "now"}}<span class="now">Act now</span>{{else if eq $it.Urgency "soon"}}<span class="soon">Soon</span>{{end}}{{end}}
+      {{with $it.Place}}<span>{{template "i" "pin"}}{{.}}</span>{{end}}
+      {{if not $it.Kept}}{{with $it.Due}}<span class="due-{{dueState .}}">due {{dueLabel .}}</span>{{end}}{{if $it.ExpiresAt}}<span>expires in {{until $it.ExpiresAt}}</span>{{end}}{{end}}
+      {{if $it.Paused}}<span class="paused">agent paused</span>{{end}}
+      <span title="Filed {{clock $it.CreatedAt}}">{{ago $it.CreatedAt}}</span>
+    </div>
+    <h2 class="sh-t">{{$it.Title}}</h2>
+    {{if and $it.Recommend (not $it.Options)}}<p class="recline"><b>Recommends:</b> {{$it.Recommend}}</p>{{end}}
+    {{with $it.Blocks}}<p class="recline"><b>Blocks:</b> {{.}}</p>{{end}}
+    {{with $it.Body}}<div class="prose">{{md .}}</div>{{end}}
+    {{if .Attachments}}
+    <div class="subh">{{template "i" "clip"}}Attachments · {{len .Attachments}}</div>
+    {{range .Attachments}}
+      {{if eq .Kind "image"}}<figure class="fig"><button type="button" data-lb="{{$it.ID}}:{{.Index}}" aria-label="Open {{.Name}} larger"><img src="/blob/{{.SHA256}}?type={{.Mime}}" alt="{{.Name}}" loading="lazy"></button><figcaption><span>{{.Name}}</span><span>{{bytes .Size}}</span></figcaption></figure>
+      {{else if eq .Kind "video"}}<figure class="fig"><video controls preload="metadata" src="/blob/{{.SHA256}}?type={{.Mime}}"></video><figcaption><span>{{.Name}}</span><span>{{bytes .Size}}</span></figcaption></figure>
+      {{else if eq .Kind "doc"}}<article class="doc"><div class="doc-h">{{template "i" "file"}}<span class="doc-n">{{.Name}}</span><span class="sz">{{bytes .Size}}</span><a href="/blob/{{.SHA256}}?type={{.Type}}" target="_blank" rel="noopener" aria-label="Open {{.Name}} on its own">{{template "i" "ext"}}</a></div><div class="doc-b prose clamp">{{.Doc}}</div><button type="button" class="doc-more" aria-expanded="false" hidden>Show the whole file</button></article>
+      {{else if eq .Kind "file"}}<a class="filecard" href="/blob/{{.SHA256}}?type={{.Mime}}" target="_blank" rel="noopener">{{template "i" "file"}}<span>{{.Name}}</span><span class="sz">{{bytes .Size}}</span></a>
+      {{else}}<p class="muted small">{{.Name}}: {{if .Gone}}the file was gone from its machine before it could be copied.{{else}}still being copied from its machine…{{end}}</p>{{end}}
+    {{end}}
+    {{end}}
+    {{if $it.SessionID}}
+    <div class="subh">{{template "i" "user"}}From</div>
+    <div class="from">
+      <div class="from-i">{{template "i" "term"}}</div>
+      <div class="from-x"><div class="from-t">{{with $it.SessionTitle}}{{.}}{{else}}Session {{printf "%.8s" $it.SessionID}}{{end}}</div><div class="from-m">{{with $it.Machine}}{{.}}{{end}}{{with $it.Session.Cwd}} · {{tilde .}}{{end}}{{with $it.SessionState}} · {{.}}{{end}}</div></div>
+      {{if or $it.Session.BridgeID $it.ResumeCommand}}<div class="from-a">
+        {{with $it.Session.BridgeID}}<a class="sb" href="{{rcURL .}}" target="_blank" rel="noopener">{{template "i" "ext"}}Open session</a>{{end}}
+        {{with $it.ResumeCommand}}<button type="button" class="sb" data-copy="{{.}}" title="{{.}}">{{template "i" "copy"}}Copy resume command</button>{{end}}
+      </div>{{end}}
+    </div>
+    {{with $it.Session.LastMessage}}<details class="last"><summary>Its last message</summary><div class="prose">{{md .}}</div></details>{{end}}
+    {{end}}
+    <div class="det">
+      <span>{{$it.ID}}</span>
+      <span>filed {{clock $it.CreatedAt}}{{if gt $it.MentionCount 1}} · {{$it.MentionCount}} times{{end}}</span>
+      {{if not $it.SessionID}}{{with $it.Machine}}<span>{{.}}</span>{{end}}{{end}}
+      {{range .Delivery}}{{if not .LiveOnly}}<span>{{if or (eq .Kind "done") (and (eq .Kind "") (has .Text "marked this done:"))}}done note{{else if eq .Kind "note"}}note{{else}}answer{{end}} {{.Status}}{{with .Method}} via {{.}}{{end}}{{if .ConfirmedAt}} {{clock .ConfirmedAt}}{{end}}{{with .Error}}: {{.}}{{end}}</span>{{end}}{{end}}
+    </div>
+    {{if and $it.Projects (not $it.Kept)}}
+    <div class="move">
+      <label>Project <select data-reclassify="project">{{$p := projectName $it.Item}}{{range $it.Projects}}<option{{if eq . $p}} selected{{end}}>{{.}}</option>{{end}}<option value="__new">New…</option></select></label>
+      <label>Urgency <select data-reclassify="urgency">{{$u := $it.Urgency}}{{range $v := list "now" "soon" "normal"}}<option{{if eq $v $u}} selected{{end}}>{{$v}}</option>{{end}}</select></label>
+    </div>
+    {{end}}
+  </div></div>
+  {{template "dock" $it}}
+</div>
+{{end}}
+
+{{define "fb"}}<button type="button" class="fb f-{{index . 0}}"{{if eq (index . 0) "noise"}} data-noise{{else}} data-act="{{index . 0}}"{{end}}{{if index . 4}} disabled{{end}} title="{{index . 5}}">{{template "i" (index . 1)}}<span>{{index . 2}}</span>{{with index . 3}}<kbd>{{.}}</kbd>{{end}}</button>{{end}}
+
+{{define "reply"}}<form class="ans" method="post" action="/item/{{.ID}}/act" data-reply{{if .Hide}} hidden{{end}}><input type="hidden" name="action" value="answer"><input type="hidden" name="back" value="/"><textarea name="text" rows="1" placeholder="{{.Placeholder}}" aria-label="Your reply"></textarea>{{if .Hide}}<button type="button" class="ans-x" data-reply-x aria-label="Cancel the reply">{{template "i" "x"}}</button>{{end}}<button type="submit" class="send" aria-label="Send the reply">{{template "i" "send"}}</button></form><p class="err" data-reply-err hidden>Write a reply first.</p>{{end}}
+
+{{/* The answer dock: the agent's options on top, then the same five
+     actions in the same places on every item. */}}
+{{define "dock"}}
+<footer class="dock">
+{{if .Kept}}
+  <div class="dk-c">
+    {{template "fb" (list "reopen" "undo" "Back to docket" "" "" "Put it back on your docket")}}
+    <span class="sp"></span>
+    {{if .Stashed}}{{template "fb" (list "unstash" "x" "Remove from Stash" "" "" "Take it off the Stash; it moves to Done")}}{{else if not .NoStash}}{{template "fb" (list "stash" "stash" "Stash" "t" "" "Keep it on your Stash")}}{{end}}
+  </div>
+{{else if .Waiting}}
+  {{if and .SessionID (eq .Status "delivered")}}{{template "reply" (reply .ID "Add a follow-up for the agent" false)}}{{end}}
+  <div class="dk-c">
+    {{template "fb" (list "done" "check" "Done" "d" "" "Take it off your docket")}}
+    {{template "fb" (list "noise" "thumb" "Not worth it" "w" "1" "You've already answered it")}}
+    {{template "fb" (list "dismiss" "x" "Dismiss" "x" "" "Take it off your docket; the answer still goes to the agent")}}
+    <span class="sp"></span>
+    {{if not .NoStash}}{{template "fb" (list "stash" "stash" "Stash" "t" "" "Take it off your docket and keep it on your Stash")}}{{end}}
+    {{template "fb" (list "snooze" "moon" "Snooze" "s" "1" "Its answer is with the agent")}}
+  </div>
+{{else}}
+  {{$rule := eq .Kind "rule"}}
+  {{if and .SessionID (not $rule)}}
+    {{if or .Options (eq .Kind "approval")}}
+      {{template "reply" (reply .ID "Answer in your own words" true)}}
+      <div class="dk-a">
+        {{if .Options}}{{$rec := .Recommend}}{{range $i, $o := .Options}}<button type="button" class="ob{{if recommended $o $rec}} rec{{end}}" data-act="choose" data-option="{{$i}}" data-key="{{add $i 1}}" title="Send “{{$o}}” to the agent">{{if lt $i 9}}<kbd>{{add $i 1}}</kbd>{{end}}<span>{{$o}}</span>{{if recommended $o $rec}}<span class="rt">Recommended</span>{{end}}</button>{{end}}
+        {{else}}<button type="button" class="ob rec" data-act="approve" data-key="1" title="Approve it">{{template "i" "check"}}<span>Approve</span><kbd>1</kbd></button><button type="button" class="ob" data-act="decline" data-key="2" title="Decline it">{{template "i" "x"}}<span>Decline</span><kbd>2</kbd></button>{{end}}
+        <button type="button" class="ob ghost" data-reply-open title="Answer in your own words">{{template "i" "pen"}}<span>Reply</span><kbd>r</kbd></button>
+      </div>
+    {{else}}
+      {{template "reply" (reply .ID (replyHint .Kind) false)}}
+    {{end}}
+  {{else if $rule}}
+    <div class="dk-a"><button type="button" class="ob rec" data-act="approve" data-key="1">{{template "i" "check"}}<span>Approve the rule</span><kbd>1</kbd></button><button type="button" class="ob" data-act="decline" data-key="2">{{template "i" "x"}}<span>Reject</span><kbd>2</kbd></button></div>
+  {{end}}
+  <div class="dk-c">
+    {{if not $rule}}{{template "fb" (list "done" "check" "Done" "d" "" (doneHint .))}}
+    {{template "fb" (list "noise" "thumb" "Not worth it" "w" "" "Close it, and tell agents this didn't need you")}}{{end}}
+    {{template "fb" (list "dismiss" "x" "Dismiss" "x" "" "Close it without telling anyone")}}
+    <span class="sp"></span>
+    {{if not (or $rule .NoStash)}}{{template "fb" (list "stash" "stash" "Stash" "t" "" "Mark it done and keep it on your Stash for 30 days")}}{{end}}
+    {{template "fb" (list "snooze" "moon" "Snooze" "s" "" "Hide it until tomorrow at 9:00 (S: for an hour)")}}
+  </div>
+{{end}}
+</footer>
 {{end}}

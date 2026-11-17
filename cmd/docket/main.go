@@ -36,7 +36,7 @@ import (
 // version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
-const usage = `docket: the dashboard of what your agents need from you.
+const usage = `docket: the list of what your agents need from you.
 
 Reaching the human (for agents; never blocks, keep working afterwards).
 The bar is high: file only what needs them and would otherwise be missed.
@@ -51,13 +51,12 @@ The bar is high: file only what needs them and would otherwise be missed.
   Flags for all of these:
     --project <name>           which project (see docket projects); --new-project "<description>" to start one
     --component <name>         part of the project, e.g. "FR5 hardware", "billing"
-    --place <name>             where they must physically be to do it, e.g. lab, home
+    --place <name>             where they must be to do it in person, e.g. lab, home
     --urgency now|soon|normal  now = act immediately (pushes their phone); default normal
     --due <date>               a real deadline (YYYY-MM-DD, today, tomorrow)
     --expires <when>           closes itself after this, when it no longer matters (date, 6h, 3d)
     --key <stable-id>          re-filing with the same key updates one item (and can raise its urgency)
     --blocking                 you are paused until they answer
-    --physical                 needs physical action; can never be approved remotely
 
   docket add <dk-id> [--why "<more>"] [--evidence <files>]   add to an item you filed
   docket done <dk-id> | --key <key> [--project <p>] [--why "<what happened>"]  close an item (answered in chat, moot, fixed)

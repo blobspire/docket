@@ -1,0 +1,12 @@
+{{define "list.html"}}{{template "head" .}}
+<main class="main solo" id="main" data-label="{{.Title}}">
+  <div class="pg">
+  <div class="mh"><div>
+    <h1>{{.Title}}</h1>
+    <p>{{if eq .Nav "stash"}}Things you've dealt with and want to keep handy. Each moves to Done after 30 days.{{else}}Everything closed in the last week, by you or an agent.{{end}}</p>
+  </div></div>
+  {{if .Rows}}<ol class="rows">{{range .Rows}}{{template "row" .}}{{end}}</ol>
+  {{else}}<div class="blank">{{if eq .Nav "stash"}}<b>Your Stash is empty.</b>Press t on an item, or use Stash, to keep it here.{{else}}<b>Nothing closed this week.</b>{{end}}</div>{{end}}
+  </div>
+</main>
+{{template "foot" .}}{{end}}

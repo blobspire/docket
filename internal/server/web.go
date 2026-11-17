@@ -1,14 +1,18 @@
 package server
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"io/fs"
+	mimepkg "mime"
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -19,8 +23,31 @@ import (
 //go:embed web/*
 var webFS embed.FS
 
+// fontVer is the version in the font's URL (app.css, layout.html): change
+// all three together when the font file changes.
+const fontVer = "4"
+
+// staticVer changes whenever the stylesheet or script does, so their
+// versioned URLs can be cached for good.
+var staticVer = func() string {
+	h := sha256.New()
+	for _, f := range []string{"web/app.css", "web/app.js"} {
+		b, _ := webFS.ReadFile(f)
+		h.Write(b)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:10]
+}()
+
 var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
-	"age":         func(unix int64) string { return age(time.Now(), unix) },
+	"staticVer": func() string { return staticVer },
+	"has":       strings.Contains,
+	"age":       func(unix int64) string { return age(time.Now(), unix) },
+	"ago": func(unix int64) string {
+		if time.Since(time.Unix(unix, 0)) < time.Minute {
+			return "just now"
+		}
+		return age(time.Now(), unix) + " ago"
+	},
 	"md":          renderMarkdown,
 	"kindClass":   kindClass,
 	"until":       until,
@@ -50,6 +77,74 @@ var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 	},
 	"winName": func(w string) string {
 		return map[string]string{"five_hour": "5-hour", "seven_day": "weekly"}[w]
+	},
+	"closedAt": func(it store.Item) int64 {
+		at := it.UpdatedAt
+		switch {
+		case it.Status == "delivered":
+		case it.ResolvedAt > 0:
+			at = it.ResolvedAt
+		case it.AnsweredAt > 0:
+			at = it.AnsweredAt
+		}
+		// One that aged off the Stash closed, as far as Done goes, then.
+		if off := it.StashedAt + store.StashSeconds; it.StashedAt > 0 && off <= time.Now().Unix() && off > at {
+			at = off
+		}
+		return at
+	},
+	"bytes": func(n int64) string {
+		switch {
+		case n >= 1<<20:
+			return strconv.FormatFloat(float64(n)/(1<<20), 'f', 1, 64) + " MB"
+		case n >= 1<<10:
+			return strconv.FormatInt(n>>10, 10) + " KB"
+		}
+		return strconv.FormatInt(n, 10) + " B"
+	},
+	"tilde": func(p string) string {
+		for _, home := range []string{"/Users/", "/home/"} {
+			if rest, ok := strings.CutPrefix(p, home); ok {
+				if _, after, ok := strings.Cut(rest, "/"); ok {
+					return "~/" + after
+				}
+				return "~"
+			}
+		}
+		return p
+	},
+	"reply": func(id, placeholder string, hide bool) replyForm {
+		return replyForm{ID: id, Placeholder: placeholder, Hide: hide}
+	},
+	"replyHint": func(kind string) string {
+		switch kind {
+		case "review", "fyi":
+			return "Reply with anything to change"
+		case "human_task":
+			return "Reply to the agent, e.g. with what you found"
+		}
+		return "Reply to the agent"
+	},
+	"doneHint": func(v itemView) string {
+		switch {
+		case v.SessionID == "" || v.Source != "cli":
+			return "Close it"
+		case v.Kind == "human_task" || v.Kind == "blocker":
+			return "Close it, and tell the agent it's done"
+		}
+		return "Close it. The agent hears it's done the next time its session is active."
+	},
+	"imgs": func(es []store.Evidence) string {
+		type img struct {
+			Src  string `json:"src"`
+			Name string `json:"name"`
+		}
+		out := make([]img, len(es))
+		for i, e := range es {
+			out[i] = img{"/blob/" + e.SHA256 + "?type=" + url.QueryEscape(e.Mime), e.Name}
+		}
+		b, _ := json.Marshal(out)
+		return string(b)
 	},
 	"isImage": func(m string) bool { return strings.HasPrefix(m, "image/") },
 	"isVideo": func(m string) bool { return strings.HasPrefix(m, "video/") },
@@ -161,6 +256,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /item/{id}/act", s.act)
 	mux.HandleFunc("POST /project/{name}", s.editProject)
 	mux.HandleFunc("GET /done", s.pageDone)
+	mux.HandleFunc("GET /stash", s.pageStash)
 	mux.HandleFunc("GET /search", s.pageSearch)
 	mux.HandleFunc("GET /evidence", s.pageEvidence)
 	mux.HandleFunc("GET /checklist", s.pageChecklist)
@@ -180,7 +276,21 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	static, _ := fs.Sub(webFS, "web")
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(static))))
+	files := http.StripPrefix("/static/", http.FileServer(http.FS(static)))
+	mux.HandleFunc("GET /static/", func(w http.ResponseWriter, r *http.Request) {
+		// A versioned URL (?v=…) never changes, so browsers keep it; a new
+		// build links a new version.
+		if strings.HasSuffix(r.URL.Path, "/") || strings.HasSuffix(r.URL.Path, ".html") {
+			http.NotFound(w, r) // no directory listings, no template sources
+			return
+		}
+		if v := r.URL.Query().Get("v"); v == staticVer || (v == fontVer && strings.HasSuffix(r.URL.Path, ".woff2")) {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		files.ServeHTTP(w, r)
+	})
 	return s.guard(mux)
 }
 
@@ -223,13 +333,14 @@ type page struct {
 	Nav         string
 	Person      string
 	Queue       *queueView
-	One         *Ranked
+	One         *itemView
+	Attachments []attachment
+	Rows        []itemView
 	Closed      []store.Item
 	Item        *store.Item
 	Session     *store.Session
 	Evidence    []store.Evidence
 	Delivery    []store.Delivery
-	Physical    bool
 	Machines    []machineRow
 	Sessions    []store.Session
 	Error       string
@@ -245,6 +356,31 @@ type page struct {
 	Corrections []store.Decision
 	Noise       []store.Noise
 	RuleCount   int
+	Count       int  // open items on the docket, for the mark's badge
+	Hot         bool // one of them needs action now
+	StashCount  int
+}
+
+// attachment is one piece of evidence as the item sheet shows it.
+type attachment struct {
+	store.Evidence
+	Kind  string        // image | video | doc | file | missing
+	Index int           // an image's place among the item's images, for the viewer
+	Type  string        // the type to serve it as when opened on its own
+	Doc   template.HTML // a text document's contents, rendered
+}
+
+// maxDoc is the largest text attachment shown inline; maxMarkdown the
+// largest rendered as markdown (bigger ones show as plain text).
+const (
+	maxDoc      = 256 << 10
+	maxMarkdown = 24 << 10
+)
+
+// replyForm is the dock's answer box.
+type replyForm struct {
+	ID, Placeholder string
+	Hide            bool // folded until Reply (or r) opens it: the options come first
 }
 
 type leadRow struct {
@@ -269,9 +405,13 @@ func (s *Server) render(w http.ResponseWriter, name string, p page) {
 		for _, it := range items {
 			if it.Kind == "rule" {
 				p.RuleCount++
+				continue
 			}
+			p.Count++
+			p.Hot = p.Hot || it.Urgency == "now"
 		}
 	}
+	p.StashCount = s.st.StashCount()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := tmpl.ExecuteTemplate(w, name, p); err != nil {
 		s.log.Printf("render %s: %v", name, err)
@@ -288,7 +428,7 @@ func (s *Server) pageQueue(w http.ResponseWriter, r *http.Request) {
 	if q.Mode != "all" {
 		title = q.Heading
 	}
-	s.render(w, "queue.html", page{Title: title, Nav: "queue", Queue: q, Error: r.URL.Query().Get("err")})
+	s.render(w, "queue.html", page{Title: title, Nav: "docket", Queue: q, Error: r.URL.Query().Get("err")})
 }
 
 func (s *Server) pageItem(w http.ResponseWriter, r *http.Request) {
@@ -305,10 +445,75 @@ func (s *Server) pageItem(w http.ResponseWriter, r *http.Request) {
 	sess, _, _ := s.st.GetSession(it.SessionID)
 	ev, _ := s.st.Evidence(it.ID)
 	ds, _ := s.st.ItemDeliveries(it.ID)
-	q, _ := s.buildQueue(url.Values{})
-	one := Ranked{Item: it, Session: sess}
-	s.render(w, "item.html", page{Title: it.Title, Nav: "queue", One: &one, Queue: q, Session: &sess, Evidence: ev, Delivery: ds,
-		Physical: s.physical(it), Error: r.URL.Query().Get("err")})
+	projects, _ := s.st.Projects(false)
+	var names []string
+	for _, p := range projects {
+		if p.Name != store.Unsorted {
+			names = append(names, p.Name)
+		}
+	}
+	sort.Slice(names, func(i, j int) bool { return projectLess(names[i], names[j]) })
+	one := s.rows([]Ranked{{Item: it, Session: sess}}, "docket", true, names)[0]
+	one.LastAction = s.st.LastDecision(it.ID)
+	var atts []attachment
+	images := 0
+	for _, e := range ev {
+		a := attachment{Evidence: e, Kind: "file", Type: e.Mime}
+		if info, err := os.Stat(s.blobPath(e.SHA256)); err == nil {
+			a.Size = info.Size() // the file's, not what the agent declared
+		}
+		switch {
+		case e.Gone || !e.Fetched:
+			a.Kind = "missing"
+		case strings.HasPrefix(e.Mime, "image/"):
+			a.Kind, a.Index = "image", images
+			images++
+		case strings.HasPrefix(e.Mime, "video/"):
+			a.Kind = "video"
+		case textDoc(e):
+			// Sized from the file itself, not what the agent declared.
+			// Markdown renders only while small (some inputs take the
+			// renderer seconds per kilobyte); a bigger file shows as text.
+			if info, err := os.Stat(s.blobPath(e.SHA256)); err == nil && info.Size() <= maxDoc {
+				if b, err := os.ReadFile(s.blobPath(e.SHA256)); err == nil {
+					a.Kind = "doc"
+					a.Type = "text/plain; charset=utf-8" // opened on its own, it reads as text
+					n := strings.ToLower(e.Name)
+					if (strings.HasSuffix(n, ".md") || strings.HasSuffix(n, ".markdown") || strings.Contains(strings.ToLower(e.Mime), "markdown")) && len(b) <= maxMarkdown {
+						a.Doc = renderMarkdown(string(b))
+					} else {
+						a.Doc = template.HTML("<pre>" + template.HTMLEscapeString(strings.ToValidUTF8(string(b), "\uFFFD")) + "</pre>")
+					}
+				}
+			}
+		}
+		atts = append(atts, a)
+	}
+	// Pictures first, then documents, then the rest.
+	rank := map[string]int{"image": 0, "video": 1, "doc": 2, "file": 3, "missing": 4}
+	sort.SliceStable(atts, func(i, j int) bool { return rank[atts[i].Kind] < rank[atts[j].Kind] })
+	images = 0
+	for i := range atts {
+		if atts[i].Kind == "image" {
+			atts[i].Index = images
+			images++
+		}
+	}
+	s.render(w, "item.html", page{Title: it.Title, Nav: "docket", One: &one, Attachments: atts, Session: &sess, Delivery: ds, Error: r.URL.Query().Get("err")})
+}
+
+// textDoc reports evidence that reads as text: markdown, plain text, logs, CSV.
+func textDoc(e store.Evidence) bool {
+	m, n := strings.ToLower(e.Mime), strings.ToLower(e.Name)
+	if strings.HasPrefix(m, "text/") && !strings.Contains(m, "html") {
+		return true
+	}
+	for _, ext := range []string{".md", ".markdown", ".txt", ".log", ".csv", ".json", ".yaml", ".yml"} {
+		if strings.HasSuffix(n, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 // editProject saves a project's description and archived flag, or renames it
@@ -361,7 +566,20 @@ func (s *Server) editProject(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) pageDone(w http.ResponseWriter, r *http.Request) {
 	closed, _ := s.st.RecentlyClosed(time.Now().Add(-7*24*time.Hour).Unix(), 300)
-	s.render(w, "done.html", page{Title: "Done", Nav: "done", Closed: closed})
+	s.render(w, "list.html", page{Title: "Done", Nav: "done", Rows: s.rows(ranked(closed), "done", true, nil)})
+}
+
+func (s *Server) pageStash(w http.ResponseWriter, r *http.Request) {
+	stashed, _ := s.st.Stashed(300)
+	s.render(w, "list.html", page{Title: "Stash", Nav: "stash", Rows: s.rows(ranked(stashed), "stash", true, nil)})
+}
+
+func ranked(items []store.Item) []Ranked {
+	out := make([]Ranked, len(items))
+	for i, it := range items {
+		out[i] = Ranked{Item: it}
+	}
+	return out
 }
 
 func (s *Server) pageSearch(w http.ResponseWriter, r *http.Request) {
@@ -370,7 +588,7 @@ func (s *Server) pageSearch(w http.ResponseWriter, r *http.Request) {
 	if q != "" {
 		res, _ = s.st.Search(q, 200)
 	}
-	s.render(w, "search.html", page{Title: "Search", Nav: "search", Query: q, Closed: res})
+	s.render(w, "search.html", page{Title: "Search", Nav: "search", Query: q, Rows: s.rows(ranked(res), "list", true, nil)})
 }
 
 func (s *Server) pageEvidence(w http.ResponseWriter, r *http.Request) {
@@ -381,7 +599,7 @@ func (s *Server) pageEvidence(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) pageChecklist(w http.ResponseWriter, r *http.Request) {
 	tasks, _ := s.st.HumanTasks()
-	s.render(w, "checklist.html", page{Title: "Only you", Nav: "checklist", Tasks: tasks})
+	s.render(w, "checklist.html", page{Title: "Only you", Nav: "checklist", Rows: s.rows(ranked(tasks), "list", true, nil)})
 }
 
 func (s *Server) pageLeads(w http.ResponseWriter, r *http.Request) {
@@ -513,6 +731,7 @@ func (s *Server) act(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a := Action{Kind: r.FormValue("action"), Text: r.FormValue("text"), Project: r.FormValue("project"), Urgency: r.FormValue("urgency")}
+	a.Decision, _ = strconv.ParseInt(r.FormValue("decision"), 10, 64)
 	if o := r.FormValue("option"); o != "" {
 		a.Option, _ = strconv.Atoi(o)
 	}
@@ -533,6 +752,7 @@ func (s *Server) act(w http.ResponseWriter, r *http.Request) {
 		}
 		a.Until = t
 	}
+	before, _, _, _ := s.st.TopDecision(id)
 	err := s.Decide(id, a)
 	if r.Header.Get("X-Requested-With") == "fetch" {
 		w.Header().Set("Content-Type", "application/json")
@@ -541,7 +761,14 @@ func (s *Server) act(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]string{"ok": "1"})
+		// The decision this logged, so the toast's Undo takes back this one
+		// and nothing else (another tab may have acted since).
+		// Nothing logged (a move to where it already is): nothing to undo.
+		decision := ""
+		if did, _, _, _ := s.st.TopDecision(id); did != before && did != 0 {
+			decision = strconv.FormatInt(did, 10)
+		}
+		json.NewEncoder(w).Encode(map[string]string{"ok": "1", "decision": decision})
 		return
 	}
 	back := r.FormValue("back")
@@ -570,8 +797,14 @@ func (s *Server) blob(w http.ResponseWriter, r *http.Request) {
 	if mime == "" || strings.ContainsAny(mime, "\r\n") {
 		mime = "application/octet-stream"
 	}
-	if strings.Contains(mime, "html") || strings.Contains(mime, "svg") || strings.Contains(mime, "xml") {
-		// Agent-made pages are untrusted: render them inert.
+	// Agent-made files are untrusted: whatever type they claim, in any
+	// letter case, a page opened from one is inert (no script, no origin).
+	// Embedding as <img> or <video> is unaffected. A PDF is the exception:
+	// the browser's own viewer shows it (and runs nothing of the page's),
+	// and a sandbox would stop that viewer.
+	if mt, _, err := mimepkg.ParseMediaType(mime); err == nil && mt == "application/pdf" {
+		mime = "application/pdf" // exactly that, never the raw value a browser might read differently
+	} else {
 		w.Header().Set("Content-Security-Policy", "sandbox")
 	}
 	w.Header().Set("Content-Type", mime)

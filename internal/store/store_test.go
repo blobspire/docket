@@ -106,7 +106,7 @@ func TestUndoRefusesAfterDelivery(t *testing.T) {
 	s := open(t)
 	s.UpsertItem(Item{ID: "dk-1", Kind: "ask", Title: "q", SessionID: "s"})
 	s.SetAnswer("dk-1", "yes", "answer")
-	s.AddDelivery(Delivery{ID: "d1", ItemID: "dk-1", Machine: "m", SessionID: "s", Text: "yes", Nonce: "n1"})
+	s.AddDelivery(Delivery{ID: "d1", ItemID: "dk-1", Machine: "m", SessionID: "s", Text: "answer " + AnswerMark + " yes", Nonce: "n1"})
 	s.DeliverySent("d1", "mailbox")
 	if _, err := s.Undo("dk-1"); err == nil {
 		t.Fatal("undo of a delivered answer should be refused")

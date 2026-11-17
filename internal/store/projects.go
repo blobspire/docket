@@ -523,11 +523,14 @@ func (s *Store) Expire(at int64) (int, error) {
 }
 
 // QueueDigest changes whenever what the dashboard shows does, and only
-// then: every active item's visible fields, and whether its agent is waiting.
+// then: every docket item's visible fields, whether its agent is waiting or
+// working, how its answer's delivery stands, and what's on the Stash.
 func (s *Store) QueueDigest() string {
-	rows, err := s.DB.Query(`SELECT i.id, i.status, i.title, i.urgency, i.project, i.component, i.place, i.due, i.expires_at, i.updated_at, COALESCE(se.state,'')
-		FROM items i LEFT JOIN sessions se ON se.id = i.session_id AND i.blocking=1
-		WHERE i.status IN ('open','snoozed','answered') ORDER BY i.id`)
+	rows, err := s.DB.Query(`SELECT i.id, i.status, i.title, i.urgency, i.project, i.component, i.place, i.due, i.expires_at, i.updated_at, i.stashed_at,
+		COALESCE(se.state,''), COALESCE((SELECT d.status||d.error||d.attempts||(d.status='sent' AND d.sent_at < ?) FROM deliveries d WHERE d.item_id=i.id AND d.live_only=0 AND (d.kind='answer' OR (d.kind='' AND instr(d.text, '`+AnswerMark+`')>0)) ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1),'')
+		FROM items i LEFT JOIN sessions se ON se.id = i.session_id AND (i.blocking=1 OR i.status IN ('answered','delivered'))
+		WHERE i.status IN ('open','snoozed','answered') OR (i.status='delivered' AND i.updated_at >= ?) OR i.stashed_at >= ?
+		ORDER BY i.id`, now()-15*60, now()-WaitWindow, StashCutoff())
 	if err != nil {
 		return ""
 	}
@@ -535,10 +538,10 @@ func (s *Store) QueueDigest() string {
 	h := sha256.New()
 	n := 0
 	for rows.Next() {
-		var id, status, title, urgency, project, component, place, due, state string
-		var exp, upd int64
-		rows.Scan(&id, &status, &title, &urgency, &project, &component, &place, &due, &exp, &upd, &state)
-		fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%s\n", id, status, title, urgency, project, component, place, due, exp, upd, state)
+		var id, status, title, urgency, project, component, place, due, state, delivery string
+		var exp, upd, stashed int64
+		rows.Scan(&id, &status, &title, &urgency, &project, &component, &place, &due, &exp, &upd, &stashed, &state, &delivery)
+		fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%s\x00%s\n", id, status, title, urgency, project, component, place, due, exp, upd, stashed, state, delivery)
 		n++
 	}
 	return fmt.Sprintf("%d.%x", n, h.Sum(nil)[:8])
@@ -660,7 +663,7 @@ func (s *Store) Reopen(id string) error {
 		return err
 	}
 	t := now()
-	if _, err := tx.Exec(`UPDATE items SET status='open', resolution='', resolved_at=NULL, expires_at=0, updated_at=? WHERE id=?`, t, id); err != nil {
+	if _, err := tx.Exec(`UPDATE items SET status='open', resolution='', resolved_at=NULL, expires_at=0, stashed_at=0, updated_at=? WHERE id=?`, t, id); err != nil {
 		if isDedupeConflict(err) {
 			return errors.New("can't reopen: an open item with the same key has been filed since")
 		}

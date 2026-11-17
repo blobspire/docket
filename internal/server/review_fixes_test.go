@@ -338,7 +338,7 @@ func TestClosedItemsCantBeActedOnAgain(t *testing.T) {
 	rec := httptest.NewRecorder()
 	e.s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/item/dk-c1000001", nil))
 	body := rec.Body.String()
-	if strings.Contains(body, `data-act="snooze"`) || strings.Contains(body, `class="answer-form"`) || !strings.Contains(body, `data-act="reopen"`) {
+	if strings.Contains(body, `data-act="snooze"`) || strings.Contains(body, `data-reply`) || !strings.Contains(body, `data-act="reopen"`) {
 		t.Fatal("a closed item's page still offers actions (or no way to reopen it)")
 	}
 	// Undo reopens it without the stale closing note.
@@ -346,12 +346,17 @@ func TestClosedItemsCantBeActedOnAgain(t *testing.T) {
 	if it, _, _ := st.GetItem("dk-c1000001"); it.Status != "open" || it.Resolution != "" {
 		t.Fatalf("after undo: %s %q", it.Status, it.Resolution)
 	}
-	// Dismissed and expired are just as closed; delivered takes only a follow-up answer.
+	// Dismissed and expired are just as closed; delivered takes a follow-up
+	// answer, or a close (it's waiting on its agent), but no second answer.
 	for _, status := range []string{"dismissed", "expired", "delivered"} {
 		id := "dk-cs" + status[:3] + "01"
 		st.UpsertItem(store.Item{ID: id, Kind: "approval", Title: "q", SessionID: "s", Source: "cli", Machine: "box"})
 		st.DB.Exec(`UPDATE items SET status=? WHERE id=?`, status, id)
-		for _, k := range []string{"approve", "decline", "snooze", "done", "dismiss", "noise"} {
+		refused := []string{"approve", "decline", "snooze", "done", "dismiss", "noise"}
+		if status == "delivered" {
+			refused = []string{"approve", "decline", "snooze", "noise"}
+		}
+		for _, k := range refused {
 			if err := e.s.Decide(id, Action{Kind: k, Until: time.Now().Add(time.Hour)}); err == nil {
 				t.Errorf("%s on a %s item was accepted", k, status)
 			}
@@ -519,15 +524,6 @@ func TestRefileFollowsTheFilerAcrossMachines(t *testing.T) {
 	e.sendFrom(t, "ci", record.Record{Event: "cli.file", Item: &record.Item{ID: "dk-x0000003", Kind: "ask", Title: "Raise the limit?", Key: "lim", Project: "w"}})
 	if it, _, _ := st.GetItem("dk-x0000001"); it.Machine != "lap" || it.SessionID != "tue" {
 		t.Fatalf("a session-less re-file moved it: machine=%s session=%s", it.Machine, it.SessionID)
-	}
-}
-
-func TestPhysicalOnRefileCantBeApproved(t *testing.T) {
-	e := newEnv(t, "")
-	e.file(t, "s", record.Item{ID: "dk-ph000001", Kind: "approval", Title: "Run the arm test", Key: "arm", Project: "r"})
-	e.file(t, "s", record.Item{ID: "dk-ph000002", Kind: "approval", Title: "Run the arm test", Key: "arm", Project: "r", Physical: true})
-	if err := e.s.Decide("dk-ph000001", Action{Kind: "approve"}); err == nil {
-		t.Fatal("a re-file that added --physical can still be approved remotely")
 	}
 }
 

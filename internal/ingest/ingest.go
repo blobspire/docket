@@ -11,6 +11,8 @@
 package ingest
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -206,13 +208,34 @@ func apply(s *store.Store, e store.RawEvent, o Options) error {
 			// The project resolved now may differ from the one at filing time
 			// (a folder default vs. an explicit --project then); only an
 			// explicitly named project rules out looking elsewhere.
+			pk := ""
+			if p := store.Slug(d.Project); p != "" {
+				pk = "key:" + p + ":" + k
+			}
+			// This session's own first (open, then an answer it has and
+			// hasn't closed), then the machine's.
 			if !ok && !d.Explicit {
-				it, ok = s.ActiveByAgentKey(k, sid, r.Machine)
+				it, ok = s.ActiveByAgentKey(k, sid, "")
+			}
+			if !ok {
+				it, ok = s.DeliveredBySession(pk, k, sid, !d.Explicit)
+			}
+			// The exact project-scoped key before a bare key in another
+			// project, so a shared key (tests, ci, deploy) closes this
+			// project's item first. (The machine-wide fallback below can
+			// still reach another session's open item when nothing else
+			// matches, as it always has.)
+			if !ok {
+				it, ok = s.DeliveredOnMachine(pk, r.Machine)
+			}
+			if !ok && !d.Explicit {
+				it, ok = s.ActiveByAgentKey(k, "", r.Machine)
 			}
 		}
-		// Only an item that still needs someone: an agent's "done" must never
-		// overwrite the human's dismissal or "not worth my time".
-		if !ok || !active(it.Status) {
+		// Only an item that still needs someone (or one whose answer the
+		// agent has, waiting for it to close the loop): an agent's "done"
+		// must never overwrite the human's dismissal or "not worth my time".
+		if !ok || !(active(it.Status) || it.Status == "delivered") {
 			return nil
 		}
 		return s.SetStatus(it.ID, "done", firstNonEmpty(d.Note, "resolved by the agent"), "")
@@ -351,6 +374,10 @@ func fileItem(s *store.Store, r record.Record, base store.Item, o Options) error
 	in := r.Item
 	it := base
 	it.ID = in.ID
+	if !itemIDOK.MatchString(it.ID) { // an id goes into URLs and pages: only a plain one
+		sum := sha256.Sum256([]byte(it.ID)) // the same every time, so a resend is the same item
+		it.ID = "dk-" + hex.EncodeToString(sum[:])[:12]
+	}
 	it.Kind = in.Kind
 	it.Source = SrcCLI
 	it.Title = clip(oneLine(in.Title, 500), 500)
@@ -460,6 +487,9 @@ func keyNorm(k string) string {
 	}
 	return k[:cut]
 }
+
+// itemIDOK is a plain item id, like the CLI makes (dk-…).
+var itemIDOK = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 
 func active(status string) bool {
 	return status == "maybe" || status == "open" || status == "snoozed" || status == "answered"

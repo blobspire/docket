@@ -16,9 +16,30 @@ import (
 // rowHTML is one item's <li> from a rendered page.
 func rowHTML(t *testing.T, page, id string) string {
 	t.Helper()
-	m := regexp.MustCompile(`(?s)<li class="row[^"]*" data-id="` + id + `".*?</li>`).FindString(page)
+	m := regexp.MustCompile(`(?s)<li class="rw" data-id="` + id + `">.*?</li>`).FindString(page)
 	if m == "" {
 		t.Fatalf("no row for %s", id)
+	}
+	return m
+}
+
+// sheetHTML is an item's sheet (its page), dock included.
+func sheetHTML(t *testing.T, e *env, id string) string {
+	t.Helper()
+	page := get(e, "/item/"+id)
+	i := strings.Index(page, `<div class="sheet"`)
+	if i < 0 {
+		t.Fatalf("no sheet for %s", id)
+	}
+	return page[i:]
+}
+
+// dockHTML is the answer dock of an item's sheet.
+func dockHTML(t *testing.T, e *env, id string) string {
+	t.Helper()
+	m := regexp.MustCompile(`(?s)<footer class="dock">.*?</footer>`).FindString(sheetHTML(t, e, id))
+	if m == "" {
+		t.Fatalf("no dock for %s", id)
 	}
 	return m
 }
@@ -44,7 +65,7 @@ func TestClosedItemCantBeMoved(t *testing.T) {
 			t.Fatalf("a closed item was moved (%+v)", a)
 		}
 	}
-	if strings.Contains(rowHTML(t, get(e, "/item/dk-r4c00001"), "dk-r4c00001"), "data-reclassify") {
+	if strings.Contains(sheetHTML(t, e, "dk-r4c00001"), "data-reclassify") {
 		t.Error("a closed item's card still offers the move selects")
 	}
 	if err := e.s.Decide("dk-r4c00001", Action{Kind: "reopen"}); err != nil {
@@ -126,8 +147,7 @@ func TestMoveListLeavesOutUnsorted(t *testing.T) {
 	st := e.s.st
 	st.UpsertItem(store.Item{ID: "dk-r4l00001", Kind: "issue", Title: "placed", Project: "w"})
 	st.UpsertItem(store.Item{ID: "dk-r4l00002", Kind: "issue", Title: "loose", Project: store.Unsorted})
-	page := get(e, "/?p=w")
-	row := rowHTML(t, page, "dk-r4l00001")
+	row := sheetHTML(t, e, "dk-r4l00001")
 	if !strings.Contains(row, "data-reclassify") {
 		t.Fatal("no move select on an open item (test can't see the list)")
 	}
@@ -158,9 +178,13 @@ func TestAnAnsweredItemCanBeDismissed(t *testing.T) {
 	if err := e.s.Decide("dk-r4a00001", Action{Kind: "answer", Text: "the A100"}); err != nil {
 		t.Fatal(err)
 	}
-	row := rowHTML(t, get(e, "/?p=w"), "dk-r4a00001")
-	if !strings.Contains(row, `data-act="dismiss"`) || strings.Contains(row, `data-act="done"`) {
+	page := get(e, "/?p=w")
+	row := rowHTML(t, page, "dk-r4a00001")
+	if !strings.Contains(row, `data-act="dismiss"`) || strings.Contains(row, `data-act="done"`) || !strings.Contains(row, "Waiting") {
 		t.Fatalf("answered row actions: %s", row)
+	}
+	if w := strings.Index(page, `class="wt"`); w < 0 || w > strings.Index(page, `data-id="dk-r4a00001"`) {
+		t.Fatal("the answered item isn't under Waiting on agents")
 	}
 	if err := e.s.Decide("dk-r4a00001", Action{Kind: "dismiss"}); err != nil {
 		t.Fatal(err)

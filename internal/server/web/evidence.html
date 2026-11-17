@@ -1,6 +1,6 @@
 {{define "evidence.html"}}{{template "head" .}}
-<main class="page">
-<h1>Evidence</h1>
+<main class="main solo" id="main"><div class="pg">
+<div class="mh"><div><h1>Evidence</h1></div></div>
 <form class="searchbar" method="get" action="/evidence">
   <input id="q" name="q" value="{{.Query}}" placeholder="Filter by file name or item title">
   <button type="submit">Filter</button>
@@ -20,5 +20,5 @@
   </figure>
 {{end}}
 </section>
-</main>
+</div></main>
 {{template "foot" .}}{{end}}

@@ -1,17 +1,21 @@
 {{define "queue.html"}}{{template "head" .}}{{$q := .Queue}}
-<div class="shell">
+<div class="body">
 {{template "sidebar" $q}}
-<main class="main">
-  <div class="view-head">
+<main class="main" id="main" data-label="{{$q.Heading}}">
+  <div class="pg">
+  <div class="mh">
     <div>
-      <h1>{{$q.Heading}}{{if $q.ProjectInfo}} <button type="button" class="quiet small" data-edit-project>Edit</button>{{end}}</h1>
-      {{with $q.Sub}}<p class="sub">{{.}}</p>{{end}}
+      <h1>{{$q.Heading}}{{if $q.ProjectInfo}} <button type="button" class="edit" data-edit-project aria-label="Edit the project">{{template "i" "pen"}}</button>{{end}}</h1>
+      <p>{{if $q.Need}}{{$q.Need}} need{{if eq $q.Need 1}}s{{end}} you{{else}}Nothing needs you{{end}}{{if $q.Waiting}} · {{$q.Waiting}} waiting on agents{{end}}</p>
+      {{with $q.Desc}}<p class="desc">{{.}}</p>{{end}}
     </div>
-    <div class="sort" role="group" aria-label="Sort">
-      <span class="muted">Sort</span>
-      <a href="{{$q.SortLink "priority"}}" {{if eq $q.Sort "priority"}}class="on"{{end}}>Priority</a>
-      <a href="{{$q.SortLink "deadline"}}" {{if eq $q.Sort "deadline"}}class="on"{{end}}>Deadline</a>
-      <a href="{{$q.SortLink "newest"}}" {{if eq $q.Sort "newest"}}class="on"{{end}}>Newest</a>
+    <div class="sortw">
+      <button type="button" class="sortb" aria-haspopup="menu" aria-expanded="false">{{template "i" "sort"}}<span class="sl-t">{{$q.SortName}}</span>{{template "i" "chev-d"}}</button>
+      <div class="menu" role="menu" hidden>
+        <a role="menuitemradio" aria-checked="{{eq $q.Sort "priority"}}" href="{{$q.SortLink "priority"}}" data-sort="priority">{{if eq $q.Sort "priority"}}{{template "i" "check"}}{{else}}<span></span>{{end}}<span class="mt">Priority</span><span class="md">Act now first, then deadlines</span></a>
+        <a role="menuitemradio" aria-checked="{{eq $q.Sort "deadline"}}" href="{{$q.SortLink "deadline"}}" data-sort="deadline">{{if eq $q.Sort "deadline"}}{{template "i" "check"}}{{else}}<span></span>{{end}}<span class="mt">Deadline</span><span class="md">Soonest due first</span></a>
+        <a role="menuitemradio" aria-checked="{{eq $q.Sort "newest"}}" href="{{$q.SortLink "newest"}}" data-sort="newest">{{if eq $q.Sort "newest"}}{{template "i" "check"}}{{else}}<span></span>{{end}}<span class="mt">Newest</span><span class="md">Most recently filed first</span></a>
+      </div>
     </div>
   </div>
   {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
@@ -22,40 +26,44 @@
     <input type="hidden" name="old_description" value="{{.Description}}">{{if .Archived}}<input type="hidden" name="old_archived" value="1">{{end}}
     <label>Rename or merge into <input name="rename" placeholder="{{.Name}}"></label>
     <label class="check"><input type="checkbox" name="archived" value="1"{{if .Archived}} checked{{end}}> Archive (hide it from the sidebar once nothing is open)</label>
-    <div class="actions"><button class="primary" type="submit">Save</button><button type="button" class="quiet" data-edit-project>Cancel</button></div>
+    <div class="acts"><button class="sb pri" type="submit">Save</button><button type="button" class="sb" data-edit-project>Cancel</button></div>
   </form>
   {{end}}
 
   {{if $q.Now}}
-  <section class="band-now" aria-label="Act now">
-    <h2>Act now <span class="count">{{len $q.Now}}</span></h2>
-    <ol class="rows">{{range $q.Now}}{{template "row" ($q.BandRow .)}}{{end}}</ol>
+  <section class="band" aria-label="Act now">
+    <h2>{{template "i" "alert"}}Act now <span class="cnt">{{len $q.Now}}</span></h2>
+    <ol class="rows">{{range $q.Now}}{{template "row" .}}{{end}}</ol>
   </section>
   {{end}}
 
   {{range $q.Sections}}
-  <section class="proj"{{with .Anchor}} id="{{.}}"{{end}}>
-    {{if .Title}}<h2><a href="{{.URL}}">{{.Title}}</a> <span class="count">{{.Count}}</span>{{with .Sub}}<span class="sub">{{.}}</span>{{end}}</h2>{{end}}
-    {{range .Groups}}
-      {{with .Title}}<h3>{{.}}</h3>{{end}}
-      <ol class="rows">{{range .Items}}{{template "row" ($q.Row .)}}{{end}}</ol>
+  <section class="sec">
+    {{if .Title}}<h2><a href="{{.URL}}"{{with .Desc}} title="{{.}}"{{end}}>{{.Title}}</a>{{if .Rows}} <span class="cnt">{{len .Rows}}</span>{{end}}</h2>{{end}}
+    {{if .Rows}}<ol class="rows">{{range .Rows}}{{template "row" .}}{{end}}</ol>{{end}}
+    {{if .Waiting}}
+    <details class="wt" data-wt="{{.WaitKey}}">
+      <summary>{{template "i" "clock"}}<span>Waiting on agents</span><span class="cnt">{{len .Waiting}}</span>{{if .Stuck}}<span class="warn">· {{.Stuck}} not delivered</span>{{end}}{{template "i" "chev-d"}}</summary>
+      <ol class="rows wl">{{range .Waiting}}{{template "row" .}}{{end}}</ol>
+    </details>
     {{end}}
   </section>
   {{end}}
 
   {{if $q.Empty}}
-  <div class="empty">
-    {{if eq $q.Mode "all"}}<p><b>Nothing needs you.</b></p><p class="muted">Your agents aren't waiting on anything. New items appear here on their own.</p>
-    {{else}}<p class="muted">Nothing open here.</p>{{end}}
+  <div class="blank">
+    <b>Nothing needs you{{if ne $q.Mode "all"}} here{{end}}.</b>
+    {{if $q.Waiting}}Your answers are with the agents.{{else if eq $q.Mode "all"}}New items appear here on their own.{{end}}
   </div>
   {{end}}
 
   {{if $q.Snoozed}}
-  <details class="snoozed">
-    <summary>Snoozed ({{len $q.Snoozed}})</summary>
-    <ol class="rows">{{range $q.Snoozed}}{{template "row" ($q.Row .)}}{{end}}</ol>
+  <details class="wt snz" data-wt="snoozed">
+    <summary>{{template "i" "moon"}}<span>Snoozed</span><span class="cnt">{{len $q.Snoozed}}</span>{{template "i" "chev-d"}}</summary>
+    <ol class="rows wl">{{range $q.Snoozed}}{{template "row" .}}{{end}}</ol>
   </details>
   {{end}}
+  </div>
 </main>
 </div>
 {{template "foot" .}}{{end}}

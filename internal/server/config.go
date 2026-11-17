@@ -19,6 +19,7 @@ import (
 // Config is ~/.config/docket/docket.toml on the server. It is personal (host
 // names, push topic), so it never lives in the repository.
 type Config struct {
+	Ignored     []string `toml:"-"` // keys in the file docket doesn't use (logged at start)
 	DataDir     string   `toml:"data_dir"`
 	Listen      string   `toml:"listen"`
 	PublicURL   string   `toml:"public_url"`
@@ -52,14 +53,12 @@ type Ntfy struct {
 //	mode = "push":  the machine runs `docket sync` against the server (laptops
 //	                that sleep; no inbound SSH to them needed)
 type Machine struct {
-	Name          string   `toml:"name"`
-	Mode          string   `toml:"mode"`
-	SSH           string   `toml:"ssh"`
-	Docket        string   `toml:"docket"`
-	Interval      Duration `toml:"interval"`
-	Sleepy        bool     `toml:"sleepy"`
-	RemoteApprove *bool    `toml:"remote_approve"`
-	Physical      []string `toml:"physical_keywords"`
+	Name     string   `toml:"name"`
+	Mode     string   `toml:"mode"`
+	SSH      string   `toml:"ssh"`
+	Docket   string   `toml:"docket"`
+	Interval Duration `toml:"interval"`
+	Sleepy   bool     `toml:"sleepy"`
 }
 
 // Lead is one long-running agent responsible for an area of work.
@@ -126,8 +125,16 @@ func ConfigPath() string {
 // LoadConfig reads and validates the config, filling in defaults.
 func LoadConfig(path string) (*Config, error) {
 	var c Config
-	if _, err := toml.DecodeFile(path, &c); err != nil {
+	md, err := toml.DecodeFile(path, &c)
+	if err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
+	}
+	ignored := map[string]bool{}
+	for _, k := range md.Undecoded() {
+		if key := k.String(); !ignored[key] {
+			ignored[key] = true
+			c.Ignored = append(c.Ignored, key)
+		}
 	}
 	home, _ := os.UserHomeDir()
 	if c.DataDir == "" {
@@ -251,10 +258,6 @@ func (c *Config) Machine(name string) (Machine, bool) {
 	}
 	return Machine{}, false
 }
-
-// Approvable reports whether answers from the queue may approve actions on
-// this machine. Physical actions are never approvable remotely regardless.
-func (m Machine) Approvable() bool { return m.RemoteApprove == nil || *m.RemoteApprove }
 
 // Now is the current time in the configured zone.
 func (c *Config) Now() time.Time { return time.Now().In(c.loc) }

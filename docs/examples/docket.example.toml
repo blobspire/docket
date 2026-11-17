@@ -26,7 +26,6 @@ name = "lab"
 mode = "pull"
 ssh = "lab"                         # anything `ssh lab` reaches
 interval = "2m"
-physical_keywords = ["robot", "arm", "gripper", "e-stop"]   # never approvable remotely
 
 # A laptop that sleeps: it runs `docket sync --server server` itself.
 [[machine]]

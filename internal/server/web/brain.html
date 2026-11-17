@@ -1,45 +1,59 @@
 {{define "brain.html"}}{{template "head" .}}
-<main class="page">
-<h1>Brain</h1>
-<p class="muted">Preferences every agent follows. They come from your corrections and decisions; you approve each one, and nothing is applied without you.</p>
+<main class="main solo" id="main" data-label="Brain">
+<div class="pg">
+<div class="mh"><div>
+  <h1>Brain</h1>
+  <p>Preferences every agent follows. They come from your corrections and decisions; you approve each one, and nothing is applied without you.</p>
+</div></div>
 {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
 
-<section>
-  <h2>Approved ({{len .Rules}})</h2>
-  {{if not .Rules}}<p class="empty">None yet. Proposals appear below for you to approve.</p>{{end}}
+<section class="sec">
+  <h2>Proposed{{with .Closed}} <span class="cnt">{{len .}}</span>{{end}}</h2>
+  {{if not .Closed}}<p class="empty">No proposals waiting.</p>{{else}}
+  <ol class="rows">{{range .Closed}}
+  <li class="rw" data-id="{{.ID}}"><div class="row" data-id="{{.ID}}" data-nostash>
+    <span class="chip k-rule">Rule</span>
+    <div class="txt"><a class="t" href="/item/{{.ID}}">{{.Title}}</a></div>
+    <div class="qa vis" role="group" aria-label="Decide">
+      <button type="button" class="qb q-done" data-act="approve" title="Approve the rule">{{template "i" "check"}}<span>Approve</span></button>
+      <button type="button" class="qb" data-act="decline" title="Reject the rule">{{template "i" "x"}}<span>Reject</span></button>
+    </div>
+  </div></li>{{end}}
+  </ol>{{end}}
+  <form class="inline" method="post" action="/brain/propose"><button class="sb" type="submit">Propose rules from the last two weeks now</button></form>
+  <p class="muted small">Runs one small model call on the server. It also runs on its own about once a week.</p>
+</section>
+
+<section class="sec">
+  <h2>Approved <span class="cnt">{{len .Rules}}</span></h2>
+  {{if not .Rules}}<p class="empty">None yet. Proposals appear above for you to approve.</p>{{else}}
   <ol class="rows">
   {{range .Rules}}
-  <li class="row">
-    <div class="row-head"><span class="kind k-rule">{{if eq .Scope "all"}}all agents{{else}}{{.Scope}}{{end}}</span><div class="row-text"><span class="title">{{.Text}}</span></div>
-    <form method="post" action="/rule/{{.ID}}/retire"><button class="quiet small" type="submit">Retire</button></form></div>
-  </li>
+  <li class="rw"><div class="row plain">
+    <span class="chip k-rule">{{if eq .Scope "all"}}all agents{{else}}{{.Scope}}{{end}}</span>
+    <div class="txt"><span class="t">{{.Text}}</span></div>
+    <form class="qa vis" method="post" action="/rule/{{.ID}}/retire"><button class="qb" type="submit">{{template "i" "x"}}<span>Retire</span></button></form>
+  </div></li>
   {{end}}
-  </ol>
+  </ol>{{end}}
 </section>
 
-<section>
-  <h2>Proposed</h2>
-  {{if not .Closed}}<p class="empty">No proposals waiting.</p>{{end}}
-  <ol class="rows plain">{{range .Closed}}<li class="row" data-id="{{.ID}}" data-href="/item/{{.ID}}"><div class="row-head"><span class="kind k-rule">Rule</span><div class="row-text"><a class="title" href="/item/{{.ID}}">{{.Title}}</a></div></div><div class="actions">{{template "actions" .}}</div></li>{{end}}</ol>
-  <form method="post" action="/brain/propose"><button type="submit">Propose rules from the last two weeks now</button></form>
-  <p class="muted">Runs one small model call on the server. It also runs on its own about once a week.</p>
+<section class="sec">
+  <h2>Not worth your time <span class="cnt">{{len .Noise}}</span></h2>
+  <p class="muted small">Items you closed with "Not worth it". The latest ones, with your notes, are in every agent's rules.md, so they file fewer things like them.</p>
+  {{if not .Noise}}<p class="empty">None yet.</p>{{else}}
+  <ol class="rows">
+  {{range .Noise}}<li class="rw"><div class="row plain"><span class="chip k-{{kindClass .Kind}}">{{kindName .Kind}}</span><div class="txt"><a class="t" href="/item/{{.ItemID}}">{{.Title}}</a><div class="m">{{with .Project}}<span>{{.}}</span>{{end}}{{with .Note}}<span>“{{.}}”</span>{{end}}<span>{{clock .TS}}</span></div></div></div></li>{{end}}
+  </ol>{{end}}
 </section>
 
-<section>
-  <h2>Not worth your time ({{len .Noise}})</h2>
-  <p class="muted">Items you closed with "Not worth my time". The latest ones, with your notes, are in every agent's rules.md so they file fewer things like them.</p>
-  {{if not .Noise}}<p class="empty">None yet.</p>{{end}}
-  <ol class="rows plain">
-  {{range .Noise}}<li class="row"><div class="row-head"><span class="kind k-{{kindClass .Kind}}">{{kindName .Kind}}</span><div class="row-text"><a class="title" href="/item/{{.ItemID}}">{{.Title}}</a><div class="meta">{{with .Project}}<span class="m-comp">{{.}}</span>{{end}}{{with .Note}}<span>“{{.}}”</span>{{end}}<span class="m-age">{{clock .TS}}</span></div></div></div></li>{{end}}
-  </ol>
+<section class="sec">
+  <h2>Recent corrections <span class="cnt">{{len .Corrections}}</span></h2>
+  <p class="muted small">Prompts where you corrected or redirected an agent. This is what proposals learn from.</p>
+  {{if .Corrections}}<ol class="rows">
+  {{range .Corrections}}<li class="rw"><div class="row plain nochip"><div class="txt"><span class="t sm">{{.Answer}}</span><div class="m"><span>{{.Context}}</span><span>{{clock .TS}}</span></div></div></div></li>{{end}}
+  </ol>{{end}}
 </section>
-
-<section>
-  <h2>Recent corrections ({{len .Corrections}})</h2>
-  <p class="muted">Prompts where you corrected or redirected an agent. This is what proposals learn from.</p>
-  <ol class="rows plain">
-  {{range .Corrections}}<li class="row"><div class="row-head"><div class="row-text"><span>{{.Answer}}</span><div class="meta"><span>{{.Context}}</span><span class="m-age">{{clock .TS}}</span></div></div></div></li>{{end}}
-  </ol>
-</section>
+</div>
 </main>
 {{template "foot" .}}{{end}}
