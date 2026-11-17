@@ -1,7 +1,7 @@
 {{define "queue.html"}}{{template "head" .}}{{$q := .Queue}}
 <div class="body">
 {{template "sidebar" $q}}
-<main class="main" id="main">
+<main class="main" id="main" data-label="{{$q.Heading}}">
   <div class="pg">
   <div class="mh">
     <div>

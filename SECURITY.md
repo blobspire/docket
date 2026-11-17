@@ -13,7 +13,7 @@ docket relays decisions between you and agents that can run commands on your mac
 
 - **docket only relays your decision.** An answer goes to the session that filed the item, labeled as coming from the docket queue. docket never answers, approves or retries anything on its own.
 - **Auto mode still decides.** An approval for an action auto mode refused is delivered as your message; Claude Code's own permission checks then decide whether the retry runs. docket never tells the model to bypass them.
-- **Physical actions are never approvable remotely.** That means items marked `--physical`, or matching a machine's `physical_keywords` such as robot motion. Deliveries to such machines also state that they don't authorize physical motion.
+- **docket doesn't guard physical actions.** Your answer reaches the agent as you gave it. If a robot or other hardware must only move with someone present, enforce that where it binds every path to the hardware (the robot's own safety layer, the agent's instructions), not in docket. The old `physical_keywords` setting is ignored.
 - **Every answer is logged** with its delivery method and receipt.
 
 ## What docket reads and stores

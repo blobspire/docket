@@ -138,8 +138,8 @@
       <a class="t" href="/item/{{.ID}}">{{.Title}}</a>
       <div class="m">
         {{if .ShowProject}}<span>{{projectName .Item}}</span>{{end}}
-        {{if eq .List "stash"}}<span>stashed {{age .StashedAt}} ago</span>
-        {{else if eq .List "done"}}<span>closed {{age (closedAt .Item)}} ago</span>
+        {{if eq .List "stash"}}<span>stashed {{ago .StashedAt}}</span>
+        {{else if eq .List "done"}}<span>closed {{ago (closedAt .Item)}}</span>
         {{else if $w}}<span>{{.AnswerVerb}}{{with .AnswerWhat}} <b>{{.}}</b>{{end}}</span><span{{if .Stuck}} class="stuck"{{end}}>{{.DeliveryText}}</span>
         {{else}}
           {{if and (eq .Urgency "now") (ne .List "docket")}}<span class="now">Act now</span>{{else if eq .Urgency "soon"}}<span class="soon">Soon</span>{{end}}
@@ -150,13 +150,13 @@
           {{if .Paused}}<span class="paused" title="The agent is waiting on your answer">agent paused</span>{{end}}
           {{if eq .Status "snoozed"}}<span>snoozed until {{clock .SnoozedUntil}}</span>{{end}}
           {{if .Closed}}<span>{{.Status}}</span>{{end}}
-          <span title="Filed {{clock .CreatedAt}}">{{age .CreatedAt}} ago</span>
+          <span title="Filed {{clock .CreatedAt}}">{{ago .CreatedAt}}</span>
         {{end}}
         {{if and .Docs (not .Images)}}<span title="{{.Docs}} attachment{{if gt .Docs 1}}s{{end}}">{{template "i" "clip"}}{{.Docs}}</span>{{end}}
       </div>
       {{if or (eq .List "stash") (eq .List "done")}}<div class="m2">{{.ClosedHow}}</div>{{end}}
     </div>
-    <div class="th">{{$id := .ID}}{{range $k, $e := .Thumbs}}<button type="button" class="thb" data-lb="{{$id}}:{{$k}}" aria-label="View {{$e.Name}}"><img src="/blob/{{$e.SHA256}}?type={{$e.Mime}}" alt="" loading="lazy"></button>{{end}}{{with .MoreImages}}<span class="more">+{{.}}</span>{{end}}</div>
+    <div class="th"{{with .Images}} data-imgs="{{imgs .}}"{{end}}>{{$id := .ID}}{{range $k, $e := .Thumbs}}<button type="button" class="thb" data-lb="{{$id}}:{{$k}}" aria-label="View {{$e.Name}}"><img src="/blob/{{$e.SHA256}}?type={{$e.Mime}}" alt="" loading="lazy"></button>{{end}}{{with .MoreImages}}<span class="more">+{{.}}</span>{{end}}</div>
     <div class="qa" role="group" aria-label="Quick actions">
       {{if eq .List "stash"}}
         <button type="button" class="qb" data-act="reopen" title="Back to docket">{{template "i" "undo"}}<span>Back to docket</span></button>
@@ -189,11 +189,11 @@
   <div class="sh-b"><div class="sh-in">
     {{if .Error}}<p class="banner stuck">{{template "i" "alert"}}<span>{{.Error}}</span></p>{{end}}
     {{$verb := $it.AnswerVerb}}{{$what := $it.AnswerWhat}}
-    {{if $it.Stashed}}<div class="banner kept">{{template "i" "stash"}}<div><b>On your Stash.</b> You stashed it {{age $it.StashedAt}} ago. It moves to Done after 30 days.{{if $verb}} {{$verb}}{{with $what}} “{{.}}”{{end}}.{{end}}</div></div>
-    {{else if $it.Closed}}<div class="banner">{{template "i" "check"}}<div><b>Closed {{age (closedAt $it.Item)}} ago.</b> {{$it.ClosedHow}}.</div></div>
+    {{if $it.Stashed}}<div class="banner kept">{{template "i" "stash"}}<div><b>On your Stash.</b> You stashed it {{ago $it.StashedAt}}. It moves to Done after 30 days.{{if $verb}} {{$verb}}{{with $what}} “{{.}}”{{end}}.{{end}}</div></div>
+    {{else if $it.Closed}}<div class="banner">{{template "i" "check"}}<div><b>Closed {{ago (closedAt $it.Item)}}.</b> {{$it.ClosedHow}}.</div></div>
     {{else if $it.Waiting}}{{$note := $it.DeliveryText}}
-      {{if $it.Stuck}}<div class="banner stuck">{{template "i" "alert"}}<div><b>Your answer hasn't reached the agent.</b> {{$verb}}{{with $what}} “{{.}}”{{end}} {{age $it.AnsweredAt}} ago. {{$note}}.{{with $it.ResumeCommand}}<div class="acts"><button type="button" class="sb" data-copy="{{.}}">{{template "i" "copy"}}Copy the command to resume it</button></div>{{end}}</div></div>
-      {{else}}<div class="banner">{{template "i" "clock"}}<div><b>Waiting on the agent.</b> {{$verb}}{{with $what}} “{{.}}”{{end}} {{age $it.AnsweredAt}} ago. {{$note}}. Nothing to do until it updates.</div></div>{{end}}
+      {{if $it.Stuck}}<div class="banner stuck">{{template "i" "alert"}}<div><b>Your answer hasn't reached the agent.</b> {{$verb}}{{with $what}} “{{.}}”{{end}} {{ago $it.AnsweredAt}}. {{$note}}.{{with $it.ResumeCommand}}<div class="acts"><button type="button" class="sb" data-copy="{{.}}">{{template "i" "copy"}}Copy the command to resume it</button></div>{{end}}</div></div>
+      {{else}}<div class="banner">{{template "i" "clock"}}<div><b>Waiting on the agent.</b> {{$verb}}{{with $what}} “{{.}}”{{end}} {{ago $it.AnsweredAt}}. {{$note}}. Nothing to do until it updates.</div></div>{{end}}
     {{else if eq $it.Status "snoozed"}}<div class="banner">{{template "i" "moon"}}<div><b>Snoozed until {{clock $it.SnoozedUntil}}.</b> It comes back on its own.</div></div>
     {{end}}
     <div class="kick">
@@ -203,7 +203,7 @@
       {{with $it.Place}}<span>{{template "i" "pin"}}{{.}}</span>{{end}}
       {{if not $it.Kept}}{{with $it.Due}}<span class="due-{{dueState .}}">due {{dueLabel .}}</span>{{end}}{{if $it.ExpiresAt}}<span>expires in {{until $it.ExpiresAt}}</span>{{end}}{{end}}
       {{if $it.Paused}}<span class="paused">agent paused</span>{{end}}
-      <span title="Filed {{clock $it.CreatedAt}}">{{age $it.CreatedAt}} ago</span>
+      <span title="Filed {{clock $it.CreatedAt}}">{{ago $it.CreatedAt}}</span>
     </div>
     <h2 class="sh-t">{{$it.Title}}</h2>
     {{if and $it.Recommend (not $it.Options)}}<p class="recline"><b>Recommends:</b> {{$it.Recommend}}</p>{{end}}

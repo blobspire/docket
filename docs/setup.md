@@ -110,17 +110,25 @@ docket import md STATUS.md --project website --section "Human tasks"   # task li
 
 ## Day to day
 
-Open the dashboard at `https://<server>.<tailnet>.ts.net`. Each row has one-tap ✓ Done, 👎 Not worth my time and × Dismiss buttons: they show on hover with a mouse, and always on a phone. Every action can be undone from its toast. Press `?` for keys:
+Open your docket at `https://<server>.<tailnet>.ts.net`; the docket mark at the top left always brings you back, and its badge counts what needs you (red when something needs action now).
+
+- **Rows** have one-tap ✓ Done, 👎 Not worth my time and × Dismiss buttons: they show on hover with a mouse, and always on a phone, where you can also swipe a row right for done or left to dismiss.
+- **Click a row** to open the item. The answer dock is pinned under it: the agent's options on top (the recommended one filled in), Reply beside them, and Done, Not worth it, Dismiss, Stash and Snooze in the same places on every item. After you act, the next item opens.
+- **Answers waiting on agents** fold under each project until the agent closes the item. One whose delivery is stuck says so.
+- **Stash** (`t`, or the toast after you answer or mark something done) keeps an item handy for 30 days without leaving it on your docket.
+- **Every action** can be undone from its toast. Press `?` for keys:
 
 | Key | Action |
 |---|---|
-| `j` / `k` | move |
-| `enter` | expand an item in place |
-| `[` / `]` | switch project |
-| `y` / `n` | approve or decline |
-| `a` | answer in your own words |
-| `d` / `x` | done / dismiss (the next row is selected after) |
+| `j` / `k` | next / previous item (in the list or an open item) |
+| `enter` / `esc` | open the item / back to the list |
+| `1`–`9` | pick one of the agent's options |
+| `r` | reply in your own words |
+| `d` / `x` | done / dismiss |
 | `w` | not worth my time, with a note |
+| `t` | stash |
+| `s` / `S` | snooze until tomorrow / for an hour |
+| `[` / `]` | switch project |
 | `u` | undo |
 | `o` | open the agent's session |
 

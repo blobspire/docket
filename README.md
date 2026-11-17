@@ -18,17 +18,20 @@ docket gives your agents one place to bring you what really needs you: results y
 ## What it does
 
 - **Agents decide what reaches you.** No scraping of chat text and no model vetting. A short instruction in every agent's context explains why your attention is scarce, sets the bar, and has agents write a title you can scan in a second.
-  - Agents file with a non-blocking CLI (`docket ask`, `task`, `review`, `issue`), choosing a **project**, an optional **component**, a **place** for physical tasks, an **urgency** (`now`, `soon`, `normal`), a deadline and an expiry.
+  - Agents file with a non-blocking CLI (`docket ask`, `task`, `review`, `issue`), choosing a **project**, an optional **component**, a **place** for things you do in person, an **urgency** (`now`, `soon`, `normal`), a deadline and an expiry.
   - When you answer in chat instead, the agent closes the item itself.
   - Claude Code hooks catch only what an agent can't file itself: an expired Claude login, a stuck unattended lead.
-- **A dashboard you can read quickly:**
+- **A docket you can read quickly:**
   - a project sidebar (or chips on a phone)
   - a red **Act now** band at the top
-  - one section per project, grouped by component
+  - one section per project, ordered by what's most pressing, with answers still waiting on agents folded away
   - views by place, so one trip to the lab covers everything there
   - sorting by priority, deadline or newest
-  - rows that expand in place with rendered markdown and evidence
+  - each item opens in a sheet with its rendered markdown, images, reports and the session it came from
+  - an **answer dock** pinned under every item: the agent's options (the recommended one filled in), a reply box, and the same five actions in the same places (Done, Not worth it, Dismiss, Stash, Snooze), so you never scroll back up to answer
   - one-tap Done, "Not worth my time" and Dismiss on every row, so you can clear the list while scrolling it, with Undo
+- **Done tells the agent.** It closes the item, and the agent that filed it hears so at its next turn, in words that fit what it asked (a review was looked at; an unanswered question isn't a yes).
+- **Stash** keeps what you've dealt with but want close at hand (results to share, a quote to act on) off your docket for 30 days.
 - **"Not worth my time" with a note.** It closes the item, tells the agent that filed it, and joins a short list every agent reads, so the bar calibrates itself.
 - **Delivers your answer immediately:**
   - into a busy session at its next tool call,
@@ -40,7 +43,6 @@ docket gives your agents one place to bring you what really needs you: results y
 - **Job liveness:** a job that stops sending heartbeats becomes an alert, and its lead is woken.
 - **Watchdog:** unreachable machines, expired logins, usage limits per account, which lead is spending. It never answers anything for you.
 - **Brain:** your corrections and "not worth my time" notes become proposed preference rules. You approve each one, and approved rules reach every agent.
-- **Robot-safe:** physical actions can never be approved remotely.
 
 ## How it works
 

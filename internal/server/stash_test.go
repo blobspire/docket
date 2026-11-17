@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/blobspire/docket/internal/ingest"
+	"github.com/blobspire/docket/internal/record"
 	"github.com/blobspire/docket/internal/store"
 )
 
@@ -192,5 +194,24 @@ func TestStashLastsThirtyDays(t *testing.T) {
 	}
 	if strings.Contains(get(e, "/"), `class="tc"`) {
 		t.Error("the nav still counts it on the Stash")
+	}
+}
+
+// An agent closing an item whose answer reached it takes it off the
+// docket's "Waiting on agents".
+func TestAgentDoneClosesADeliveredItem(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	e.file(t, "s", record.Item{ID: "dk-ad000001", Kind: "ask", Title: "which GPU?", Project: "w", Options: []string{"A100", "H100"}})
+	if err := e.s.Decide("dk-ad000001", Action{Kind: "choose", Option: 0}); err != nil {
+		t.Fatal(err)
+	}
+	st.DB.Exec(`UPDATE items SET status='delivered' WHERE id='dk-ad000001'`)
+	if !onPage(e, "/?p=w", "dk-ad000001") {
+		t.Fatal("the delivered answer isn't waiting on the docket")
+	}
+	e.send(t, record.Record{Event: "cli.done", SessionID: "s", Done: &record.Done{ItemID: "dk-ad000001", Note: "using the A100"}}, ingest.Options{})
+	if it, _, _ := st.GetItem("dk-ad000001"); it.Status != "done" || onPage(e, "/?p=w", "dk-ad000001") {
+		t.Fatalf("the agent's done didn't close it: %+v", it)
 	}
 }

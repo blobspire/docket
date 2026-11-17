@@ -210,9 +210,10 @@ func apply(s *store.Store, e store.RawEvent, o Options) error {
 				it, ok = s.ActiveByAgentKey(k, sid, r.Machine)
 			}
 		}
-		// Only an item that still needs someone: an agent's "done" must never
-		// overwrite the human's dismissal or "not worth my time".
-		if !ok || !active(it.Status) {
+		// Only an item that still needs someone (or one whose answer the
+		// agent has, waiting for it to close the loop): an agent's "done"
+		// must never overwrite the human's dismissal or "not worth my time".
+		if !ok || !(active(it.Status) || it.Status == "delivered") {
 			return nil
 		}
 		return s.SetStatus(it.ID, "done", firstNonEmpty(d.Note, "resolved by the agent"), "")

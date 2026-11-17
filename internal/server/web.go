@@ -21,7 +21,13 @@ import (
 var webFS embed.FS
 
 var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
-	"age":         func(unix int64) string { return age(time.Now(), unix) },
+	"age": func(unix int64) string { return age(time.Now(), unix) },
+	"ago": func(unix int64) string {
+		if time.Since(time.Unix(unix, 0)) < time.Minute {
+			return "just now"
+		}
+		return age(time.Now(), unix) + " ago"
+	},
 	"md":          renderMarkdown,
 	"kindClass":   kindClass,
 	"until":       until,
@@ -101,6 +107,18 @@ var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 			return "Close it, and tell the agent it's done"
 		}
 		return "Close it. The agent hears it's done the next time its session is active."
+	},
+	"imgs": func(es []store.Evidence) string {
+		type img struct {
+			Src  string `json:"src"`
+			Name string `json:"name"`
+		}
+		out := make([]img, len(es))
+		for i, e := range es {
+			out[i] = img{"/blob/" + e.SHA256 + "?type=" + url.QueryEscape(e.Mime), e.Name}
+		}
+		b, _ := json.Marshal(out)
+		return string(b)
 	},
 	"isImage": func(m string) bool { return strings.HasPrefix(m, "image/") },
 	"isVideo": func(m string) bool { return strings.HasPrefix(m, "video/") },
@@ -416,6 +434,16 @@ func (s *Server) pageItem(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		atts = append(atts, a)
+	}
+	// Pictures first, then documents, then the rest.
+	rank := map[string]int{"image": 0, "video": 1, "doc": 2, "file": 3, "missing": 4}
+	sort.SliceStable(atts, func(i, j int) bool { return rank[atts[i].Kind] < rank[atts[j].Kind] })
+	images = 0
+	for i := range atts {
+		if atts[i].Kind == "image" {
+			atts[i].Index = images
+			images++
+		}
 	}
 	s.render(w, "item.html", page{Title: it.Title, Nav: "docket", One: &one, Attachments: atts, Session: &sess, Delivery: ds, Error: r.URL.Query().Get("err")})
 }
