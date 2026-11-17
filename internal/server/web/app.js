@@ -26,7 +26,10 @@
   // ---- rows -----------------------------------------------------------------------------
   // Rows you can see: a folded "Waiting on agents" hides its rows.
   const visible = (r) => r.offsetParent !== null && !r.closest("details:not([open])");
-  const rowIds = () => $$(".rw[data-id]").filter(visible).map((r) => r.dataset.id);
+  // Rows on their way out (an action sent) can't be selected or acted on;
+  // with all=true they still count, to find what comes after one.
+  const gone = (r) => r.matches(".leaving, .gone-l, .gone-r");
+  const rowIds = (all = false) => $$(".rw[data-id]").filter((r) => visible(r) && (all || !gone(r))).map((r) => r.dataset.id);
   const rowOf = (id) => id && $(`.row[data-id="${escId(id)}"]`);
   const markSel = (scroll) => {
     $$(".row.sel").forEach((r) => r.classList.remove("sel"));
@@ -41,8 +44,9 @@
   // The next item to show after this one goes: the one after it that still
   // needs you, else the one before.
   const nextAfter = (id) => {
-    const order = rowIds(), i = order.indexOf(id);
-    const ok = (x) => x !== id && !pending.has(x) && (!docket || actionable(x));
+    const order = rowIds(true), i = order.indexOf(id);
+    const leaving = (x) => { const r = $(`.rw[data-id="${escId(x)}"]`); return !r || gone(r); };
+    const ok = (x) => x !== id && !pending.has(x) && !leaving(x) && (!docket || actionable(x));
     if (i < 0) return null;
     return order.slice(i + 1).find(ok) || order.slice(0, i).reverse().find(ok) || null;
   };
@@ -85,7 +89,14 @@
         b.hidden = false;
         b.disabled = +b.dataset.nav < 0 ? i <= 0 : i >= order.length - 1;
       });
-    } else if (pos) pos.textContent = "";
+    } else {
+      if (pos) pos.textContent = "";
+      $$("[data-nav]", sh).forEach((b) => { b.hidden = true; });
+    }
+    // An item's own page goes back to the list you came from.
+    if (solo && back) {
+      try { const r = new URL(document.referrer); if (r.origin === location.origin && !r.pathname.startsWith("/item/")) back.href = r.pathname + r.search; } catch (_) {}
+    }
     // A long attachment folds, with a button to see all of it.
     $$(".doc-b.clamp", sh).forEach((d) => {
       const long = d.scrollHeight > d.clientHeight + 4;
@@ -105,6 +116,9 @@
   async function openSheet(id, how = "push") {
     const seq = ++sheetSeq;
     const again = !scrim.hidden;
+    // The sheet on screen is the previous item's until the next one arrives:
+    // nothing on it may act meanwhile.
+    if (again) { const old = sheetEl(); if (old) { old.classList.add("busy"); old.inert = true; } }
     openId = sel = id;
     markSel(true);
     if (!again) {
@@ -125,11 +139,12 @@
     scrim.replaceChildren(sh);
     setupSheet(sh);
     $(".sh-b", sh).scrollTop = 0;
-    $("[data-back]", sh)?.focus({ preventScroll: true });
+    sh.tabIndex = -1;
+    sh.focus({ preventScroll: true });
   }
   // Close it: through history when the sheet added an entry, so the
   // browser's Back and this one agree.
-  const closeSheet = () => { if (pushed) history.back(); else shut(); };
+  const closeSheet = () => { if (pushed) { pushed = false; history.back(); } else shut(); };
   const shut = () => {
     sheetSeq++;
     pushed = false;
@@ -146,6 +161,7 @@
     const want = e.state && e.state.sheet;
     if (want && want !== openId) { pushed = true; openSheet(want, "none"); }
     else if (!want && openId) { pushed = false; shut(); }
+    else if (!want && !scrim.hidden) shut();
   });
   const nav = (d) => {
     if (!openId || solo) return;
@@ -154,12 +170,14 @@
     openSheet(order[j], "replace");
   };
   const sheetEl = () => (openId ? $(".sheet") : null);
+  const liveSheet = () => { const sh = sheetEl(); return sh && sh.dataset.id === openId && !sh.classList.contains("busy") && $(".dock", sh) ? sh : null; };
 
   // The answer box: folded under the options until Reply (or r).
   const replyForm = () => $(".sheet [data-reply]");
   const openReply = () => {
+    if (!liveSheet()) return;
     const f = replyForm();
-    if (!f) return toast(sheetEl()?.querySelector(".dock") ? "This item takes no written answer" : "Open an item to reply");
+    if (!f) return toast("This item takes no written answer");
     f.hidden = false;
     $("textarea", f).focus();
     placeToast();
@@ -207,6 +225,7 @@
     sh?.classList.add("busy");
     const rw = $(`.rw[data-id="${escId(id)}"]`);
     if (rw && leaves(action)) rw.classList.add("leaving");
+    const msg = said(action, extra, id); // while the sheet still shows this item
     let err = "";
     try {
       const body = new URLSearchParams({ action, ...extra });
@@ -228,7 +247,6 @@
     ss.set("docket.last", undo || "");
     // After a done or an answer, the toast offers to keep it on the Stash.
     const keep = action === "done" || answers.includes(action) ? id : null;
-    const msg = said(action, extra, id);
     if (solo) {
       // From an item's own page: back to the list it came from (fresh), or
       // stay for an undo, a move or a reopen, which keep it here.
@@ -250,7 +268,7 @@
       sel = nextAfter(id);
       markSel(true);
     }
-    if (rw && leaves(action)) {
+    if (rw && leaves(action) && document.body.dataset.page !== "search") {
       rw.classList.add(action === "dismiss" || action === "noise" || action === "snooze" ? "gone-l" : "gone-r");
       setTimeout(refresh, 190);
     } else refresh();
@@ -320,6 +338,10 @@
 
   // ---- clicks -------------------------------------------------------------------------------------
   let suppress = false; // a swipe just ended: its click isn't one
+  // A drag that starts in the sheet (selecting text) and ends on the
+  // backdrop clicks the backdrop: only a press that starts there closes.
+  let downOn = null;
+  document.addEventListener("pointerdown", (e) => { downOn = e.target; }, true);
   const closeMenus = (except) => {
     $$(".menu").forEach((m) => {
       if (m === except) return;
@@ -347,7 +369,7 @@
     }
     if (!nscrim.hidden) {
       if (t.closest("[data-note-skip]")) { const id = noteFor; closeNote(); act(id, "noise", { text: "" }); }
-      else if (t === nscrim) closeNote();
+      else if (t === nscrim && downOn === nscrim) closeNote();
       return;
     }
     if ((el = t.closest("[data-lb]"))) { e.preventDefault(); return openLB(imagesFor(el), +el.dataset.lb.split(":")[1]); }
@@ -367,10 +389,11 @@
       return;
     }
     // Inside the sheet.
-    if (t === scrim) return closeSheet();
+    if (t === scrim) return downOn === scrim && closeSheet();
     if ((el = t.closest("[data-back]")) && !solo) { e.preventDefault(); return closeSheet(); }
     if ((el = t.closest("[data-nav]"))) return nav(+el.dataset.nav);
     if ((el = t.closest("[data-reply-open]"))) return openReply();
+    if (t.closest(".sheet.busy")) return;
     if ((el = t.closest("[data-reply-x]"))) return closeReply();
     if ((el = t.closest(".doc-more"))) {
       const d = el.previousElementSibling, folded = d.classList.toggle("clamp");
@@ -380,8 +403,9 @@
     }
     // Actions, on a row or in the dock.
     if ((el = t.closest("button[data-act], button[data-noise]"))) {
-      if (el.disabled) return;
       e.preventDefault();
+      const host = el.closest(".sheet");
+      if (el.disabled || (host && !solo && host !== liveSheet())) return;
       const id = el.closest("[data-id]")?.dataset.id;
       if (el.hasAttribute("data-noise")) return openNote(id);
       const extra = {};
@@ -467,7 +491,7 @@
     drag.dx = dx;
     drag.r.style.transform = `translateX(${dx}px)`;
     drag.rw.classList.toggle("sw-r", dx > 0 && drag.open);
-    drag.rw.classList.toggle("sw-l", dx < 0 || !drag.open);
+    drag.rw.classList.toggle("sw-l", dx < 0);
   });
   const endDrag = () => {
     if (!drag) return;
@@ -477,7 +501,7 @@
     suppress = true;
     setTimeout(() => { suppress = false; }, 60);
     d.r.style.transition = "transform .2s";
-    if (Math.abs(d.dx) > 96 && !pending.has(d.id)) {
+    if (Math.abs(d.dx) > 96 && !pending.has(d.id) && (d.dx < 0 || d.open)) {
       d.r.style.transform = `translateX(${d.dx > 0 ? 110 : -110}%)`;
       setTimeout(() => act(d.id, d.dx > 0 && d.open ? "done" : "dismiss").then((ok) => { if (!ok) { d.r.style.transform = ""; d.rw.classList.remove("sw-r", "sw-l"); } }), 160);
     } else {
@@ -530,13 +554,14 @@
     if (k === "?") return toggleHelp();
     if (k === "/") { e.preventDefault(); const q = $("#q"); return q ? q.focus() : (location.href = "/search"); }
     if (k === "u") { e.preventDefault(); return undoLast(); }
-    const sh = sheetEl();
-    if (sh) {
-      const id = openId, dock = $(".dock", sh);
-      const press = (sel) => { const b = $(sel, dock); if (b && !b.disabled) { b.click(); return true; } return false; };
-      if (k === "Escape") { e.preventDefault(); return solo ? $("[data-back]", sh).click() : closeSheet(); }
+    if (sheetEl()) {
+      const sh = solo ? sheetEl() : liveSheet(), id = openId;
+      if (k === "Escape") { e.preventDefault(); return solo ? $("[data-back]", sheetEl()).click() : closeSheet(); }
       // j and k move between items; the arrows scroll what you're reading.
       if (k === "j" || k === "k") { if (!solo) { e.preventDefault(); nav(k === "j" ? 1 : -1); } return; }
+      if (!sh) return; // still loading: nothing to act on yet
+      const dock = $(".dock", sh);
+      const press = (sel) => { const b = $(sel, dock); if (b && !b.disabled) { b.click(); return true; } return false; };
       if (/^[1-9]$/.test(k)) { if (press(`.dk-a [data-key="${k}"]`)) e.preventDefault(); return; }
       if (k === "r" || k === "a") { e.preventDefault(); return openReply(); }
       if (k === "o" && sh.dataset.session) return window.open(sh.dataset.session, "_blank", "noopener");
@@ -601,6 +626,7 @@
         const res = await fetch(listURL, { signal: timeout(10000) });
         if (!res.ok) throw new Error(String(res.status));
         const doc = new DOMParser().parseFromString(await res.text(), "text/html");
+        if (!force && $$(".menu").some((m) => !m.hidden)) break; // the next check swaps it
         if (!force && busyList()) { $(".updated").hidden = false; break; }
         const where = [".body", "main#main"].find((s) => $(s) && $(s, doc));
         if (!where) break;

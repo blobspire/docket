@@ -1,5 +1,15 @@
 /* docket: a calm list of what needs you. Warm cream and white surfaces, one
-   terracotta accent, semantic kind colors. Set in Inter. */
+   terracotta accent, semantic kind colors. Set in Inter, served from here
+   (Latin; SIL Open Font License, see inter-LICENSE.txt) so no page view
+   reaches a third party. */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/static/inter.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
 :root {
   --bg: #f7f6f3; --surface: #ffffff; --surface-2: #fbfaf7; --pop: #ffffff;
   --fg: #1d1b18; --fg-2: #3d3a35; --muted: #77716a; --faint: #9b948a;
@@ -219,6 +229,7 @@ kbd { font-family: var(--mono); font-size: 11.5px; color: var(--faint); border: 
 body.sheet-open { overflow: hidden; }
 .scrim { position: fixed; inset: 0; z-index: 20; background: var(--scrim); display: flex; align-items: center; justify-content: center; animation: fade .18s ease-out; }
 .sheet { background: var(--surface); display: flex; flex-direction: column; }
+.sheet:focus { outline: none; }
 .scrim .sheet { width: min(800px, calc(100% - 72px)); height: calc(100% - 44px); border-radius: 18px; box-shadow: var(--shadow); overflow: hidden; animation: pop .24s cubic-bezier(.2, .8, .2, 1); }
 .scrim .sheet.again { animation: none; }
 .sh-h { flex: none; display: flex; align-items: center; gap: 4px; height: 58px; padding: 0 10px 0 8px; border-bottom: 1px solid var(--line); background: var(--surface); }
@@ -382,7 +393,7 @@ body.sheet-open { overflow: hidden; }
 .help dl { display: grid; grid-template-columns: auto 1fr; gap: 7px 18px; margin: 0 0 12px; font-size: 14px; }
 .help dt { font-family: var(--mono); font-size: 13px; color: var(--accent); }
 .help dd { margin: 0; }
-.toast { position: fixed; left: 50%; bottom: 22px; z-index: 50; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; min-height: 46px; padding: 0 6px 0 16px; border-radius: 13px; background: var(--toast); color: var(--toast-fg); font-size: 14.5px; box-shadow: var(--shadow); max-width: calc(100vw - 24px); animation: rise .2s ease-out; }
+.toast { position: fixed; left: 12px; right: 12px; margin: 0 auto; width: fit-content; bottom: 22px; z-index: 50; display: flex; align-items: center; gap: 8px; min-height: 46px; padding: 0 6px 0 16px; border-radius: 13px; background: var(--toast); color: var(--toast-fg); font-size: 14.5px; box-shadow: var(--shadow); max-width: calc(100vw - 24px); animation: rise .2s ease-out; }
 .toast span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 6px; }
 .toast.err span { white-space: normal; padding: 8px 0; }
 .toast button { height: 34px; padding: 0 10px; border-radius: 8px; color: var(--toast-accent); font-weight: 650; flex: none; }
@@ -393,7 +404,7 @@ body.sheet-open { overflow: hidden; }
 @keyframes fade { from { opacity: 0; } }
 @keyframes pop { from { opacity: 0; transform: translateY(10px) scale(.985); } }
 @keyframes up { from { transform: translateY(100%); } }
-@keyframes rise { from { opacity: 0; transform: translate(-50%, 8px); } }
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 
 /* ---- forms and the other pages ------------------------------------------------------ */
@@ -486,7 +497,8 @@ code { font-family: var(--mono); font-size: .9em; }
   .lb-p { left: calc(50% - 60px); } .lb-n { right: calc(50% - 60px); }
   .nscrim { align-items: flex-end; padding: 0; }
   .note { width: 100%; border-radius: 18px 18px 0 0; animation: up .28s cubic-bezier(.2, .8, .2, 1); padding-bottom: max(24px, env(safe-area-inset-bottom)); }
-  .updated { left: 12px; right: 12px; bottom: 12px; justify-content: space-between; }
+  .updated { left: 12px; right: 12px; top: calc(var(--bar) + 8px); bottom: auto; justify-content: space-between; }
+  .dk-a { max-height: 38vh; overflow-y: auto; }
   table { display: block; overflow-x: auto; }
   .evidence { grid-template-columns: 1fr; }
 }

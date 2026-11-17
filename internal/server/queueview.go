@@ -44,6 +44,7 @@ type sideEntry struct {
 // whole list): its open items, then the ones waiting on agents, folded.
 type section struct {
 	Title, Desc, URL string // no Title: the view's own list
+	Key              string // the view's own list: which project
 	Rows             []itemView
 	Waiting          []itemView
 	Stuck            int // waiting items whose answer hasn't reached the agent
@@ -53,7 +54,7 @@ type section struct {
 // closed across refreshes.
 func (s section) WaitKey() string {
 	if s.Title == "" {
-		return "view"
+		return "view:" + s.Key
 	}
 	return s.Title
 }
@@ -474,7 +475,7 @@ func (s *Server) buildQueue(query url.Values) (*queueView, error) {
 			q.Sections = []section{{Rows: s.rows(rest, "docket", true, q.Projects)}}
 		}
 	case "project":
-		sec := section{Rows: s.rows(rest, "docket", false, q.Projects), Waiting: s.rows(wait, "docket", false, q.Projects)}
+		sec := section{Key: q.Project, Rows: s.rows(rest, "docket", false, q.Projects), Waiting: s.rows(wait, "docket", false, q.Projects)}
 		sec.countStuck()
 		if len(sec.Rows)+len(sec.Waiting) > 0 {
 			q.Sections = []section{sec}
