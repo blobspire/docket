@@ -730,6 +730,7 @@ func (s *Server) act(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a := Action{Kind: r.FormValue("action"), Text: r.FormValue("text"), Project: r.FormValue("project"), Urgency: r.FormValue("urgency")}
+	a.Decision, _ = strconv.ParseInt(r.FormValue("decision"), 10, 64)
 	if o := r.FormValue("option"); o != "" {
 		a.Option, _ = strconv.Atoi(o)
 	}
@@ -758,7 +759,10 @@ func (s *Server) act(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]string{"ok": "1"})
+		// The decision this logged, so the toast's Undo takes back this one
+		// and nothing else (another tab may have acted since).
+		did, _, _, _ := s.st.TopDecision(id)
+		json.NewEncoder(w).Encode(map[string]string{"ok": "1", "decision": strconv.FormatInt(did, 10)})
 		return
 	}
 	back := r.FormValue("back")
@@ -792,7 +796,9 @@ func (s *Server) blob(w http.ResponseWriter, r *http.Request) {
 	// Embedding as <img> or <video> is unaffected. A PDF is the exception:
 	// the browser's own viewer shows it (and runs nothing of the page's),
 	// and a sandbox would stop that viewer.
-	if mt, _, err := mimepkg.ParseMediaType(mime); err != nil || mt != "application/pdf" {
+	if mt, _, err := mimepkg.ParseMediaType(mime); err == nil && mt == "application/pdf" {
+		mime = "application/pdf" // exactly that, never the raw value a browser might read differently
+	} else {
 		w.Header().Set("Content-Security-Policy", "sandbox")
 	}
 	w.Header().Set("Content-Type", mime)

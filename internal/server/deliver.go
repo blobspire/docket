@@ -94,7 +94,7 @@ func (s *Server) Decide(id string, a Action) error {
 		if it.Kind == "rule" {
 			return errors.New("approve or reject a rule; it can't be stashed")
 		}
-		if it.Source == ingest.SrcWatchdog || it.Source == ingest.SrcFailure {
+		if (it.Source == ingest.SrcWatchdog || it.Source == ingest.SrcFailure) && !closedStatus(it.Status) {
 			return errors.New("docket closes this itself once it clears; snooze or dismiss it instead")
 		}
 		closed, err := s.st.Stash(id)
@@ -137,7 +137,7 @@ func (s *Server) Decide(id string, a Action) error {
 				if (d.Status != "sent" && d.Status != "confirmed") || d.CreatedAt < dts {
 					continue // still queued (the undo withdraws it), dropped, or older
 				}
-				sentNoise = sentNoise || (d.LiveOnly && strings.Contains(d.Text, "not worth their time"))
+				sentNoise = sentNoise || (d.LiveOnly && strings.Contains(d.Text, store.NoiseMark))
 				if strings.Contains(d.Text, doneMark) {
 					sentDone, loudDone = true, loudDone || !d.LiveOnly
 				}
@@ -203,7 +203,7 @@ func (s *Server) Decide(id string, a Action) error {
 	if err := s.st.SetAnswer(id, answer, a.Kind); err != nil {
 		return err
 	}
-	return s.queue(it, fmt.Sprintf("%s's answer to %q (from the docket queue): %s", s.cfg.Person, it.Title, answer))
+	return s.queue(it, fmt.Sprintf("%s's answer to %q %s %s", s.cfg.Person, it.Title, store.AnswerMark, answer))
 }
 
 func comment(t string) string {
@@ -267,7 +267,7 @@ func closedStatus(st string) bool { return st == "done" || st == "dismissed" || 
 
 // doneMark is in every "marked done" message to an agent, so an undo can
 // tell one apart from the other notes it sends.
-const doneMark = "marked your docket item done:"
+const doneMark = store.DoneMark
 
 // tellDone lets the agent that filed an item know the human marked it done,
 // so it doesn't keep waiting on it or file it again. An agent paused on a

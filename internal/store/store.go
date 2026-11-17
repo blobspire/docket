@@ -1038,7 +1038,7 @@ func (s *Store) UndoIf(id string, expect int64) (string, error) {
 		return "", errors.New("it changed meanwhile; look again")
 	}
 	var undeliverable int
-	tx.QueryRow(`SELECT COUNT(*) FROM deliveries WHERE item_id=? AND status IN ('sent','confirmed')`, id).Scan(&undeliverable)
+	tx.QueryRow(`SELECT COUNT(*) FROM deliveries WHERE item_id=? AND status IN ('sent','confirmed') AND live_only=0 AND created_at>=? AND instr(text, ?)>0`, id, dts, AnswerMark).Scan(&undeliverable)
 	if undeliverable > 0 && (action == "answer" || action == "approve" || action == "decline" || action == "choose") {
 		return "", errors.New("the answer has already been delivered to the agent; send a correction instead")
 	}
@@ -1094,9 +1094,17 @@ func (s *Store) UndoIf(id string, expect int64) (string, error) {
 	// its way when an expiry is undone.
 	// (Only deliveries queued from that decision on: an earlier answer still
 	// on its way stays.)
-	if action == "answer" || action == "approve" || action == "decline" || action == "choose" || action == "done" || action == "noise" ||
-		(action == "stash" && (prev == "open" || prev == "maybe")) { // a stash that closed it queued a "marked done"
-		tx.Exec(`DELETE FROM deliveries WHERE item_id=? AND status='pending' AND created_at>=?`, id, dts)
+	mark := ""
+	switch {
+	case action == "answer" || action == "approve" || action == "decline" || action == "choose":
+		mark = AnswerMark
+	case action == "done" || (action == "stash" && (prev == "open" || prev == "maybe")): // a stash that closed it queued a "marked done"
+		mark = DoneMark
+	case action == "noise":
+		mark = NoiseMark
+	}
+	if mark != "" {
+		tx.Exec(`DELETE FROM deliveries WHERE item_id=? AND status='pending' AND created_at>=? AND instr(text, ?)>0`, id, dts, mark)
 	}
 	if _, err := tx.Exec(`DELETE FROM decisions WHERE id=?`, did); err != nil {
 		return "", err
@@ -1280,8 +1288,9 @@ func (s *Store) DeliveryFailed(id, msg string) error {
 
 // ConfirmDelivery marks the delivery with this nonce confirmed and its item delivered.
 func (s *Store) ConfirmDelivery(nonce string) (bool, error) {
-	var id, itemID string
-	err := s.DB.QueryRow(`SELECT id, item_id FROM deliveries WHERE nonce=?`, nonce).Scan(&id, &itemID)
+	var id, itemID, text string
+	var live int
+	err := s.DB.QueryRow(`SELECT id, item_id, text, live_only FROM deliveries WHERE nonce=?`, nonce).Scan(&id, &itemID, &text, &live)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -1291,6 +1300,10 @@ func (s *Store) ConfirmDelivery(nonce string) (bool, error) {
 	t := now()
 	if _, err := s.DB.Exec(`UPDATE deliveries SET status='confirmed', confirmed_at=? WHERE id=? AND status!='confirmed'`, t, id); err != nil {
 		return false, err
+	}
+	// Only the answer arriving makes the item delivered, not a note's receipt.
+	if live != 0 || !strings.Contains(text, AnswerMark) {
+		return true, nil
 	}
 	_, err = s.DB.Exec(`UPDATE items SET status='delivered', updated_at=? WHERE id=? AND status='answered'`, t, itemID)
 	return true, err

@@ -32,8 +32,14 @@ var mdNoTables = goldmark.New(
 	goldmark.WithRendererOptions(html.WithHardWraps()),
 )
 
-// maxTableColumns is the widest table rendered as one.
-const maxTableColumns = 64
+// maxTableColumns is the widest table rendered as one; maxTableCells caps a
+// rough count of cells (widest row × lines) a text may make tables of; and
+// only the first mdBudget bytes render as markdown, the rest as plain text.
+const (
+	maxTableColumns = 64
+	maxTableCells   = 20000
+	mdBudget        = 32 << 10
+)
 
 // safeLinks opens links in a new tab without handing over the opener, and
 // turns images into plain links: an agent-written body must not make the
@@ -99,18 +105,39 @@ func external(n ast.Node) {
 
 // renderMarkdown turns an item body into HTML for the page.
 func renderMarkdown(s string) template.HTML {
-	conv := md
-	for _, line := range strings.Split(s, "\n") {
-		if strings.Count(line, "|") > maxTableColumns {
-			conv = mdNoTables
-			break
+	rest := ""
+	if len(s) > mdBudget {
+		cut := strings.LastIndexByte(s[:mdBudget], '\n')
+		if cut < mdBudget/2 {
+			cut = mdBudget
+			for cut > 0 && !utf8.RuneStart(s[cut]) {
+				cut--
+			}
 		}
+		s, rest = s[:cut], s[cut:]
+	}
+	// A table pads every row to its header's width: a wide header or a long
+	// run of rows under a wide one makes a node per cell.
+	conv := md
+	lines := strings.Split(s, "\n")
+	widest := 0
+	for _, line := range lines {
+		widest = max(widest, strings.Count(line, "|"))
+	}
+	if widest > maxTableColumns+1 || (widest+1)*len(lines) > maxTableCells { // n columns: up to n+1 pipes
+		conv = mdNoTables
 	}
 	var b bytes.Buffer
+	out := template.HTML("")
 	if err := conv.Convert([]byte(s), &b); err != nil || b.Len() > 40*len(s)+(1<<20) {
-		return template.HTML("<pre>" + template.HTMLEscapeString(s) + "</pre>")
+		out = template.HTML("<pre>" + template.HTMLEscapeString(s) + "</pre>")
+	} else {
+		out = template.HTML(b.String()) // goldmark escapes raw HTML (no WithUnsafe)
 	}
-	return template.HTML(b.String()) // goldmark escapes raw HTML (no WithUnsafe)
+	if rest != "" {
+		out += template.HTML("<pre>" + template.HTMLEscapeString(rest) + "</pre>")
+	}
+	return out
 }
 
 // shortBody is how much of a body a dashboard row carries; the item's own

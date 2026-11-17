@@ -53,10 +53,10 @@
 
   // ---- toast ----------------------------------------------------------------------------
   const toastEl = $("#toast");
-  let toastTimer, undoId = null, keepId = null;
-  const toast = (msg, { undo = null, keep = null, err = false } = {}) => {
+  let toastTimer, undoId = null, undoDecision = "", keepId = null;
+  const toast = (msg, { undo = null, keep = null, err = false, decision = "" } = {}) => {
     $("#toast-t").textContent = msg;
-    undoId = undo; keepId = keep;
+    undoId = undo; keepId = keep; undoDecision = undo ? decision : "";
     $("#toast-u").hidden = !undo;
     $("#toast-k").hidden = !keep;
     toastEl.classList.toggle("err", err);
@@ -256,11 +256,13 @@
     if (movedFrom) { sel = movedTo = nextAfter(id); markSel(true); }
     if (rw && leaves(action)) rw.classList.add("leaving");
     const msg = said(action, extra, id); // while the sheet still shows this item
-    let err = "";
+    let err = "", decision = "";
     try {
       const body = new URLSearchParams({ action, ...extra });
       const res = await fetch(`/item/${encodeURIComponent(id)}/act`, { method: "POST", body, headers: { "X-Requested-With": "fetch" }, signal: timeout(20000) });
-      if (!res.ok) err = (await res.json().catch(() => ({}))).error || `Couldn't ${verb[action] || action}`;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) err = data.error || `Couldn't ${verb[action] || action}`;
+      else decision = data.decision || "";
     } catch (_) {
       err = `Couldn't ${verb[action] || action}: the server didn't answer`;
     }
@@ -280,21 +282,21 @@
     }
     // What u (and the toast's Undo) undoes next; an undo leaves nothing more.
     const undo = action === "undo" || action === "reopen" ? null : id;
-    ss.set("docket.last", undo || "");
+    ss.set("docket.last", undo ? `${undo} ${decision}` : "");
     // After a done or an answer, the toast offers to keep it on the Stash.
     const noStash = !!(rw && rw.querySelector("[data-nostash]")) || !!(sh && sh.hasAttribute("data-nostash"));
     const keep = (action === "done" || answers.includes(action)) && !noStash ? id : null;
     if (solo) {
       // From an item's own page: back to the list it came from (fresh), or
       // stay for an undo, a move or a reopen, which keep it here.
-      carry(msg, undo);
+      carry(msg, undo ? `${undo} ${decision}` : null);
       if (["undo", "reclassify", "reopen", "stash", "unstash"].includes(action)) { location.reload(); return true; }
       let to = "/";
       try { const r = new URL(document.referrer); if (r.origin === location.origin && !r.pathname.startsWith("/item/")) to = r.pathname + r.search; } catch (_) {}
       location.href = to;
       return true;
     }
-    toast(msg, { undo, keep });
+    toast(msg, { undo, keep, decision });
     if (inSheet && openId === id) {
       if (!leaves(action)) openSheet(id, "replace"); // show it as it is now
       else {
@@ -309,11 +311,12 @@
     return true;
   }
   const undoLast = () => {
-    const id = undoId || ss.get("docket.last");
+    // Undo exactly the decision it reported (another tab may have acted since).
+    const [id, decision] = undoId ? [undoId, undoDecision] : (ss.get("docket.last") || "").split(" ");
     hideToast();
     if (!id) return toast("Nothing to undo");
     if (pending.size) return toast("Still sending; press u again in a moment");
-    act(id, "undo");
+    act(id, "undo", decision ? { decision } : {});
   };
 
   // ---- "not worth my time" ------------------------------------------------------------------
@@ -732,6 +735,6 @@
   try {
     const c = JSON.parse(ss.get("docket.toast") || "null");
     ss.set("docket.toast", "");
-    if (c && Date.now() - c.at < 5000) toast(c.msg, { undo: c.undo });
+    if (c && Date.now() - c.at < 5000) { const [u, d] = (c.undo || "").split(" "); toast(c.msg, { undo: u || null, decision: d || "" }); }
   } catch (_) {}
 })();

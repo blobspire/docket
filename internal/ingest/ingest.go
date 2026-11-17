@@ -208,19 +208,23 @@ func apply(s *store.Store, e store.RawEvent, o Options) error {
 			// The project resolved now may differ from the one at filing time
 			// (a folder default vs. an explicit --project then); only an
 			// explicitly named project rules out looking elsewhere.
-			if !ok && !d.Explicit {
-				it, ok = s.ActiveByAgentKey(k, sid, "") // this session's own first
+			pk := ""
+			if p := store.Slug(d.Project); p != "" {
+				pk = "key:" + p + ":" + k
 			}
-			// An answer the agent has, waiting for it to close the loop.
+			// This session's own first (open, then an answer it has and
+			// hasn't closed), then the machine's.
+			if !ok && !d.Explicit {
+				it, ok = s.ActiveByAgentKey(k, sid, "")
+			}
 			if !ok {
-				pk := ""
-				if p := store.Slug(d.Project); p != "" {
-					pk = "key:" + p + ":" + k
-				}
-				it, ok = s.DeliveredByKey(pk, k, sid, r.Machine, !d.Explicit)
+				it, ok = s.DeliveredBySession(pk, k, sid, !d.Explicit)
 			}
 			if !ok && !d.Explicit {
 				it, ok = s.ActiveByAgentKey(k, "", r.Machine)
+			}
+			if !ok {
+				it, ok = s.DeliveredOnMachine(pk, r.Machine)
 			}
 		}
 		// Only an item that still needs someone (or one whose answer the

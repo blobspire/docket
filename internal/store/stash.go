@@ -6,6 +6,14 @@ import (
 	"strings"
 )
 
+// Markers in the messages docket sends agents, so an undo withdraws (and a
+// receipt counts) only the kind its action sent.
+const (
+	AnswerMark = "(from the docket queue):"      // the human's answer
+	DoneMark   = "marked your docket item done:" // a done, or a stash that closed it
+	NoiseMark  = "not worth their time"          // "not worth my time"
+)
+
 // The Stash keeps items the human has dealt with but wants close at hand
 // (results to share, a quote to act on later) without leaving them on the
 // docket. An item stays there for StashDays, then counts as done.
@@ -127,26 +135,40 @@ func (s *Store) TopDecision(id string) (did int64, action, prev string, ts int64
 	return
 }
 
-// DeliveredByKey finds the item with a delivered answer that `docket done
-// --key` means: the caller's own (its session) first, by the exact
-// project-scoped key or, unless the project was named, its agent key; then
-// the exact key from the same machine, delivered within the last week.
-func (s *Store) DeliveredByKey(projectKey, k, session, machine string, anyProject bool) (Item, bool) {
-	if session != "" {
-		rs, _ := s.items(`SELECT `+itemCols+` FROM items WHERE dedupe_key LIKE 'key:%' AND status='delivered' AND session_id=? ORDER BY updated_at DESC, rowid DESC`, session)
+// DeliveredBySession finds the session's own item with a delivered answer
+// filed with this key: the exact project-scoped key first, then (unless the
+// project was named) the agent's key in any project.
+func (s *Store) DeliveredBySession(projectKey, k, session string, anyProject bool) (Item, bool) {
+	if session == "" {
+		return Item{}, false
+	}
+	rs, _ := s.items(`SELECT `+itemCols+` FROM items WHERE dedupe_key LIKE 'key:%' AND status='delivered' AND session_id=? ORDER BY updated_at DESC, rowid DESC`, session)
+	for _, it := range rs {
+		if it.DedupeKey == projectKey {
+			return it, true
+		}
+	}
+	if anyProject {
 		for _, it := range rs {
-			if it.DedupeKey == projectKey || (anyProject && AgentKey(it.DedupeKey) == k) {
+			if AgentKey(it.DedupeKey) == k {
 				return it, true
 			}
 		}
 	}
-	if projectKey != "" && machine != "" {
-		if it, err := scanItem(s.DB.QueryRow(`SELECT `+itemCols+` FROM items WHERE dedupe_key=? AND status='delivered' AND machine=? AND updated_at>=?
-			ORDER BY updated_at DESC, rowid DESC LIMIT 1`, projectKey, machine, now()-7*24*60*60)); err == nil {
-			return it, true
-		}
-	}
 	return Item{}, false
+}
+
+// DeliveredOnMachine finds an item with a delivered answer filed with
+// exactly this project-scoped key from the same machine within a week (a
+// session that was cleared or resumed under a new id). Never by the bare
+// agent key: another session's item in another project could match.
+func (s *Store) DeliveredOnMachine(projectKey, machine string) (Item, bool) {
+	if machine == "" || projectKey == "" {
+		return Item{}, false
+	}
+	it, err := scanItem(s.DB.QueryRow(`SELECT `+itemCols+` FROM items WHERE dedupe_key=? AND status='delivered' AND machine=? AND updated_at>=?
+		ORDER BY updated_at DESC, rowid DESC LIMIT 1`, projectKey, machine, now()-7*24*60*60))
+	return it, err == nil
 }
 
 // WaitWindow is how long an item whose answer reached its agent stays on the

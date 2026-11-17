@@ -150,7 +150,7 @@ func TestReceiptConfirmsDelivery(t *testing.T) {
 	h := newHarness(t)
 	h.s.UpsertItem(store.Item{ID: "dk-12345678", Kind: "ask", Title: "q", SessionID: "s1"})
 	h.s.SetAnswer("dk-12345678", "yes", "answer")
-	h.s.AddDelivery(store.Delivery{ID: "d1", ItemID: "dk-12345678", Machine: "lab", SessionID: "s1", Text: "yes", Nonce: "abc123"})
+	h.s.AddDelivery(store.Delivery{ID: "d1", ItemID: "dk-12345678", Machine: "lab", SessionID: "s1", Text: "Cole's answer to \"q\" " + store.AnswerMark + " yes", Nonce: "abc123"})
 	h.s.DeliverySent("d1", "mailbox")
 	h.send(hookRec("UserPromptSubmit", "s1", map[string]any{"prompt": "[docket dk-12345678 #abc123] Cole answered: yes"}))
 	it, _, _ := h.s.GetItem("dk-12345678")
