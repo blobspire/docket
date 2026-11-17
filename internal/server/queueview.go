@@ -56,7 +56,7 @@ func (s section) WaitKey() string {
 	if s.Title == "" {
 		return "view:" + s.Key
 	}
-	return s.Title
+	return "p:" + s.Title
 }
 
 // itemView is one row (or the item sheet): the item and what its row shows.

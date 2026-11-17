@@ -1,7 +1,9 @@
 package server
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -20,8 +22,20 @@ import (
 //go:embed web/*
 var webFS embed.FS
 
+// staticVer changes whenever the stylesheet or script does, so their
+// versioned URLs can be cached for good.
+var staticVer = func() string {
+	h := sha256.New()
+	for _, f := range []string{"web/app.css", "web/app.js"} {
+		b, _ := webFS.ReadFile(f)
+		h.Write(b)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:10]
+}()
+
 var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
-	"age": func(unix int64) string { return age(time.Now(), unix) },
+	"staticVer": func() string { return staticVer },
+	"age":       func(unix int64) string { return age(time.Now(), unix) },
 	"ago": func(unix int64) string {
 		if time.Since(time.Unix(unix, 0)) < time.Minute {
 			return "just now"
@@ -256,7 +270,17 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	static, _ := fs.Sub(webFS, "web")
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(static))))
+	files := http.StripPrefix("/static/", http.FileServer(http.FS(static)))
+	mux.HandleFunc("GET /static/", func(w http.ResponseWriter, r *http.Request) {
+		// A versioned URL (?v=…) never changes, so browsers keep it; a new
+		// build links a new version.
+		if r.URL.Query().Get("v") != "" {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		files.ServeHTTP(w, r)
+	})
 	return s.guard(mux)
 }
 

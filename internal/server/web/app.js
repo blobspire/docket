@@ -67,11 +67,16 @@
     toastTimer = setTimeout(hideToast, undo || keep || err ? 6500 : 3500);
   };
   const hideToast = () => { toastEl.hidden = true; undoId = keepId = null; };
-  // Above the dock while an item is open, so it never covers the buttons.
+  // Above the dock while an item is open, and above the "list changed"
+  // pill, so it never covers a button.
   const placeToast = () => {
-    const d = openId && $(".sheet .dock");
-    toastEl.style.bottom = d ? `${Math.max(22, innerHeight - d.getBoundingClientRect().top + 12)}px` : "";
+    let b = 22;
+    const d = openId && $(".sheet .dock"), pill = $(".updated");
+    if (d) b = Math.max(b, innerHeight - d.getBoundingClientRect().top + 12);
+    if (pill && !pill.hidden) b = Math.max(b, innerHeight - pill.getBoundingClientRect().top + 8);
+    toastEl.style.bottom = b > 22 ? `${b}px` : "";
   };
+  const showPill = (on) => { const p = $(".updated"); if (p && p.hidden === on) { p.hidden = !on; placeToast(); } };
   addEventListener("resize", placeToast);
   // A toast for the page about to load (an item's own page goes back to the list).
   const carry = (msg, undo) => ss.set("docket.toast", JSON.stringify({ msg, undo, at: Date.now() }));
@@ -95,8 +100,18 @@
     }
     // An item's own page goes back to the list you came from.
     if (solo && back) {
-      try { const r = new URL(document.referrer); if (r.origin === location.origin && !r.pathname.startsWith("/item/")) back.href = r.pathname + r.search; } catch (_) {}
+      try {
+        const r = new URL(document.referrer);
+        if (r.origin === location.origin && !r.pathname.startsWith("/item/")) {
+          back.href = r.pathname + r.search;
+          const names = { "/stash": "Stash", "/done": "Done", "/search": "Search", "/checklist": "Only you", "/brain": "Brain", "/leads": "Leads", "/evidence": "Evidence", "/health": "Health" };
+          const q = r.searchParams;
+          $("span", back).textContent = r.pathname === "/" ? (q.get("p") || q.get("place") || (q.get("view") === "now" ? "Act now" : "docket")) : names[r.pathname] || "Back";
+        }
+      } catch (_) {}
     }
+    const opts = $(".dk-a", sh);
+    if (opts) opts.classList.toggle("over", opts.scrollHeight > opts.clientHeight + 2);
     // A long attachment folds, with a button to see all of it.
     $$(".doc-b.clamp", sh).forEach((d) => {
       const long = d.scrollHeight > d.clientHeight + 4;
@@ -124,6 +139,7 @@
     if (!again) {
       scrim.replaceChildren(skeleton(listLabel()));
       scrim.hidden = false;
+      scrim.firstElementChild.addEventListener("animationend", placeToast, { once: true });
       document.body.classList.add("sheet-open");
     }
     if (how === "push" && !pushed) { history.pushState({ sheet: id }, "", `/item/${encodeURIComponent(id)}`); pushed = true; }
@@ -135,12 +151,17 @@
     } catch (_) {}
     if (seq !== sheetSeq || openId !== id) return; // another item (or none) since
     if (!sh) { closeSheet(); toast("Couldn't open that item", { err: true }); return; }
-    if (again) sh.classList.add("again");
+    // The skeleton already slid in: the real sheet takes its place without
+    // starting over.
+    sh.classList.add("again");
     scrim.replaceChildren(sh);
     setupSheet(sh);
-    $(".sh-b", sh).scrollTop = 0;
-    sh.tabIndex = -1;
-    sh.focus({ preventScroll: true });
+    const body = $(".sh-b", sh);
+    body.scrollTop = 0;
+    // Focus the scrolling body: the arrows, Space and Page Down read it, and
+    // Enter means nothing there.
+    body.tabIndex = -1;
+    body.focus({ preventScroll: true });
   }
   // Close it: through history when the sheet added an entry, so the
   // browser's Back and this one agree.
@@ -224,6 +245,8 @@
     const sh = inSheet ? sheetEl() : null;
     sh?.classList.add("busy");
     const rw = $(`.rw[data-id="${escId(id)}"]`);
+    const movedFrom = !inSheet && sel === id && leaves(action) && rw ? id : null;
+    if (movedFrom) { sel = nextAfter(id); markSel(true); }
     if (rw && leaves(action)) rw.classList.add("leaving");
     const msg = said(action, extra, id); // while the sheet still shows this item
     let err = "";
@@ -234,10 +257,16 @@
     } catch (_) {
       err = `Couldn't ${verb[action] || action}: the server didn't answer`;
     }
-    pending.delete(id);
-    sh?.classList.remove("busy");
+    if (!err && solo) {
+      // Leaving for the list: nothing more from this page meanwhile.
+      sh?.classList.add("busy");
+    } else {
+      pending.delete(id);
+      sh?.classList.remove("busy");
+    }
     if (err) {
       rw?.classList.remove("leaving");
+      if (movedFrom && sel !== movedFrom) { sel = movedFrom; markSel(true); } // it's still there
       toast(err, { err: true });
       refresh();
       return false;
@@ -264,9 +293,6 @@
         const nx = nextAfter(id);
         if (nx) openSheet(nx, "replace"); else closeSheet();
       }
-    } else if (sel === id && leaves(action)) {
-      sel = nextAfter(id);
-      markSel(true);
     }
     if (rw && leaves(action) && document.body.dataset.page !== "search") {
       rw.classList.add(action === "dismiss" || action === "noise" || action === "snooze" ? "gone-l" : "gone-r");
@@ -295,8 +321,10 @@
 
   // ---- attachment viewer ----------------------------------------------------------------------
   let lbImgs = [], lbAt = 0;
-  const openLB = (imgs, k) => {
+  let lbFrom = null;
+  const openLB = (imgs, k, from) => {
     if (!imgs.length) return;
+    lbFrom = from || null;
     lbImgs = imgs;
     track.replaceChildren(...imgs.map((a) => {
       const s = document.createElement("div"), img = document.createElement("img");
@@ -323,7 +351,12 @@
     track.scrollTo({ left: k * track.clientWidth, behavior: reduce ? "auto" : "smooth" });
     setLB(k);
   };
-  const closeLB = () => { lbEl.hidden = true; track.replaceChildren(); (sheetEl() && $("[data-back]", sheetEl()))?.focus({ preventScroll: true }); };
+  const closeLB = () => {
+    lbEl.hidden = true;
+    track.replaceChildren();
+    if (lbFrom && lbFrom.isConnected) lbFrom.focus({ preventScroll: true });
+    lbFrom = null;
+  };
   track.addEventListener("scroll", () => {
     if (lbEl.hidden || !track.clientWidth) return;
     const k = Math.round(track.scrollLeft / track.clientWidth);
@@ -342,7 +375,9 @@
   // backdrop clicks the backdrop: only a press that starts there closes.
   let downOn = null;
   document.addEventListener("pointerdown", (e) => { downOn = e.target; }, true);
+  let skipped = false; // a refresh waited for a menu to close
   const closeMenus = (except) => {
+    if (skipped && !except) { skipped = false; setTimeout(refresh, 0); }
     $$(".menu").forEach((m) => {
       if (m === except) return;
       m.hidden = true;
@@ -372,11 +407,11 @@
       else if (t === nscrim && downOn === nscrim) closeNote();
       return;
     }
-    if ((el = t.closest("[data-lb]"))) { e.preventDefault(); return openLB(imagesFor(el), +el.dataset.lb.split(":")[1]); }
+    if ((el = t.closest("[data-lb]"))) { e.preventDefault(); return openLB(imagesFor(el), +el.dataset.lb.split(":").pop(), el); }
     if ((el = t.closest("#toast-u"))) return undoLast();
     if ((el = t.closest("#toast-k"))) { const k = keepId; hideToast(); return k && act(k, "stash"); }
     if ((el = t.closest("[data-help]"))) return toggleHelp();
-    if (t.closest("[data-help-close]") || t.classList.contains("help")) { $(".help").hidden = true; return; }
+    if (t.closest("[data-help-close]") || (t.classList.contains("help") && downOn === t)) { $(".help").hidden = true; return; }
     if ((el = t.closest("[data-refresh]"))) return refresh(true);
     if ((el = t.closest("[data-copy]"))) return copy(el.dataset.copy);
     if ((el = t.closest("[data-collect]"))) {
@@ -613,6 +648,7 @@
   let v0 = document.body.dataset.version;
   const busyList = () => {
     const a = document.activeElement;
+    if (a.id === "q" && a.value === a.defaultValue) return !!$(".project-edit:not([hidden])");
     return (/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && !a.closest("#scrim, #nscrim")) || !!$(".project-edit:not([hidden])");
   };
   let refreshing = false, again = false;
@@ -626,29 +662,31 @@
         const res = await fetch(listURL, { signal: timeout(10000) });
         if (!res.ok) throw new Error(String(res.status));
         const doc = new DOMParser().parseFromString(await res.text(), "text/html");
-        if (!force && $$(".menu").some((m) => !m.hidden)) break; // the next check swaps it
-        if (!force && busyList()) { $(".updated").hidden = false; break; }
+        if (!force && $$(".menu").some((m) => !m.hidden)) { skipped = true; break; } // runs when the menu closes
+        if (!force && busyList()) { showPill(true); break; }
         const where = [".body", "main#main"].find((s) => $(s) && $(s, doc));
         if (!where) break;
         const side = $(".side"), sideAt = side && [side.scrollLeft, side.scrollTop];
+        const inQ = document.activeElement && document.activeElement.id === "q";
         $(where).replaceWith($(where, doc));
         $("header.bar").replaceWith($("header.bar", doc));
         document.title = openId ? document.title : doc.title;
         v0 = document.body.dataset.version = doc.body.dataset.version;
         if ($(".side") && sideAt) [$(".side").scrollLeft, $(".side").scrollTop] = sideAt;
         applyFolds();
+        if (inQ) $("#q")?.focus({ preventScroll: true });
         // Pending actions keep their rows faded until they settle.
         pending.forEach((id) => $(`.rw[data-id="${escId(id)}"]`)?.classList.add("leaving"));
-        if (sel && !rowIds().includes(sel)) sel = null;
+        if (sel && !pending.has(sel) && !rowIds().includes(sel)) sel = null;
         markSel(false);
         if (openId) { const sh = sheetEl(); if (sh) setupSheet(sh); }
-        $(".updated").hidden = true;
+        showPill(false);
         force = false;
       } while (again);
     } catch (_) {
       // Server unreachable or mid-restart: the pill offers a reload, and the
       // next check tries again.
-      $(".updated").hidden = false;
+      showPill(true);
     } finally {
       refreshing = false;
     }
