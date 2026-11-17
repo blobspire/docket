@@ -81,7 +81,7 @@ Lead with what you need from them and why, in a sentence or two. Then at most ~5
 
 ### Other flags
 
-- `--key <stable-id>`: re-filing with the same key updates the one item instead of adding another: a new title, body or urgency, and answers go to the session that re-filed it. Escalate this way (`--urgency now`): raising an item to now brings it back if it was snoozed or answered, and pushes their phone (unless they set its urgency by hand, which wins). Use it for anything you re-check on a schedule, and close it with `docket done --key <key>`.
+- `--key <stable-id>`: re-filing with the same key updates the one item instead of adding another: a new title, body or urgency, and answers go to the session that re-filed it. Escalate this way (`--urgency now`): raising an item to now brings it back if it was snoozed, and pushes their phone (unless they set its urgency by hand, which wins). Use it for anything you re-check on a schedule, and close it with `docket done --key <key>`.
 - `--blocking`: you're paused until they answer.
 
 ## After filing: keep the docket true
@@ -95,7 +95,7 @@ Lead with what you need from them and why, in a sentence or two. Then at most ~5
 It shows up as a message starting with `[docket dk-xxxxxxxx #nonce]`. Act on it:
 - If they approved an action auto mode refused earlier, retry it.
 - If they declined, don't do it.
-- If they marked it **done** without answering, you'll hear that, quietly, at your next turn: a review was looked at and needs nothing more; a question marked done is not a yes (they may have handled it themselves). Don't act as if they approved.
+- If they marked it **done** without answering, you'll hear that at your next turn (right away if you filed it `--blocking`): a review was looked at and needs nothing more; a question marked done is not a yes (they may have handled it themselves). Don't act as if they approved.
 - If they marked your item **not worth their time**, take their note to heart: don't re-file it, and file fewer things like it.
 - When the item is resolved, run `docket done dk-xxxxxxxx --why "<what happened>"`.
 

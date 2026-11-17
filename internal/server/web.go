@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"html/template"
 	"io/fs"
+	mimepkg "mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -356,6 +357,7 @@ type attachment struct {
 	store.Evidence
 	Kind  string        // image | video | doc | file | missing
 	Index int           // an image's place among the item's images, for the viewer
+	Type  string        // the type to serve it as when opened on its own
 	Doc   template.HTML // a text document's contents, rendered
 }
 
@@ -447,7 +449,10 @@ func (s *Server) pageItem(w http.ResponseWriter, r *http.Request) {
 	var atts []attachment
 	images := 0
 	for _, e := range ev {
-		a := attachment{Evidence: e, Kind: "file"}
+		a := attachment{Evidence: e, Kind: "file", Type: e.Mime}
+		if info, err := os.Stat(s.blobPath(e.SHA256)); err == nil {
+			a.Size = info.Size() // the file's, not what the agent declared
+		}
 		switch {
 		case e.Gone || !e.Fetched:
 			a.Kind = "missing"
@@ -463,7 +468,9 @@ func (s *Server) pageItem(w http.ResponseWriter, r *http.Request) {
 			if info, err := os.Stat(s.blobPath(e.SHA256)); err == nil && info.Size() <= maxDoc {
 				if b, err := os.ReadFile(s.blobPath(e.SHA256)); err == nil {
 					a.Kind = "doc"
-					if (strings.HasSuffix(strings.ToLower(e.Name), ".md") || strings.Contains(strings.ToLower(e.Mime), "markdown")) && len(b) <= maxMarkdown {
+					a.Type = "text/plain; charset=utf-8" // opened on its own, it reads as text
+					n := strings.ToLower(e.Name)
+					if (strings.HasSuffix(n, ".md") || strings.HasSuffix(n, ".markdown") || strings.Contains(strings.ToLower(e.Mime), "markdown")) && len(b) <= maxMarkdown {
 						a.Doc = renderMarkdown(string(b))
 					} else {
 						a.Doc = template.HTML("<pre>" + template.HTMLEscapeString(strings.ToValidUTF8(string(b), "\uFFFD")) + "</pre>")
@@ -774,8 +781,12 @@ func (s *Server) blob(w http.ResponseWriter, r *http.Request) {
 	}
 	// Agent-made files are untrusted: whatever type they claim, in any
 	// letter case, a page opened from one is inert (no script, no origin).
-	// Embedding as <img> or <video> is unaffected.
-	w.Header().Set("Content-Security-Policy", "sandbox")
+	// Embedding as <img> or <video> is unaffected. A PDF is the exception:
+	// the browser's own viewer shows it (and runs nothing of the page's),
+	// and a sandbox would stop that viewer.
+	if mt, _, err := mimepkg.ParseMediaType(mime); err != nil || mt != "application/pdf" {
+		w.Header().Set("Content-Security-Policy", "sandbox")
+	}
 	w.Header().Set("Content-Type", mime)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	info, _ := f.Stat()

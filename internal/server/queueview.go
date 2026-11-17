@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/blobspire/docket/internal/store"
 )
@@ -242,7 +243,7 @@ var sessionIDOK = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
 
 // ResumeCommand resumes the item's ended session in a terminal.
 func (v itemView) ResumeCommand() string {
-	if v.Session.State != "ended" || !sessionIDOK.MatchString(v.Session.ID) {
+	if v.Session.State != "ended" || !sessionIDOK.MatchString(v.Session.ID) || !printable(v.Session.Cwd) {
 		return ""
 	}
 	cmd := "claude --resume " + shellQuote(v.Session.ID)
@@ -250,6 +251,17 @@ func (v itemView) ResumeCommand() string {
 		cmd = "cd " + shellQuote(cwd) + " && " + cmd
 	}
 	return cmd
+}
+
+// printable reports text with no control characters: quoting stops the
+// shell, but not a terminal reading escape codes from a paste.
+func printable(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == utf8.RuneError || r == 0x2028 || r == 0x2029 {
+			return false
+		}
+	}
+	return true
 }
 
 func clip(s string, n int) string {

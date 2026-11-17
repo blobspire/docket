@@ -212,7 +212,7 @@
     {{range .Attachments}}
       {{if eq .Kind "image"}}<figure class="fig"><button type="button" data-lb="{{$it.ID}}:{{.Index}}" aria-label="Open {{.Name}} larger"><img src="/blob/{{.SHA256}}?type={{.Mime}}" alt="{{.Name}}" loading="lazy"></button><figcaption><span>{{.Name}}</span><span>{{bytes .Size}}</span></figcaption></figure>
       {{else if eq .Kind "video"}}<figure class="fig"><video controls preload="metadata" src="/blob/{{.SHA256}}?type={{.Mime}}"></video><figcaption><span>{{.Name}}</span><span>{{bytes .Size}}</span></figcaption></figure>
-      {{else if eq .Kind "doc"}}<article class="doc"><div class="doc-h">{{template "i" "file"}}<span class="doc-n">{{.Name}}</span><span class="sz">{{bytes .Size}}</span><a href="/blob/{{.SHA256}}?type={{.Mime}}" target="_blank" rel="noopener" aria-label="Open {{.Name}} on its own">{{template "i" "ext"}}</a></div><div class="doc-b prose clamp">{{.Doc}}</div><button type="button" class="doc-more" aria-expanded="false" hidden>Show the whole file</button></article>
+      {{else if eq .Kind "doc"}}<article class="doc"><div class="doc-h">{{template "i" "file"}}<span class="doc-n">{{.Name}}</span><span class="sz">{{bytes .Size}}</span><a href="/blob/{{.SHA256}}?type={{.Type}}" target="_blank" rel="noopener" aria-label="Open {{.Name}} on its own">{{template "i" "ext"}}</a></div><div class="doc-b prose clamp">{{.Doc}}</div><button type="button" class="doc-more" aria-expanded="false" hidden>Show the whole file</button></article>
       {{else if eq .Kind "file"}}<a class="filecard" href="/blob/{{.SHA256}}?type={{.Mime}}" target="_blank" rel="noopener">{{template "i" "file"}}<span>{{.Name}}</span><span class="sz">{{bytes .Size}}</span></a>
       {{else}}<p class="muted small">{{.Name}}: {{if .Gone}}the file was gone from its machine before it could be copied.{{else}}still being copied from its machine…{{end}}</p>{{end}}
     {{end}}
@@ -291,7 +291,7 @@
     {{template "fb" (list "noise" "thumb" "Not worth it" "w" "" "Close it, and tell agents this didn't need you")}}{{end}}
     {{template "fb" (list "dismiss" "x" "Dismiss" "x" "" "Close it without telling anyone")}}
     <span class="sp"></span>
-    {{if not $rule}}{{template "fb" (list "stash" "stash" "Stash" "t" "" "Mark it done and keep it on your Stash for 30 days")}}{{end}}
+    {{if not (or $rule (eq .Source "watchdog") (eq .Source "stop_failure"))}}{{template "fb" (list "stash" "stash" "Stash" "t" "" "Mark it done and keep it on your Stash for 30 days")}}{{end}}
     {{template "fb" (list "snooze" "moon" "Snooze" "s" "" "Hide it until tomorrow at 9:00 (S: for an hour)")}}
   </div>
 {{end}}

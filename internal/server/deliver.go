@@ -94,6 +94,9 @@ func (s *Server) Decide(id string, a Action) error {
 		if it.Kind == "rule" {
 			return errors.New("approve or reject a rule; it can't be stashed")
 		}
+		if it.Source == ingest.SrcWatchdog || it.Source == ingest.SrcFailure {
+			return errors.New("docket closes this itself once it clears; snooze or dismiss it instead")
+		}
 		closed, err := s.st.Stash(id)
 		if err != nil || !closed {
 			return err
@@ -128,14 +131,16 @@ func (s *Server) Decide(id string, a Action) error {
 	case "undo":
 		// What the decision being undone already told the agent.
 		_, _, _, dts := s.st.TopDecision(id)
-		sentNoise, sentDone := false, false
+		sentNoise, sentDone, loudDone := false, false, false
 		if ds, _ := s.st.ItemDeliveries(id); len(ds) > 0 {
 			for _, d := range ds {
-				if d.Status == "pending" || d.CreatedAt < dts {
-					continue
+				if (d.Status != "sent" && d.Status != "confirmed") || d.CreatedAt < dts {
+					continue // still queued (the undo withdraws it), dropped, or older
 				}
 				sentNoise = sentNoise || (d.LiveOnly && strings.Contains(d.Text, "not worth their time"))
-				sentDone = sentDone || strings.Contains(d.Text, doneMark)
+				if strings.Contains(d.Text, doneMark) {
+					sentDone, loudDone = true, loudDone || !d.LiveOnly
+				}
 			}
 		}
 		action, err := s.st.UndoIf(id, a.Decision)
@@ -158,7 +163,11 @@ func (s *Server) Decide(id string, a Action) error {
 		}
 		if (action == "done" || action == "stash") && sentDone {
 			if now, _, _ := s.st.GetItem(id); now.Status == "open" {
-				return s.notifyQuietly(it, fmt.Sprintf("%s reopened %q: it isn't done after all, and it's open again.", s.cfg.Person, it.Title))
+				msg := fmt.Sprintf("%s reopened %q: it isn't done after all, and it's open again.", s.cfg.Person, it.Title)
+				if loudDone { // the done woke it: so does this
+					return s.queue(it, msg)
+				}
+				return s.notifyQuietly(it, msg)
 			}
 		}
 		return nil

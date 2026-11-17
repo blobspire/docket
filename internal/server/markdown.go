@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"html/template"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/yuin/goldmark"
@@ -21,6 +22,18 @@ var md = goldmark.New(
 	goldmark.WithParserOptions(parser.WithASTTransformers(util.Prioritized(safeLinks{}, 500))),
 	goldmark.WithRendererOptions(html.WithHardWraps()),
 )
+
+// mdNoTables is md without tables: a table pads every row out to its
+// header's width, so a few kilobytes with thousands of columns would render
+// to hundreds of megabytes.
+var mdNoTables = goldmark.New(
+	goldmark.WithExtensions(extension.Strikethrough, extension.Linkify, extension.TaskList),
+	goldmark.WithParserOptions(parser.WithASTTransformers(util.Prioritized(safeLinks{}, 500))),
+	goldmark.WithRendererOptions(html.WithHardWraps()),
+)
+
+// maxTableColumns is the widest table rendered as one.
+const maxTableColumns = 64
 
 // safeLinks opens links in a new tab without handing over the opener, and
 // turns images into plain links: an agent-written body must not make the
@@ -86,9 +99,16 @@ func external(n ast.Node) {
 
 // renderMarkdown turns an item body into HTML for the page.
 func renderMarkdown(s string) template.HTML {
+	conv := md
+	for _, line := range strings.Split(s, "\n") {
+		if strings.Count(line, "|") > maxTableColumns {
+			conv = mdNoTables
+			break
+		}
+	}
 	var b bytes.Buffer
-	if err := md.Convert([]byte(s), &b); err != nil {
-		return template.HTML(template.HTMLEscapeString(s))
+	if err := conv.Convert([]byte(s), &b); err != nil || b.Len() > 40*len(s)+(1<<20) {
+		return template.HTML("<pre>" + template.HTMLEscapeString(s) + "</pre>")
 	}
 	return template.HTML(b.String()) // goldmark escapes raw HTML (no WithUnsafe)
 }

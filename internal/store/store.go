@@ -781,9 +781,10 @@ func (s *Store) UpsertItem(it Item) (string, bool, error) {
 			urg := it.Urgency
 			// SQLite evaluates every SET expression against the old row, so
 			// the urgency comparisons below see the previous value. Raising
-			// an item to "now" also brings it back from snoozed: the filer is
-			// saying it can't wait. (An answered item stays answered: its
-			// answer is already on the way.)
+			// an item to "now" also brings it back from snoozed or the Stash:
+			// the filer is saying it can't wait. (An answered item stays
+			// answered: the human's answer is already on its way, and paging
+			// them for it again would be noise.)
 			const toNow = `?='now' AND urgency<>'now' AND instr(pinned,'urgency')=0`
 			_, err = s.DB.Exec(`UPDATE items SET mention_count=mention_count+1, last_seen_at=?, updated_at=?,
 				title=CASE WHEN ?<>'' THEN ? ELSE title END,

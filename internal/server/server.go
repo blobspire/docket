@@ -45,7 +45,8 @@ func Open(cfg *Config) (*Server, error) {
 		switch {
 		case strings.HasSuffix(k, "physical_keywords"):
 			why = "docket no longer guards physical actions; agents name a --place, and the robot's own safety layer decides"
-		case strings.HasSuffix(k, "remote_approve"):
+		case strings.HasSuffix(k, "remote_approve"), strings.HasSuffix(k, "brief_at"), strings.HasSuffix(k, "brief_push"),
+			strings.HasSuffix(k, "pre_review"), strings.HasSuffix(k, "review_model"):
 			why = "no longer used"
 		}
 		s.log.Printf("config: ignoring %s (%s)", k, why)
