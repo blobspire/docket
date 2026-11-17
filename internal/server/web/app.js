@@ -280,7 +280,6 @@
       sh?.classList.remove("busy");
     }
     if (err) {
-      if (inSheet && openId === id) openSheet(id, "replace"); // show it as it is now
       rw?.classList.remove("leaving");
       if (movedFrom && (sel === movedTo || sel === null) && !openId) { sel = movedFrom; markSel(true); } // it's still there, and you haven't moved on
       toast(err, { err: true });

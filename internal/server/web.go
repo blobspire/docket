@@ -40,6 +40,7 @@ var staticVer = func() string {
 
 var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 	"staticVer": func() string { return staticVer },
+	"has":       strings.Contains,
 	"age":       func(unix int64) string { return age(time.Now(), unix) },
 	"ago": func(unix int64) string {
 		if time.Since(time.Unix(unix, 0)) < time.Minute {

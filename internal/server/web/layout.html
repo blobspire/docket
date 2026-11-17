@@ -233,7 +233,7 @@
       <span>{{$it.ID}}</span>
       <span>filed {{clock $it.CreatedAt}}{{if gt $it.MentionCount 1}} · {{$it.MentionCount}} times{{end}}</span>
       {{if not $it.SessionID}}{{with $it.Machine}}<span>{{.}}</span>{{end}}{{end}}
-      {{range .Delivery}}{{if not .LiveOnly}}<span>{{if eq .Kind "done"}}done note{{else if eq .Kind "note"}}note{{else}}answer{{end}} {{.Status}}{{with .Method}} via {{.}}{{end}}{{if .ConfirmedAt}} {{clock .ConfirmedAt}}{{end}}{{with .Error}}: {{.}}{{end}}</span>{{end}}{{end}}
+      {{range .Delivery}}{{if not .LiveOnly}}<span>{{if or (eq .Kind "done") (and (eq .Kind "") (has .Text "marked this done:"))}}done note{{else if eq .Kind "note"}}note{{else}}answer{{end}} {{.Status}}{{with .Method}} via {{.}}{{end}}{{if .ConfirmedAt}} {{clock .ConfirmedAt}}{{end}}{{with .Error}}: {{.}}{{end}}</span>{{end}}{{end}}
     </div>
     {{if and $it.Projects (not $it.Kept)}}
     <div class="move">

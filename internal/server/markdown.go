@@ -105,7 +105,14 @@ func external(n ast.Node) {
 	n.SetAttributeString("rel", []byte("noopener noreferrer"))
 }
 
-var delimRow = regexp.MustCompile(`^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$`)
+var (
+	delimRow = regexp.MustCompile(`^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$`)
+	quotes   = regexp.MustCompile(`^[ \t]*(>[ \t]?)*`) // blockquote markers before a table
+)
+
+// blank is a blank line as markdown sees it: ASCII whitespace only (a line
+// of non-breaking spaces is text, and a table runs on through it).
+func blank(line string) bool { return strings.Trim(line, " \t\v\f\r") == "" }
 
 // tableCells estimates the cells the tables in s would make: each header's
 // columns times its rows (a table runs to the next blank line), or
@@ -114,7 +121,8 @@ func tableCells(s string) int {
 	lines := strings.Split(s, "\n")
 	cells := 0
 	for i := 0; i+1 < len(lines); i++ {
-		if !strings.Contains(lines[i], "|") || !strings.Contains(lines[i+1], "-") || !delimRow.MatchString(lines[i+1]) {
+		next := quotes.ReplaceAllString(lines[i+1], "")
+		if !strings.Contains(lines[i], "|") || !strings.Contains(next, "-") || !delimRow.MatchString(next) {
 			continue
 		}
 		cols := strings.Count(lines[i], "|") + 1
@@ -122,13 +130,27 @@ func tableCells(s string) int {
 			return math.MaxInt32
 		}
 		j := i + 2
-		for j < len(lines) && strings.TrimSpace(lines[j]) != "" {
+		for j < len(lines) && !blank(lines[j]) {
 			j++
 		}
 		cells += cols * (j - i)
 		i = j
 	}
 	return cells
+}
+
+// maxTableFloor bounds widest-line × line-count for the whole text: a
+// backstop if some table shape slips past tableCells (it stays well above
+// any ordinary report, so it doesn't cost one its tables).
+const maxTableFloor = 300000
+
+func tableFloor(s string) int {
+	widest, lines := 0, 1
+	for _, line := range strings.Split(s, "\n") {
+		widest = max(widest, strings.Count(line, "|"))
+		lines++
+	}
+	return (widest + 1) * lines
 }
 
 // renderMarkdown turns an item body into HTML for the page.
@@ -147,7 +169,7 @@ func renderMarkdown(s string) template.HTML {
 	// A table pads every row to its header's width: a wide header or a long
 	// run of rows under a wide one makes a node per cell.
 	conv := md
-	if tableCells(s) > maxTableCells {
+	if tableCells(s) > maxTableCells || tableFloor(s) > maxTableFloor {
 		conv = mdNoTables
 	}
 	var b bytes.Buffer

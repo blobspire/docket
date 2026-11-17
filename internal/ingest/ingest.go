@@ -221,8 +221,10 @@ func apply(s *store.Store, e store.RawEvent, o Options) error {
 				it, ok = s.DeliveredBySession(pk, k, sid, !d.Explicit)
 			}
 			// The exact project-scoped key before a bare key in another
-			// project: shared keys (tests, ci, deploy) mustn't close
-			// someone else's item.
+			// project, so a shared key (tests, ci, deploy) closes this
+			// project's item first. (The machine-wide fallback below can
+			// still reach another session's open item when nothing else
+			// matches, as it always has.)
 			if !ok {
 				it, ok = s.DeliveredOnMachine(pk, r.Machine)
 			}
