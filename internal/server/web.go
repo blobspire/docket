@@ -59,13 +59,19 @@ var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 		return map[string]string{"five_hour": "5-hour", "seven_day": "weekly"}[w]
 	},
 	"closedAt": func(it store.Item) int64 {
+		at := it.UpdatedAt
 		switch {
+		case it.Status == "delivered":
 		case it.ResolvedAt > 0:
-			return it.ResolvedAt
+			at = it.ResolvedAt
 		case it.AnsweredAt > 0:
-			return it.AnsweredAt
+			at = it.AnsweredAt
 		}
-		return it.UpdatedAt
+		// One that aged off the Stash closed, as far as Done goes, then.
+		if off := it.StashedAt + store.StashSeconds; it.StashedAt > 0 && off <= time.Now().Unix() && off > at {
+			at = off
+		}
+		return at
 	},
 	"bytes": func(n int64) string {
 		switch {
@@ -358,13 +364,12 @@ func (s *Server) render(w http.ResponseWriter, name string, p page) {
 	p.Version = s.st.QueueDigest()
 	if items, err := s.st.Items("open"); err == nil {
 		for _, it := range items {
-			switch {
-			case it.Kind == "rule":
+			if it.Kind == "rule" {
 				p.RuleCount++
-			case it.StashedAt == 0:
-				p.Count++
-				p.Hot = p.Hot || it.Urgency == "now"
+				continue
 			}
+			p.Count++
+			p.Hot = p.Hot || it.Urgency == "now"
 		}
 	}
 	p.StashCount = s.st.StashCount()

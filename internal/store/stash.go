@@ -86,16 +86,63 @@ func (s *Store) Unstash(id string, toDone bool) error {
 	return tx.Commit()
 }
 
+// onStash is what the Stash holds: stashed in the last 30 days, and not
+// needing the human (an open item with a stash time, which an older docket
+// can leave behind, is on the docket instead).
+const onStash = `stashed_at >= ? AND status NOT IN ('open','snoozed','maybe')`
+
 // Stashed lists the items on the Stash, the most recently stashed first.
 func (s *Store) Stashed(limit int) ([]Item, error) {
-	return s.items(`SELECT `+itemCols+` FROM items WHERE stashed_at >= ? ORDER BY stashed_at DESC LIMIT ?`, StashCutoff(), limit)
+	return s.items(`SELECT `+itemCols+` FROM items WHERE `+onStash+` ORDER BY stashed_at DESC LIMIT ?`, StashCutoff(), limit)
 }
 
 // StashCount is how many items are on the Stash.
 func (s *Store) StashCount() int {
 	var n int
-	s.DB.QueryRow(`SELECT COUNT(*) FROM items WHERE stashed_at >= ?`, StashCutoff()).Scan(&n)
+	s.DB.QueryRow(`SELECT COUNT(*) FROM items WHERE `+onStash, StashCutoff()).Scan(&n)
 	return n
+}
+
+// DropStash takes an item off the Stash without logging it.
+func (s *Store) DropStash(id string) error {
+	_, err := s.DB.Exec(`UPDATE items SET stashed_at=0 WHERE id=? AND stashed_at<>0`, id)
+	return err
+}
+
+// TopDecision is the latest logged decision on an item, and the status the
+// item had before it.
+func (s *Store) TopDecision(id string) (action, prev string) {
+	s.DB.QueryRow(`SELECT action, prev_status FROM decisions WHERE item_id=? ORDER BY id DESC LIMIT 1`, id).Scan(&action, &prev)
+	return
+}
+
+// DeliveredByKey finds the latest item with a delivered answer filed with
+// this key: the exact project-scoped key first, then (unless the project
+// was named) the agent's own key from its session or machine.
+func (s *Store) DeliveredByKey(projectKey, k, session, machine string, anyProject bool) (Item, bool) {
+	if projectKey != "" {
+		if it, err := scanItem(s.DB.QueryRow(`SELECT `+itemCols+` FROM items WHERE dedupe_key=? AND status='delivered' ORDER BY updated_at DESC LIMIT 1`, projectKey)); err == nil {
+			return it, true
+		}
+	}
+	if !anyProject {
+		return Item{}, false
+	}
+	for _, q := range []struct{ col, val string }{{"session_id", session}, {"machine", machine}} {
+		if q.val == "" {
+			continue
+		}
+		rs, err := s.items(`SELECT `+itemCols+` FROM items WHERE dedupe_key LIKE 'key:%' AND status='delivered' AND `+q.col+`=? ORDER BY updated_at DESC`, q.val)
+		if err != nil {
+			continue
+		}
+		for _, it := range rs {
+			if AgentKey(it.DedupeKey) == k {
+				return it, true
+			}
+		}
+	}
+	return Item{}, false
 }
 
 // WaitWindow is how long an item whose answer reached its agent stays on the
@@ -104,10 +151,10 @@ const WaitWindow = 24 * 60 * 60
 
 // DocketItems lists what the docket shows: items that need the human (open,
 // snoozed), and ones waiting on their agent (an answer on its way, or
-// delivered within WaitWindow). Stashed items are on the Stash instead.
+// delivered within WaitWindow) unless they're on the Stash.
 func (s *Store) DocketItems() ([]Item, error) {
-	return s.items(`SELECT `+itemCols+` FROM items WHERE stashed_at = 0 AND (status IN ('open','snoozed','answered')
-		OR (status='delivered' AND COALESCE(answered_at, updated_at) >= ?)) ORDER BY created_at DESC`, now()-WaitWindow)
+	return s.items(`SELECT `+itemCols+` FROM items WHERE status IN ('open','snoozed')
+		OR (stashed_at < ? AND (status='answered' OR (status='delivered' AND updated_at >= ?))) ORDER BY created_at DESC`, StashCutoff(), now()-WaitWindow)
 }
 
 func (s *Store) items(q string, args ...any) ([]Item, error) {
@@ -125,6 +172,13 @@ func (s *Store) items(q string, args ...any) ([]Item, error) {
 		out = append(out, it)
 	}
 	return out, rows.Err()
+}
+
+// Touch marks an item as just changed (a delivered answer brought back from
+// the Stash waits on the docket for another day).
+func (s *Store) Touch(id string) error {
+	_, err := s.DB.Exec(`UPDATE items SET updated_at=? WHERE id=?`, now(), id)
+	return err
 }
 
 // in builds "?,?,?" and its arguments for a list of ids.

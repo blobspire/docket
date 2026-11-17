@@ -113,8 +113,8 @@ func TestQuickActionsEdgeRows(t *testing.T) {
 	if onPage(e, "/done", "dk-q0000011") {
 		t.Error("an answer still waiting on its agent is in Done too")
 	}
-	// Once the agent has had a day with it, it leaves the docket.
-	st.DB.Exec(`UPDATE items SET answered_at=? WHERE id='dk-q0000011'`, time.Now().Add(-25*time.Hour).Unix())
+	// Once the agent has had it for a day, it leaves the docket.
+	st.DB.Exec(`UPDATE items SET updated_at=? WHERE id='dk-q0000011'`, time.Now().Add(-25*time.Hour).Unix())
 	if strings.Contains(get(e, "/?p=w"), `data-id="dk-q0000011"`) || !onPage(e, "/done", "dk-q0000011") {
 		t.Error("a day-old delivered answer should have moved from the docket to Done")
 	}

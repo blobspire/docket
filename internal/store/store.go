@@ -790,6 +790,7 @@ func (s *Store) UpsertItem(it Item) (string, bool, error) {
 				body=CASE WHEN ?<>'' THEN ? ELSE body END,
 				status=CASE WHEN status='maybe' AND ?='open' THEN 'open' WHEN `+toNow+` AND status='snoozed' THEN 'open' ELSE status END,
 				snoozed_until=CASE WHEN `+toNow+` THEN NULL ELSE snoozed_until END,
+				stashed_at=CASE WHEN `+toNow+` THEN 0 ELSE stashed_at END,
 				kind=CASE WHEN ?<>'' THEN ? ELSE kind END,
 				component=CASE WHEN ?<>'' AND instr(pinned,'component')=0 THEN ? ELSE component END,
 				place=CASE WHEN ?<>'' AND instr(pinned,'place')=0 THEN ? ELSE place END,
@@ -810,6 +811,7 @@ func (s *Store) UpsertItem(it Item) (string, bool, error) {
 				t, t,
 				it.Title, it.Title, it.Body, it.Body,
 				it.Status, urg,
+				urg,
 				urg,
 				it.Kind, it.Kind,
 				it.Component, it.Component, it.Place, it.Place, it.Due, it.Due, it.Recommend, it.Recommend, opts, opts,
@@ -896,11 +898,13 @@ func (s *Store) Items(statuses ...string) ([]Item, error) {
 // when it left the Stash.
 func (s *Store) RecentlyClosed(since int64, limit int) ([]Item, error) {
 	cut := StashCutoff()
-	// A delivered answer is on the docket, waiting on its agent, for a day.
+	// A delivered answer is on the docket, waiting on its agent, for a day
+	// after it was delivered (or last touched).
+	const closedAt = `CASE WHEN status='delivered' THEN updated_at ELSE COALESCE(resolved_at, answered_at, updated_at) END`
 	rows, err := s.DB.Query(`SELECT `+itemCols+` FROM items WHERE status IN ('done','dismissed','delivered','expired') AND stashed_at < ?
-		AND NOT (status='delivered' AND COALESCE(answered_at, updated_at) >= ?)
-		AND (COALESCE(resolved_at, answered_at, updated_at) >= ? OR (stashed_at > 0 AND stashed_at + ? >= ?))
-		ORDER BY MAX(COALESCE(resolved_at, answered_at, updated_at), CASE WHEN stashed_at > 0 THEN stashed_at + ? ELSE 0 END) DESC LIMIT ?`, cut, now()-WaitWindow, since, StashSeconds, since, StashSeconds, limit)
+		AND NOT (status='delivered' AND updated_at >= ?)
+		AND (`+closedAt+` >= ? OR (stashed_at > 0 AND stashed_at + ? >= ?))
+		ORDER BY MAX(`+closedAt+`, CASE WHEN stashed_at > 0 THEN stashed_at + ? ELSE 0 END) DESC LIMIT ?`, cut, now()-WaitWindow, since, StashSeconds, since, StashSeconds, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1044,15 +1048,33 @@ func (s *Store) Undo(id string) (string, error) {
 		prev = "open"
 	}
 	// A stash or unstash logs the item's earlier stash time as its answer.
+	// Its status comes back only if the stash (or unstash) changed it, and
+	// nothing has changed it since: a stash of an answered item mustn't undo
+	// the delivery that confirmed meanwhile, or the agent's close.
 	var stashedAt int64
 	if action == "stash" || action == "unstash" {
 		stashedAt, _ = strconv.ParseInt(answer, 10, 64)
+		var cur string
+		tx.QueryRow(`SELECT status FROM items WHERE id=?`, id).Scan(&cur)
+		closedIt := action == "stash" && (prev == "open" || prev == "maybe") && cur == "done"
+		doneIt := action == "unstash" && !closedStatus(prev) && cur == "done"
+		if !closedIt && !doneIt {
+			prev = cur
+		}
+	}
+	// An answer whose delivery has confirmed since is delivered, not on its way.
+	if prev == "answered" {
+		var last string
+		tx.QueryRow(`SELECT status FROM deliveries WHERE item_id=? AND live_only=0 ORDER BY created_at DESC LIMIT 1`, id).Scan(&last)
+		if last == "confirmed" {
+			prev = "delivered"
+		}
 	}
 	// Back to an open state: the closing note no longer describes it.
 	if _, err := tx.Exec(`UPDATE items SET status=?, snoozed_until=NULL, updated_at=?, answer=CASE WHEN ? IN ('answer','approve','decline','choose') THEN '' ELSE answer END,
 		expires_at=CASE WHEN ?='expire' THEN 0 ELSE expires_at END,
 		stashed_at=CASE WHEN ? IN ('stash','unstash') THEN ? ELSE stashed_at END,
-		resolution=CASE WHEN ? IN ('open','answered','maybe') THEN '' ELSE resolution END,
+		resolution=CASE WHEN ? IN ('open','answered','delivered','maybe') THEN '' ELSE resolution END,
 		resolved_at=CASE WHEN ? IN ('done','dismissed','expired') THEN COALESCE(resolved_at, ?) ELSE NULL END WHERE id=?`, prev, now(), action, action, action, stashedAt, prev, prev, now(), id); err != nil {
 		if isDedupeConflict(err) {
 			return "", errors.New("can't undo: an open item with the same key has been filed since")
@@ -1066,7 +1088,6 @@ func (s *Store) Undo(id string) (string, error) {
 	// on its way stays.)
 	if action == "answer" || action == "approve" || action == "decline" || action == "choose" || action == "done" || action == "noise" ||
 		(action == "stash" && (prev == "open" || prev == "maybe")) { // a stash that closed it queued a "marked done"
-
 		tx.Exec(`DELETE FROM deliveries WHERE item_id=? AND status='pending' AND created_at>=?`, id, dts)
 	}
 	if _, err := tx.Exec(`DELETE FROM decisions WHERE id=?`, did); err != nil {

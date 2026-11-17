@@ -529,7 +529,7 @@ func (s *Store) QueueDigest() string {
 	rows, err := s.DB.Query(`SELECT i.id, i.status, i.title, i.urgency, i.project, i.component, i.place, i.due, i.expires_at, i.updated_at, i.stashed_at,
 		COALESCE(se.state,''), COALESCE((SELECT d.status||d.error FROM deliveries d WHERE d.item_id=i.id AND d.live_only=0 ORDER BY d.created_at DESC LIMIT 1),'')
 		FROM items i LEFT JOIN sessions se ON se.id = i.session_id AND (i.blocking=1 OR i.status IN ('answered','delivered'))
-		WHERE i.status IN ('open','snoozed','answered') OR (i.status='delivered' AND COALESCE(i.answered_at, i.updated_at) >= ?) OR i.stashed_at >= ?
+		WHERE i.status IN ('open','snoozed','answered') OR (i.status='delivered' AND i.updated_at >= ?) OR i.stashed_at >= ?
 		ORDER BY i.id`, now()-WaitWindow, StashCutoff())
 	if err != nil {
 		return ""

@@ -89,6 +89,9 @@ func (s *Server) Decide(id string, a Action) error {
 		}
 		return nil
 	case "stash":
+		if it.Kind == "rule" {
+			return errors.New("approve or reject a rule; it can't be stashed")
+		}
 		closed, err := s.st.Stash(id)
 		if err != nil || !closed {
 			return err
@@ -121,10 +124,11 @@ func (s *Server) Decide(id string, a Action) error {
 		}
 		return s.st.Reclassify(id, p, u)
 	case "undo":
-		sentNoise := false
+		sentNoise, sentDone := false, false
 		if ds, _ := s.st.ItemDeliveries(id); len(ds) > 0 {
 			for _, d := range ds {
 				sentNoise = sentNoise || (d.LiveOnly && d.Status != "pending" && strings.Contains(d.Text, "not worth their time"))
+				sentDone = sentDone || (d.LiveOnly && d.Status != "pending" && strings.Contains(d.Text, "marked your docket item"))
 			}
 		}
 		action, err := s.st.Undo(id)
@@ -143,6 +147,11 @@ func (s *Server) Decide(id string, a Action) error {
 			s.rulesChanged()
 			if sentNoise {
 				return s.notifyQuietly(it, fmt.Sprintf("%s took back the \"not worth my time\" on %q: it's open again.", s.cfg.Person, it.Title))
+			}
+		}
+		if (action == "done" || action == "stash") && sentDone {
+			if now, _, _ := s.st.GetItem(id); now.Status == "open" {
+				return s.notifyQuietly(it, fmt.Sprintf("%s reopened %q: it isn't done after all, and it's open again.", s.cfg.Person, it.Title))
 			}
 		}
 		return nil
@@ -193,24 +202,34 @@ func comment(t string) string {
 // set off (a queued "marked done", a noise mark and its note, an expiry, a
 // rule's approval); one an agent or docket made is reopened.
 func (s *Server) reopen(it store.Item) error {
-	if it.StashedAt > 0 {
-		var err error
-		if s.st.LastDecision(it.ID) == "stash" {
-			_, err = s.st.Undo(it.ID)
-		} else {
-			err = s.st.Unstash(it.ID, false)
+	stashed, undid := it.StashedAt > 0, false
+	// Peel the Stash off the top of the log, one undo at a time, so each
+	// restores what it changed: a Remove, a stash that only kept the item, or
+	// the stash that closed it (which reopens it, taking back its note).
+	for i := 0; i < 50; i++ {
+		top, prev := s.st.TopDecision(it.ID)
+		if top != "stash" && top != "unstash" {
+			break
 		}
-		if err != nil {
+		if err := s.Decide(it.ID, Action{Kind: "undo"}); err != nil {
 			return err
 		}
-		if it, _, err = s.st.GetItem(it.ID); err != nil {
-			return err
-		}
-		if !closedStatus(it.Status) {
-			return nil
+		undid = true
+		if top == "stash" && (prev == "open" || prev == "snoozed" || prev == "maybe") {
+			break // that stash was the close
 		}
 	}
+	if err := s.st.DropStash(it.ID); err != nil { // anything an older docket left behind
+		return err
+	}
+	var err error
+	if it, _, err = s.st.GetItem(it.ID); err != nil {
+		return err
+	}
 	if !closedStatus(it.Status) {
+		if stashed || undid {
+			return s.st.Touch(it.ID) // back under "Waiting on agents" for a day
+		}
 		return errors.New("this item is still open")
 	}
 	switch d := s.st.LastDecision(it.ID); {
@@ -282,6 +301,10 @@ func (s *Server) noise(it store.Item, note string) error {
 // know at its next turn, without waking it, and only if it's still running.
 func (s *Server) notifyQuietly(it store.Item, msg string) error {
 	nonce := randomNonce()
+	// A re-filed item keeps its first id; say which id this agent was told.
+	if a := s.st.LatestAlias(it.ID, it.SessionID); a != "" {
+		msg = "(this is the item you filed as " + a + ") " + msg
+	}
 	if err := s.st.AddDelivery(store.Delivery{ID: ulid.New(time.Now()), ItemID: it.ID, Machine: it.Machine, SessionID: it.SessionID, Nonce: nonce,
 		Text: fmt.Sprintf("[docket %s #%s] %s", it.ID, nonce, msg), LiveOnly: true, Quiet: true}); err != nil {
 		return err

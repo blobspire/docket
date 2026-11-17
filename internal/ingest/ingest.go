@@ -209,6 +209,14 @@ func apply(s *store.Store, e store.RawEvent, o Options) error {
 			if !ok && !d.Explicit {
 				it, ok = s.ActiveByAgentKey(k, sid, r.Machine)
 			}
+			// An answer the agent has, waiting for it to close the loop.
+			if !ok {
+				pk := ""
+				if p := store.Slug(d.Project); p != "" {
+					pk = "key:" + p + ":" + k
+				}
+				it, ok = s.DeliveredByKey(pk, k, sid, r.Machine, !d.Explicit)
+			}
 		}
 		// Only an item that still needs someone (or one whose answer the
 		// agent has, waiting for it to close the loop): an agent's "done"
