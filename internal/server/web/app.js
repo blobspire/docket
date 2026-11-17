@@ -110,7 +110,7 @@
         }
       } catch (_) {}
     }
-    fadeOptions($(".dk-a", sh));
+    fadeOptions($(".dk-a", sh), true);
     // A long attachment folds, with a button to see all of it.
     $$(".doc-b.clamp", sh).forEach((d) => {
       const long = d.scrollHeight > d.clientHeight + 4;
@@ -119,7 +119,11 @@
     });
     placeToast();
   };
-  const fadeOptions = (opts) => { if (opts) opts.classList.toggle("over", opts.scrollTop + opts.clientHeight < opts.scrollHeight - 2); };
+  const fadeOptions = (opts, first) => {
+    if (!opts) return;
+    if (first) opts.classList.toggle("scrolls", opts.scrollHeight > opts.clientHeight + 2);
+    opts.classList.toggle("over", opts.classList.contains("scrolls") && opts.scrollTop + opts.clientHeight < opts.scrollHeight - 2);
+  };
   document.addEventListener("scroll", (e) => { if (e.target.matches && e.target.matches(".dk-a")) fadeOptions(e.target); }, true);
   const skeleton = (label) => {
     const sh = document.createElement("div");
@@ -157,8 +161,10 @@
     // The real sheet takes the skeleton's place mid-way through its slide,
     // never starting over.
     const elapsed = opened ? performance.now() - opened : Infinity;
-    if (elapsed < 320) sh.style.animationDelay = `-${Math.round(elapsed)}ms`;
-    else sh.classList.add("again");
+    if (elapsed < 320) {
+      sh.style.animationDelay = `-${Math.round(elapsed)}ms`;
+      sh.addEventListener("animationend", placeToast, { once: true }); // the dock has landed
+    } else sh.classList.add("again");
     scrim.replaceChildren(sh);
     setupSheet(sh);
     const body = $(".sh-b", sh);
@@ -274,14 +280,17 @@
       sh?.classList.remove("busy");
     }
     if (err) {
+      if (inSheet && openId === id) openSheet(id, "replace"); // show it as it is now
       rw?.classList.remove("leaving");
-      if (movedFrom && sel === movedTo) { sel = movedFrom; markSel(true); } // it's still there, and you haven't moved on
+      if (movedFrom && (sel === movedTo || sel === null) && !openId) { sel = movedFrom; markSel(true); } // it's still there, and you haven't moved on
       toast(err, { err: true });
       refresh();
       return false;
     }
     // What u (and the toast's Undo) undoes next; an undo leaves nothing more.
-    const undo = action === "undo" || action === "reopen" ? null : id;
+    // Undo exactly what this logged; an action that logged nothing (a move to
+    // where it already was) has nothing to undo.
+    const undo = action === "undo" || action === "reopen" || !decision ? null : id;
     ss.set("docket.last", undo ? `${undo} ${decision}` : "");
     // After a done or an answer, the toast offers to keep it on the Stash.
     const noStash = !!(rw && rw.querySelector("[data-nostash]")) || !!(sh && sh.hasAttribute("data-nostash"));

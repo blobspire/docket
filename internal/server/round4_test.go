@@ -250,3 +250,122 @@ func TestLatestDeliveryBreaksTies(t *testing.T) {
 		t.Fatalf("latest = %s, want the second", d.Nonce)
 	}
 }
+
+// A shared key (tests, ci) from a new session: its own project's delivered
+// item closes, not another project's open one.
+func TestDoneByKeyPrefersTheExactProject(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	e.file(t, "sA", record.Item{ID: "dk-r5k00001", Kind: "ask", Title: "tests in a", Project: "a", Key: "tests"})
+	fileDelivered(t, e, "sB1", "dk-r5k00002", "b", "tests")
+	e.send(t, record.Record{Event: "cli.done", SessionID: "sB2", Done: &record.Done{Key: "tests", Project: "b"}}, ingest.Options{}) // folder default, not named
+	if a, b := status(t, st, "dk-r5k00001"), status(t, st, "dk-r5k00002"); a.Status != "open" || b.Status != "done" {
+		t.Fatalf("a %s, b %s: want a open, b done", a.Status, b.Status)
+	}
+}
+
+// A move to where the item already is logs nothing, so it offers no Undo.
+func TestNoOpMoveOffersNoUndo(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	st.UpsertItem(store.Item{ID: "dk-r5m00001", Kind: "issue", Title: "x", Project: "w", Urgency: "soon"})
+	e.s.Decide("dk-r5m00001", Action{Kind: "snooze", Until: time.Now().Add(time.Hour)}) // an earlier decision
+	req := httptest.NewRequest("POST", "/item/dk-r5m00001/act", strings.NewReader("action=reclassify&urgency=soon"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Requested-With", "fetch")
+	rec := httptest.NewRecorder()
+	e.s.Handler().ServeHTTP(rec, req)
+	var out map[string]string
+	json.NewDecoder(rec.Body).Decode(&out)
+	if out["ok"] != "1" || out["decision"] != "" {
+		t.Fatalf("a no-op move returned %v", out)
+	}
+}
+
+// Deliveries carry their kind: a title that quotes docket's own phrases
+// doesn't turn a note into an answer.
+func TestDeliveryKindsNotText(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	title := "Re: Cole's answer (from the docket queue): retry?"
+	st.UpsertItem(store.Item{ID: "dk-r5d00001", Kind: "human_task", Title: title, Project: "w", SessionID: "s", Machine: "box", Source: "cli", Blocking: true})
+	e.s.Decide("dk-r5d00001", Action{Kind: "done"})
+	st.DB.Exec(`UPDATE deliveries SET status='sent' WHERE item_id='dk-r5d00001'`)
+	e.s.Decide("dk-r5d00001", Action{Kind: "undo"})
+	e.s.Decide("dk-r5d00001", Action{Kind: "answer", Text: "plugged in"})
+	ds, _ := st.ItemDeliveries("dk-r5d00001")
+	for _, d := range ds {
+		if d.Kind != "answer" {
+			st.ConfirmDelivery(d.Nonce) // the done note and the reopened note arrive
+		}
+	}
+	if it := status(t, st, "dk-r5d00001"); it.Status != "answered" {
+		t.Fatalf("a note's receipt made it %s", it.Status)
+	}
+	if err := e.s.Decide("dk-r5d00001", Action{Kind: "undo"}); err != nil {
+		t.Fatalf("undoing the pending answer: %v", err)
+	}
+}
+
+// An older answer's receipt seen again doesn't mark a newer follow-up
+// delivered.
+func TestOldReceiptDoesntPromoteAFollowUp(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	ask(e, "dk-r5o00001")
+	e.s.Decide("dk-r5o00001", Action{Kind: "choose", Option: 0})
+	ds, _ := st.ItemDeliveries("dk-r5o00001")
+	first := ds[0].Nonce
+	st.ConfirmDelivery(first)
+	e.s.Decide("dk-r5o00001", Action{Kind: "answer", Text: "and use the A100"}) // a follow-up
+	st.ConfirmDelivery(first)                                                   // seen again in a later message
+	if it := status(t, st, "dk-r5o00001"); it.Status != "answered" {
+		t.Fatalf("an old receipt made the follow-up %s", it.Status)
+	}
+}
+
+// A done note queued by an older docket ("marked this done:") is still
+// withdrawn by the undo of its done.
+func TestLegacyDoneNoteWithdrawn(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	st.UpsertItem(store.Item{ID: "dk-r5l00001", Kind: "human_task", Title: "plug in", Project: "w", SessionID: "s", Machine: "box", Source: "cli"})
+	e.s.Decide("dk-r5l00001", Action{Kind: "done"})
+	st.DB.Exec(`UPDATE deliveries SET kind='', text='[docket dk-r5l00001 #x] Cole marked this done: "plug in".' WHERE item_id='dk-r5l00001'`)
+	e.s.Decide("dk-r5l00001", Action{Kind: "undo"})
+	if ds, _ := st.ItemDeliveries("dk-r5l00001"); len(ds) != 0 {
+		t.Fatalf("the old done note is still queued: %+v", ds)
+	}
+}
+
+// One wide line in a code block doesn't cost a long report its tables.
+func TestTableBudgetCountsTables(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("```\n" + strings.Repeat("|x", 21) + "\n```\n\n")
+	b.WriteString("|" + strings.Repeat("c|", 20) + "\n|" + strings.Repeat("-|", 20) + "\n|" + strings.Repeat("1|", 20) + "\n\n")
+	for b.Len() < 20<<10 {
+		b.WriteString("a\n")
+	}
+	if !strings.Contains(string(renderMarkdown(b.String())), "<table>") {
+		t.Fatal("a 20-column table in a long report didn't render")
+	}
+}
+
+// A receipt for an answer that isn't the item's latest doesn't promote it.
+func TestOnlyTheLatestAnswersReceiptPromotes(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	ask(e, "dk-r5p00001")
+	e.s.Decide("dk-r5p00001", Action{Kind: "choose", Option: 0})
+	st.AddDelivery(store.Delivery{ID: "dl-later", ItemID: "dk-r5p00001", Machine: "box", SessionID: "s", Text: "later " + store.AnswerMark, Nonce: "nlater", Kind: "answer"})
+	st.DB.Exec(`UPDATE deliveries SET created_at=created_at+5 WHERE id='dl-later'`)
+	ds, _ := st.ItemDeliveries("dk-r5p00001")
+	for _, d := range ds {
+		if d.ID != "dl-later" {
+			st.ConfirmDelivery(d.Nonce)
+		}
+	}
+	if it := status(t, st, "dk-r5p00001"); it.Status != "answered" {
+		t.Fatalf("an older answer's receipt made it %s", it.Status)
+	}
+}

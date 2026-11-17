@@ -137,8 +137,8 @@ func (s *Server) Decide(id string, a Action) error {
 				if (d.Status != "sent" && d.Status != "confirmed") || d.CreatedAt < dts {
 					continue // still queued (the undo withdraws it), dropped, or older
 				}
-				sentNoise = sentNoise || (d.LiveOnly && strings.Contains(d.Text, store.NoiseMark))
-				if strings.Contains(d.Text, doneMark) {
+				sentNoise = sentNoise || d.Kind == "noise" || (d.Kind == "" && d.LiveOnly && strings.Contains(d.Text, store.NoiseMark))
+				if d.Kind == "done" || (d.Kind == "" && (strings.Contains(d.Text, doneMark) || strings.Contains(d.Text, "marked this done:"))) {
 					sentDone, loudDone = true, loudDone || !d.LiveOnly
 				}
 			}
@@ -158,16 +158,16 @@ func (s *Server) Decide(id string, a Action) error {
 		if action == "noise" {
 			s.rulesChanged()
 			if sentNoise {
-				return s.notifyQuietly(it, fmt.Sprintf("%s took back the \"not worth my time\" on %q: it's open again.", s.cfg.Person, it.Title))
+				return s.notifyQuietly(it, fmt.Sprintf("%s took back the \"not worth my time\" on %q: it's open again.", s.cfg.Person, it.Title), "note")
 			}
 		}
 		if (action == "done" || action == "stash") && sentDone {
 			if now, _, _ := s.st.GetItem(id); now.Status == "open" {
 				msg := fmt.Sprintf("%s reopened %q: it isn't done after all, and it's open again.", s.cfg.Person, it.Title)
 				if loudDone { // the done woke it: so does this
-					return s.queue(it, msg)
+					return s.queue(it, msg, "note")
 				}
-				return s.notifyQuietly(it, msg)
+				return s.notifyQuietly(it, msg, "note")
 			}
 		}
 		return nil
@@ -203,7 +203,7 @@ func (s *Server) Decide(id string, a Action) error {
 	if err := s.st.SetAnswer(id, answer, a.Kind); err != nil {
 		return err
 	}
-	return s.queue(it, fmt.Sprintf("%s's answer to %q %s %s", s.cfg.Person, it.Title, store.AnswerMark, answer))
+	return s.queue(it, fmt.Sprintf("%s's answer to %q %s %s", s.cfg.Person, it.Title, store.AnswerMark, answer), "answer")
 }
 
 func comment(t string) string {
@@ -258,7 +258,7 @@ func (s *Server) reopen(it store.Item) error {
 	}
 	// The agent closed it; the human says it still needs something.
 	if it.Status == "done" && it.Source == ingest.SrcCLI && it.SessionID != "" {
-		return s.notifyQuietly(it, fmt.Sprintf("%s reopened %q, which you closed: it still needs something. It's open again.", s.cfg.Person, it.Title))
+		return s.notifyQuietly(it, fmt.Sprintf("%s reopened %q, which you closed: it still needs something. It's open again.", s.cfg.Person, it.Title), "note")
 	}
 	return nil
 }
@@ -280,7 +280,7 @@ func (s *Server) tellDone(it store.Item, note string) error {
 		return nil
 	}
 	if it.Kind == "human_task" || it.Kind == "blocker" {
-		return s.queue(it, fmt.Sprintf("%s %s %q.%s", s.cfg.Person, doneMark, it.Title, comment(note)))
+		return s.queue(it, fmt.Sprintf("%s %s %q.%s", s.cfg.Person, doneMark, it.Title, comment(note)), "done")
 	}
 	loud := it.Blocking // the agent is paused on it: tell it now, waking it
 	var msg string
@@ -296,9 +296,9 @@ func (s *Server) tellDone(it store.Item, note string) error {
 		msg += " Their note: " + n
 	}
 	if loud {
-		return s.queue(it, msg)
+		return s.queue(it, msg, "done")
 	}
-	return s.notifyQuietly(it, msg)
+	return s.notifyQuietly(it, msg, "done")
 }
 
 // noise is the human saying an item wasn't worth their time. It leaves the
@@ -325,19 +325,19 @@ func (s *Server) noise(it store.Item, note string) error {
 		msg += ". Their note: " + note
 	}
 	msg += ". It's closed; don't re-file it. File fewer items like this: keep docket for what really needs " + s.cfg.Person + ", and mention smaller things in chat instead."
-	return s.notifyQuietly(it, msg)
+	return s.notifyQuietly(it, msg, "noise")
 }
 
 // notifyQuietly tells the session that filed an item something it should
 // know at its next turn, without waking it, and only if it's still running.
-func (s *Server) notifyQuietly(it store.Item, msg string) error {
+func (s *Server) notifyQuietly(it store.Item, msg, kind string) error {
 	nonce := randomNonce()
 	// A re-filed item keeps its first id; say which id this agent was told.
 	if a := s.st.LatestAlias(it.ID, it.SessionID); a != "" {
 		msg = "(this is the item you filed as " + a + ") " + msg
 	}
 	if err := s.st.AddDelivery(store.Delivery{ID: ulid.New(time.Now()), ItemID: it.ID, Machine: it.Machine, SessionID: it.SessionID, Nonce: nonce,
-		Text: fmt.Sprintf("[docket %s #%s] %s", it.ID, nonce, msg), LiveOnly: true, Quiet: true}); err != nil {
+		Text: fmt.Sprintf("[docket %s #%s] %s", it.ID, nonce, msg), LiveOnly: true, Quiet: true, Kind: kind}); err != nil {
 		return err
 	}
 	s.kickDeliver()
@@ -345,14 +345,14 @@ func (s *Server) notifyQuietly(it store.Item, msg string) error {
 }
 
 // queue creates a delivery of text to the item's session and kicks the deliverer.
-func (s *Server) queue(it store.Item, text string) error {
+func (s *Server) queue(it store.Item, text, kind string) error {
 	nonce := randomNonce()
 	// A re-filed item keeps its first id; say which id this agent was told.
 	if a := s.st.LatestAlias(it.ID, it.SessionID); a != "" {
 		text = "(this is the item you filed as " + a + ") " + text
 	}
 	d := store.Delivery{ID: ulid.New(time.Now()), ItemID: it.ID, Machine: it.Machine, SessionID: it.SessionID, Nonce: nonce,
-		Text: fmt.Sprintf("[docket %s #%s] %s", it.ID, nonce, text)}
+		Text: fmt.Sprintf("[docket %s #%s] %s", it.ID, nonce, text), Kind: kind}
 	if err := s.st.AddDelivery(d); err != nil {
 		return err
 	}

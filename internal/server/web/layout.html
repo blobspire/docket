@@ -179,7 +179,7 @@
 {{define "sheet"}}{{$it := .One}}
 <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-label="{{$it.Title}}" data-id="{{$it.ID}}"{{with $it.Session.BridgeID}} data-session="{{rcURL .}}"{{end}}{{if $it.NoStash}} data-nostash{{end}}>
   <header class="sh-h">
-    <a class="back" href="{{if $it.Stashed}}/stash{{else if $it.Closed}}/done{{else}}/{{end}}" data-back>{{template "i" "chev-l"}}<span>{{if $it.Stashed}}Stash{{else if $it.Closed}}Done{{else}}docket{{end}}</span></a>
+    <a class="back" href="{{if $it.Stashed}}/stash{{else if $it.Closed}}/done{{else}}/{{end}}" data-back>{{template "i" "chev-l"}}<span>{{if $it.Stashed}}Stash{{else if $it.Closed}}Done{{else}}All{{end}}</span></a>
     <span class="pos" data-pos></span>
     <button type="button" class="ib" data-nav="-1" aria-label="Previous item" hidden>{{template "i" "chev-u"}}</button>
     <button type="button" class="ib" data-nav="1" aria-label="Next item" hidden>{{template "i" "chev-d"}}</button>
@@ -233,7 +233,7 @@
       <span>{{$it.ID}}</span>
       <span>filed {{clock $it.CreatedAt}}{{if gt $it.MentionCount 1}} · {{$it.MentionCount}} times{{end}}</span>
       {{if not $it.SessionID}}{{with $it.Machine}}<span>{{.}}</span>{{end}}{{end}}
-      {{range .Delivery}}{{if not .LiveOnly}}<span>answer {{.Status}}{{with .Method}} via {{.}}{{end}}{{if .ConfirmedAt}} {{clock .ConfirmedAt}}{{end}}{{with .Error}}: {{.}}{{end}}</span>{{end}}{{end}}
+      {{range .Delivery}}{{if not .LiveOnly}}<span>{{if eq .Kind "done"}}done note{{else if eq .Kind "note"}}note{{else}}answer{{end}} {{.Status}}{{with .Method}} via {{.}}{{end}}{{if .ConfirmedAt}} {{clock .ConfirmedAt}}{{end}}{{with .Error}}: {{.}}{{end}}</span>{{end}}{{end}}
     </div>
     {{if and $it.Projects (not $it.Kept)}}
     <div class="move">

@@ -500,7 +500,8 @@ code { font-family: var(--mono); font-size: .9em; }
   .updated { left: 12px; right: 12px; bottom: 12px; justify-content: space-between; }
   /* Many options scroll; Reply stays first, and a fade says there's more. */
   .dk-a { max-height: 38vh; overflow-y: auto; overscroll-behavior: contain; }
-  .dk-a.over { -webkit-mask-image: linear-gradient(#000 calc(100% - 28px), transparent); mask-image: linear-gradient(#000 calc(100% - 28px), transparent); padding-bottom: 20px; }
+  .dk-a.scrolls { padding-bottom: 20px; }
+  .dk-a.over { -webkit-mask-image: linear-gradient(#000 calc(100% - 28px), transparent); mask-image: linear-gradient(#000 calc(100% - 28px), transparent); }
   .ob.ghost { order: -1; }
   table { display: block; overflow-x: auto; }
   .evidence { grid-template-columns: 1fr; }

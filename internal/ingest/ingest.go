@@ -220,11 +220,14 @@ func apply(s *store.Store, e store.RawEvent, o Options) error {
 			if !ok {
 				it, ok = s.DeliveredBySession(pk, k, sid, !d.Explicit)
 			}
-			if !ok && !d.Explicit {
-				it, ok = s.ActiveByAgentKey(k, "", r.Machine)
-			}
+			// The exact project-scoped key before a bare key in another
+			// project: shared keys (tests, ci, deploy) mustn't close
+			// someone else's item.
 			if !ok {
 				it, ok = s.DeliveredOnMachine(pk, r.Machine)
+			}
+			if !ok && !d.Explicit {
+				it, ok = s.ActiveByAgentKey(k, "", r.Machine)
 			}
 		}
 		// Only an item that still needs someone (or one whose answer the

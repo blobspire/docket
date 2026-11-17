@@ -295,6 +295,7 @@ var added = []struct{ table, column, ddl string }{
 	{"items", "stashed_at", "INTEGER NOT NULL DEFAULT 0"},
 	{"deliveries", "live_only", "INTEGER NOT NULL DEFAULT 0"},
 	{"deliveries", "quiet", "INTEGER NOT NULL DEFAULT 0"},
+	{"deliveries", "kind", "TEXT NOT NULL DEFAULT ''"},
 	{"item_aliases", "machine", "TEXT NOT NULL DEFAULT ''"},
 	{"item_aliases", "created_at", "INTEGER NOT NULL DEFAULT 0"},
 	{"item_aliases", "session_id", "TEXT NOT NULL DEFAULT ''"},
@@ -1038,7 +1039,7 @@ func (s *Store) UndoIf(id string, expect int64) (string, error) {
 		return "", errors.New("it changed meanwhile; look again")
 	}
 	var undeliverable int
-	tx.QueryRow(`SELECT COUNT(*) FROM deliveries WHERE item_id=? AND status IN ('sent','confirmed') AND live_only=0 AND created_at>=? AND instr(text, ?)>0`, id, dts, AnswerMark).Scan(&undeliverable)
+	tx.QueryRow(`SELECT COUNT(*) FROM deliveries WHERE item_id=? AND status IN ('sent','confirmed') AND live_only=0 AND created_at>=? AND `+isAnswer, id, dts).Scan(&undeliverable)
 	if undeliverable > 0 && (action == "answer" || action == "approve" || action == "decline" || action == "choose") {
 		return "", errors.New("the answer has already been delivered to the agent; send a correction instead")
 	}
@@ -1073,7 +1074,7 @@ func (s *Store) UndoIf(id string, expect int64) (string, error) {
 	// An answer whose delivery has confirmed since is delivered, not on its way.
 	if prev == "answered" {
 		var last string
-		tx.QueryRow(`SELECT status FROM deliveries WHERE item_id=? AND live_only=0 ORDER BY created_at DESC, rowid DESC LIMIT 1`, id).Scan(&last)
+		tx.QueryRow(`SELECT status FROM deliveries WHERE item_id=? AND live_only=0 AND `+isAnswer+` ORDER BY created_at DESC, rowid DESC LIMIT 1`, id).Scan(&last)
 		if last == "confirmed" {
 			prev = "delivered"
 		}
@@ -1094,17 +1095,17 @@ func (s *Store) UndoIf(id string, expect int64) (string, error) {
 	// its way when an expiry is undone.
 	// (Only deliveries queued from that decision on: an earlier answer still
 	// on its way stays.)
-	mark := ""
+	kind := ""
 	switch {
 	case action == "answer" || action == "approve" || action == "decline" || action == "choose":
-		mark = AnswerMark
+		kind = "answer"
 	case action == "done" || (action == "stash" && (prev == "open" || prev == "maybe")): // a stash that closed it queued a "marked done"
-		mark = DoneMark
+		kind = "done"
 	case action == "noise":
-		mark = NoiseMark
+		kind = "noise"
 	}
-	if mark != "" {
-		tx.Exec(`DELETE FROM deliveries WHERE item_id=? AND status='pending' AND created_at>=? AND instr(text, ?)>0`, id, dts, mark)
+	if kind != "" {
+		tx.Exec(`DELETE FROM deliveries WHERE item_id=? AND status='pending' AND created_at>=? AND `+kindIs[kind], id, dts)
 	}
 	if _, err := tx.Exec(`DELETE FROM decisions WHERE id=?`, did); err != nil {
 		return "", err
@@ -1215,21 +1216,24 @@ type Delivery struct {
 	LiveOnly bool
 	// Quiet deliveries never wake an idle session (see mailbox.Delivery).
 	Quiet bool
+	// Kind is what it carries: answer (the human's), done, noise or note.
+	// Older rows have none; their text tells.
+	Kind string
 }
 
-const deliveryCols = `id, item_id, machine, session_id, text, nonce, method, status, error, created_at, COALESCE(sent_at,0), COALESCE(confirmed_at,0), attempts, live_only, quiet`
+const deliveryCols = `id, item_id, machine, session_id, text, nonce, method, status, error, created_at, COALESCE(sent_at,0), COALESCE(confirmed_at,0), attempts, live_only, quiet, kind`
 
 func scanDelivery(sc interface{ Scan(...any) error }) (Delivery, error) {
 	var d Delivery
 	var live, quiet int
-	err := sc.Scan(&d.ID, &d.ItemID, &d.Machine, &d.SessionID, &d.Text, &d.Nonce, &d.Method, &d.Status, &d.Error, &d.CreatedAt, &d.SentAt, &d.ConfirmedAt, &d.Attempts, &live, &quiet)
+	err := sc.Scan(&d.ID, &d.ItemID, &d.Machine, &d.SessionID, &d.Text, &d.Nonce, &d.Method, &d.Status, &d.Error, &d.CreatedAt, &d.SentAt, &d.ConfirmedAt, &d.Attempts, &live, &quiet, &d.Kind)
 	d.LiveOnly, d.Quiet = live != 0, quiet != 0
 	return d, err
 }
 
 func (s *Store) AddDelivery(d Delivery) error {
-	_, err := s.DB.Exec(`INSERT INTO deliveries(id, item_id, machine, session_id, text, nonce, status, created_at, live_only, quiet) VALUES (?,?,?,?,?,?,'pending',?,?,?)`,
-		d.ID, d.ItemID, d.Machine, d.SessionID, d.Text, d.Nonce, now(), boolInt(d.LiveOnly), boolInt(d.Quiet))
+	_, err := s.DB.Exec(`INSERT INTO deliveries(id, item_id, machine, session_id, text, nonce, status, created_at, live_only, quiet, kind) VALUES (?,?,?,?,?,?,'pending',?,?,?,?)`,
+		d.ID, d.ItemID, d.Machine, d.SessionID, d.Text, d.Nonce, now(), boolInt(d.LiveOnly), boolInt(d.Quiet), d.Kind)
 	return err
 }
 
@@ -1288,9 +1292,8 @@ func (s *Store) DeliveryFailed(id, msg string) error {
 
 // ConfirmDelivery marks the delivery with this nonce confirmed and its item delivered.
 func (s *Store) ConfirmDelivery(nonce string) (bool, error) {
-	var id, itemID, text string
-	var live int
-	err := s.DB.QueryRow(`SELECT id, item_id, text, live_only FROM deliveries WHERE nonce=?`, nonce).Scan(&id, &itemID, &text, &live)
+	var id, itemID string
+	err := s.DB.QueryRow(`SELECT id, item_id FROM deliveries WHERE nonce=?`, nonce).Scan(&id, &itemID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -1298,11 +1301,18 @@ func (s *Store) ConfirmDelivery(nonce string) (bool, error) {
 		return false, err
 	}
 	t := now()
-	if _, err := s.DB.Exec(`UPDATE deliveries SET status='confirmed', confirmed_at=? WHERE id=? AND status!='confirmed'`, t, id); err != nil {
+	res, err := s.DB.Exec(`UPDATE deliveries SET status='confirmed', confirmed_at=? WHERE id=? AND status!='confirmed'`, t, id)
+	if err != nil {
 		return false, err
 	}
-	// Only the answer arriving makes the item delivered, not a note's receipt.
-	if live != 0 || !strings.Contains(text, AnswerMark) {
+	// Only the item's latest answer arriving makes it delivered: not a
+	// note's receipt, nor an older answer's seen again.
+	if n, _ := res.RowsAffected(); n == 0 {
+		return true, nil
+	}
+	var latest string
+	s.DB.QueryRow(`SELECT id FROM deliveries WHERE item_id=? AND live_only=0 AND `+isAnswer+` ORDER BY created_at DESC, rowid DESC LIMIT 1`, itemID).Scan(&latest)
+	if latest != id {
 		return true, nil
 	}
 	_, err = s.DB.Exec(`UPDATE items SET status='delivered', updated_at=? WHERE id=? AND status='answered'`, t, itemID)

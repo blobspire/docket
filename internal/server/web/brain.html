@@ -11,7 +11,7 @@
   <h2>Proposed{{with .Closed}} <span class="cnt">{{len .}}</span>{{end}}</h2>
   {{if not .Closed}}<p class="empty">No proposals waiting.</p>{{else}}
   <ol class="rows">{{range .Closed}}
-  <li class="rw" data-id="{{.ID}}"><div class="row" data-id="{{.ID}}">
+  <li class="rw" data-id="{{.ID}}"><div class="row" data-id="{{.ID}}" data-nostash>
     <span class="chip k-rule">Rule</span>
     <div class="txt"><a class="t" href="/item/{{.ID}}">{{.Title}}</a></div>
     <div class="qa vis" role="group" aria-label="Decide">

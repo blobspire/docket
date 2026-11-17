@@ -3,6 +3,8 @@ package server
 import (
 	"bytes"
 	"html/template"
+	"math"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -103,6 +105,32 @@ func external(n ast.Node) {
 	n.SetAttributeString("rel", []byte("noopener noreferrer"))
 }
 
+var delimRow = regexp.MustCompile(`^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$`)
+
+// tableCells estimates the cells the tables in s would make: each header's
+// columns times its rows (a table runs to the next blank line), or
+// effectively infinite for a header wider than maxTableColumns.
+func tableCells(s string) int {
+	lines := strings.Split(s, "\n")
+	cells := 0
+	for i := 0; i+1 < len(lines); i++ {
+		if !strings.Contains(lines[i], "|") || !strings.Contains(lines[i+1], "-") || !delimRow.MatchString(lines[i+1]) {
+			continue
+		}
+		cols := strings.Count(lines[i], "|") + 1
+		if cols > maxTableColumns+2 { // n columns: up to n+1 pipes
+			return math.MaxInt32
+		}
+		j := i + 2
+		for j < len(lines) && strings.TrimSpace(lines[j]) != "" {
+			j++
+		}
+		cells += cols * (j - i)
+		i = j
+	}
+	return cells
+}
+
 // renderMarkdown turns an item body into HTML for the page.
 func renderMarkdown(s string) template.HTML {
 	rest := ""
@@ -119,12 +147,7 @@ func renderMarkdown(s string) template.HTML {
 	// A table pads every row to its header's width: a wide header or a long
 	// run of rows under a wide one makes a node per cell.
 	conv := md
-	lines := strings.Split(s, "\n")
-	widest := 0
-	for _, line := range lines {
-		widest = max(widest, strings.Count(line, "|"))
-	}
-	if widest > maxTableColumns+1 || (widest+1)*len(lines) > maxTableCells { // n columns: up to n+1 pipes
+	if tableCells(s) > maxTableCells {
 		conv = mdNoTables
 	}
 	var b bytes.Buffer

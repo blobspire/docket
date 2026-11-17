@@ -6,13 +6,22 @@ import (
 	"strings"
 )
 
-// Markers in the messages docket sends agents, so an undo withdraws (and a
-// receipt counts) only the kind its action sent.
+// Phrases in the messages docket sends agents. Deliveries record their
+// kind; for older rows (made before kinds), the phrase tells.
 const (
 	AnswerMark = "(from the docket queue):"      // the human's answer
 	DoneMark   = "marked your docket item done:" // a done, or a stash that closed it
 	NoiseMark  = "not worth their time"          // "not worth my time"
 )
+
+// kindIs matches deliveries of a kind, by their kind or (older rows) their
+// text; isAnswer is the human's answers.
+var kindIs = map[string]string{
+	"answer": `(kind='answer' OR (kind='' AND live_only=0 AND instr(text, '` + AnswerMark + `')>0))`,
+	"done":   `(kind='done' OR (kind='' AND (instr(text, '` + DoneMark + `')>0 OR instr(text, 'marked this done:')>0)))`,
+	"noise":  `(kind='noise' OR (kind='' AND instr(text, '` + NoiseMark + `')>0))`,
+}
+var isAnswer = kindIs["answer"]
 
 // The Stash keeps items the human has dealt with but wants close at hand
 // (results to share, a quote to act on later) without leaving them on the
@@ -247,7 +256,7 @@ func (s *Store) LatestDeliveries(ids []string) map[string]Delivery {
 		return out
 	}
 	q, args := in(ids)
-	rows, err := s.DB.Query(`SELECT `+deliveryCols+` FROM deliveries WHERE live_only=0 AND item_id IN (`+q+`) ORDER BY created_at, rowid`, args...)
+	rows, err := s.DB.Query(`SELECT `+deliveryCols+` FROM deliveries WHERE live_only=0 AND `+isAnswer+` AND item_id IN (`+q+`) ORDER BY created_at, rowid`, args...)
 	if err != nil {
 		return out
 	}

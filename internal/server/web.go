@@ -751,6 +751,7 @@ func (s *Server) act(w http.ResponseWriter, r *http.Request) {
 		}
 		a.Until = t
 	}
+	before, _, _, _ := s.st.TopDecision(id)
 	err := s.Decide(id, a)
 	if r.Header.Get("X-Requested-With") == "fetch" {
 		w.Header().Set("Content-Type", "application/json")
@@ -761,8 +762,12 @@ func (s *Server) act(w http.ResponseWriter, r *http.Request) {
 		}
 		// The decision this logged, so the toast's Undo takes back this one
 		// and nothing else (another tab may have acted since).
-		did, _, _, _ := s.st.TopDecision(id)
-		json.NewEncoder(w).Encode(map[string]string{"ok": "1", "decision": strconv.FormatInt(did, 10)})
+		// Nothing logged (a move to where it already is): nothing to undo.
+		decision := ""
+		if did, _, _, _ := s.st.TopDecision(id); did != before && did != 0 {
+			decision = strconv.FormatInt(did, 10)
+		}
+		json.NewEncoder(w).Encode(map[string]string{"ok": "1", "decision": decision})
 		return
 	}
 	back := r.FormValue("back")
