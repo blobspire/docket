@@ -418,8 +418,18 @@ func (s *Server) render(w http.ResponseWriter, name string, p page) {
 	}
 }
 
+// sortCookie remembers the docket's sort order, so the docket mark and
+// other plain links to / keep it.
+const sortCookie = "sort"
+
 func (s *Server) pageQueue(w http.ResponseWriter, r *http.Request) {
-	q, err := s.buildQueue(r.URL.Query())
+	query := r.URL.Query()
+	if by := query.Get("sort"); sortOK(by) {
+		http.SetCookie(w, &http.Cookie{Name: sortCookie, Value: by, Path: "/", MaxAge: 400 * 24 * 3600, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	} else if c, err := r.Cookie(sortCookie); err == nil && sortOK(c.Value) {
+		query.Set("sort", c.Value)
+	}
+	q, err := s.buildQueue(query)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
