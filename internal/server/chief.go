@@ -76,6 +76,7 @@ func (s *Server) Queue() (open, waiting, snoozed []Ranked, err error) {
 
 // SortItems orders items: "priority" (urgency, then deadline, then oldest
 // first), "deadline" (soonest deadline first, then urgency) or "newest".
+// "az" sorts the docket's projects by name and keeps items in priority order.
 func SortItems(rs []Ranked, by string) {
 	due := func(r Ranked) string {
 		if r.Due == "" {

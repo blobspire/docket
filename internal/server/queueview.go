@@ -13,7 +13,7 @@ import (
 
 // queueView is everything the docket page shows.
 type queueView struct {
-	Sort    string // priority | deadline | newest
+	Sort    string // priority | deadline | newest | az
 	Mode    string // all | now | project | place
 	Project string
 	Place   string
@@ -280,6 +280,13 @@ func clip(s string, n int) string {
 
 // Link builds a docket URL that keeps the current sort.
 func (q *queueView) Link(project, place string, now bool) string {
+	return q.link(project, place, now, false)
+}
+
+// link leaves the default sort out of the URL unless explicit, which the
+// sort menu wants: choosing Priority must say so, to replace a remembered
+// choice.
+func (q *queueView) link(project, place string, now, explicit bool) string {
 	v := url.Values{}
 	switch {
 	case now:
@@ -289,7 +296,7 @@ func (q *queueView) Link(project, place string, now bool) string {
 	case place != "":
 		v.Set("place", place)
 	}
-	if q.Sort != "" && q.Sort != "priority" {
+	if q.Sort != "" && (explicit || q.Sort != "priority") {
 		v.Set("sort", q.Sort)
 	}
 	if len(v) == 0 {
@@ -303,12 +310,12 @@ func (q *queueView) SortLink(by string) string {
 	saved := q.Sort
 	q.Sort = by
 	defer func() { q.Sort = saved }()
-	return q.Link(q.Project, q.Place, q.Mode == "now")
+	return q.link(q.Project, q.Place, q.Mode == "now", true)
 }
 
 // SortName is the current sort order, as the menu names it.
 func (q *queueView) SortName() string {
-	return map[string]string{"priority": "Priority", "deadline": "Deadline", "newest": "Newest"}[q.Sort]
+	return map[string]string{"priority": "Priority", "deadline": "Deadline", "newest": "Newest", "az": "A–Z"}[q.Sort]
 }
 
 // Empty reports a view with nothing that needs the human.
@@ -366,9 +373,7 @@ func (s *Server) buildQueue(query url.Values) (*queueView, error) {
 		return nil, err
 	}
 	q := &queueView{Sort: query.Get("sort"), Project: store.Slug(query.Get("p")), Place: store.Slug(query.Get("place"))}
-	switch q.Sort {
-	case "deadline", "newest":
-	default:
+	if !sortOK(q.Sort) {
 		q.Sort = "priority"
 	}
 	switch {
@@ -528,6 +533,15 @@ func projectName(it store.Item) string {
 	return it.Project
 }
 
+// sortOK is a sort order the docket page knows.
+func sortOK(by string) bool {
+	switch by {
+	case "priority", "deadline", "newest", "az":
+		return true
+	}
+	return false
+}
+
 // projectLess sorts projects A–Z with "unsorted" last.
 func projectLess(a, b string) bool {
 	if (a == store.Unsorted) != (b == store.Unsorted) {
@@ -539,6 +553,8 @@ func projectLess(a, b string) bool {
 // byProject splits the docket into one section per project, in the order of
 // each project's most pressing item (so a project with something due soon
 // comes first). Projects with only answers waiting on agents come last.
+// Sorted A–Z, the sections go strictly by project name instead (items in
+// each keep priority order).
 func (s *Server) byProject(rest, wait []Ranked, desc map[string]string, q *queueView) []section {
 	idx := map[string]int{}
 	var order []string
@@ -561,6 +577,10 @@ func (s *Server) byProject(rest, wait []Ranked, desc map[string]string, q *queue
 		waits[p] = append(waits[p], r)
 	}
 	sort.Slice(waitOnly, func(i, j int) bool { return projectLess(waitOnly[i], waitOnly[j]) })
+	if q.Sort == "az" {
+		order, waitOnly = append(order, waitOnly...), nil
+		sort.Slice(order, func(i, j int) bool { return projectLess(order[i], order[j]) })
+	}
 	var out []section
 	for _, p := range append(order, waitOnly...) {
 		sec := section{Title: p, Desc: desc[p], URL: q.Link(p, "", false), Rows: s.rows(rows[p], "docket", false, q.Projects), Waiting: s.rows(waits[p], "docket", false, q.Projects)}

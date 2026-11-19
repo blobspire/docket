@@ -15,6 +15,7 @@
         <a role="menuitemradio" aria-checked="{{eq $q.Sort "priority"}}" href="{{$q.SortLink "priority"}}" data-sort="priority">{{if eq $q.Sort "priority"}}{{template "i" "check"}}{{else}}<span></span>{{end}}<span class="mt">Priority</span><span class="md">Act now first, then deadlines</span></a>
         <a role="menuitemradio" aria-checked="{{eq $q.Sort "deadline"}}" href="{{$q.SortLink "deadline"}}" data-sort="deadline">{{if eq $q.Sort "deadline"}}{{template "i" "check"}}{{else}}<span></span>{{end}}<span class="mt">Deadline</span><span class="md">Soonest due first</span></a>
         <a role="menuitemradio" aria-checked="{{eq $q.Sort "newest"}}" href="{{$q.SortLink "newest"}}" data-sort="newest">{{if eq $q.Sort "newest"}}{{template "i" "check"}}{{else}}<span></span>{{end}}<span class="mt">Newest</span><span class="md">Most recently filed first</span></a>
+        <a role="menuitemradio" aria-checked="{{eq $q.Sort "az"}}" href="{{$q.SortLink "az"}}" data-sort="az">{{if eq $q.Sort "az"}}{{template "i" "check"}}{{else}}<span></span>{{end}}<span class="mt">A–Z</span><span class="md">Projects by name</span></a>
       </div>
     </div>
   </div>
