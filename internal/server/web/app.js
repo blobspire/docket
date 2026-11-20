@@ -16,6 +16,9 @@
 
   // ---- state ------------------------------------------------------------------------
   let sel = null; // the selected row's item id
+  // The selection is for the keyboard: a press on the list, or a mouse or a
+  // tap that closes an item, clears it; j/k then pick up from resume.
+  let pointer = false, resume = null;
   let openId = solo ? $(".sheet")?.dataset.id : null; // the item in the sheet
   let pushed = false; // the sheet added a history entry (Back closes it)
   let sheetSeq = 0;
@@ -38,6 +41,7 @@
     r.classList.add("sel");
     if (scroll) r.scrollIntoView({ block: "nearest" });
   };
+  const clearSel = () => { if (sel) resume = sel; sel = null; markSel(false); };
   // An item still waiting on the human: where Done and the others make sense
   // (not an answer waiting on its agent, or a snoozed one).
   const actionable = (id) => { const r = rowOf(id); return !!r && !r.dataset.quiet && !r.dataset.kept; };
@@ -185,7 +189,7 @@
     scrim.replaceChildren();
     document.body.classList.remove("sheet-open");
     if (location.pathname.startsWith("/item/")) history.replaceState(null, "", listURL);
-    markSel(true);
+    if (pointer) clearSel(); else markSel(true);
     placeToast();
   };
   addEventListener("popstate", (e) => {
@@ -394,7 +398,13 @@
   // A drag that starts in the sheet (selecting text) and ends on the
   // backdrop clicks the backdrop: only a press that starts there closes.
   let downOn = null;
-  document.addEventListener("pointerdown", (e) => { downOn = e.target; }, true);
+  document.addEventListener("pointerdown", (e) => {
+    downOn = e.target;
+    pointer = true;
+    // A press on the list (a row included: a click opens it, or acts on
+    // it without moving a highlight to the next one) ends keyboard selection.
+    if (sel && scrim.hidden && nscrim.hidden && lbEl.hidden && !e.target.closest("#toast")) clearSel();
+  }, true);
   let skipped = false; // a refresh waited for a menu to close
   const closeMenus = (except) => {
     if (skipped && !except && $$(".menu").some((x) => !x.hidden)) { skipped = false; setTimeout(refresh, 0); }
@@ -576,6 +586,7 @@
   const toggleHelp = () => { const h = $(".help"); h.hidden = !h.hidden; };
   let g = false;
   document.addEventListener("keydown", (e) => {
+    pointer = false;
     const k = e.key, a = document.activeElement;
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName);
     if (e.metaKey || e.ctrlKey || e.altKey) {
@@ -648,6 +659,7 @@
     if (k === "j" || k === "ArrowDown" || k === "k" || k === "ArrowUp") {
       if (!order.length) return;
       e.preventDefault();
+      if (sel === null && order.includes(resume)) { sel = resume; resume = null; return markSel(true); } // where you were
       const i = order.indexOf(sel), down = k === "j" || k === "ArrowDown";
       sel = order[i < 0 ? (down ? 0 : order.length - 1) : Math.max(0, Math.min(order.length - 1, i + (down ? 1 : -1)))];
       return markSel(true);
