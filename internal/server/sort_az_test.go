@@ -19,8 +19,9 @@ func sectionTitles(q *queueView) []string {
 	return out
 }
 
-// A–Z puts the docket's projects in name order, "unsorted" last, with a
-// project that only has answers waiting on agents in its place by name.
+// A–Z puts the docket's projects in name order, "unsorted" after them, and
+// projects that only have answers waiting on agents last of all, as under
+// Priority (nothing in them needs the human).
 // Items in each project stay in priority order, and act-now items stay in
 // the red band at the top.
 func TestAZSortsProjectsByName(t *testing.T) {
@@ -28,18 +29,19 @@ func TestAZSortsProjectsByName(t *testing.T) {
 	st := e.s.st
 	old := time.Now().Add(-2 * time.Hour).Unix()
 	for _, it := range []store.Item{
-		{ID: "dk-az000001", Kind: "ask", Title: "Zeta deadline today", Project: "zeta", Urgency: "soon"},
+		{ID: "dk-az000001", Kind: "ask", Title: "Zeta deadline today", Project: "zeta", Urgency: "soon", Due: time.Now().Format("2006-01-02")},
 		{ID: "dk-az000002", Kind: "ask", Title: "Zebra report", Project: "alpha", CreatedAt: old},
 		{ID: "dk-az000003", Kind: "ask", Title: "Apple decision", Project: "alpha", Urgency: "soon"},
 		{ID: "dk-az000004", Kind: "ask", Title: "No project", Project: ""},
 		{ID: "dk-az000005", Kind: "ask", Title: "Answered in mid", Project: "mid"},
+		{ID: "dk-az000007", Kind: "ask", Title: "Answered in beta", Project: "beta"},
 		{ID: "dk-az000006", Kind: "issue", Title: "Logins expired", Project: "zeta", Urgency: "now"},
 	} {
 		if _, _, err := st.UpsertItem(it); err != nil {
 			t.Fatal(err)
 		}
 	}
-	st.DB.Exec(`UPDATE items SET status='answered', answer='yes', answered_at=? WHERE id='dk-az000005'`, time.Now().Unix())
+	st.DB.Exec(`UPDATE items SET status='answered', answer='yes', answered_at=? WHERE id IN ('dk-az000005','dk-az000007')`, time.Now().Unix())
 
 	pr, err := e.s.buildQueue(url.Values{})
 	if err != nil {
@@ -47,8 +49,11 @@ func TestAZSortsProjectsByName(t *testing.T) {
 	}
 	// The priority order this test contrasts with: the most pressing
 	// project first, the waiting-only one last.
-	if got := strings.Join(sectionTitles(pr), ","); got != "zeta,alpha,unsorted,mid" && got != "alpha,zeta,unsorted,mid" {
+	if got := strings.Join(sectionTitles(pr), ","); got != "zeta,alpha,unsorted,beta,mid" {
 		t.Fatalf("test setup: priority sections %s", got)
+	}
+	if pr.Sections[0].Title != "zeta" {
+		t.Fatalf("test setup: the most pressing project isn't first under Priority: %v", sectionTitles(pr))
 	}
 	if pr.Sections[len(pr.Sections)-1].Title != "mid" {
 		t.Fatalf("test setup: the waiting-only project isn't last under Priority: %v", sectionTitles(pr))
@@ -58,8 +63,8 @@ func TestAZSortsProjectsByName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(sectionTitles(az), ","); got != "alpha,mid,zeta,unsorted" {
-		t.Fatalf("A–Z sections: %s, want alpha,mid,zeta,unsorted", got)
+	if got := strings.Join(sectionTitles(az), ","); got != "alpha,zeta,unsorted,beta,mid" {
+		t.Fatalf("A–Z sections: %s, want alpha,zeta,unsorted,beta,mid", got)
 	}
 	var alpha []string
 	for _, r := range az.Sections[0].Rows {
