@@ -553,8 +553,8 @@ func projectLess(a, b string) bool {
 // byProject splits the docket into one section per project, in the order of
 // each project's most pressing item (so a project with something due soon
 // comes first). Projects with only answers waiting on agents come last.
-// Sorted A–Z, the sections go strictly by project name instead (items in
-// each keep priority order).
+// Sorted A–Z, projects go by name instead (items in each keep priority
+// order), and the waiting-only ones still come last.
 func (s *Server) byProject(rest, wait []Ranked, desc map[string]string, q *queueView) []section {
 	idx := map[string]int{}
 	var order []string
@@ -578,7 +578,6 @@ func (s *Server) byProject(rest, wait []Ranked, desc map[string]string, q *queue
 	}
 	sort.Slice(waitOnly, func(i, j int) bool { return projectLess(waitOnly[i], waitOnly[j]) })
 	if q.Sort == "az" {
-		order, waitOnly = append(order, waitOnly...), nil
 		sort.Slice(order, func(i, j int) bool { return projectLess(order[i], order[j]) })
 	}
 	var out []section
