@@ -26,7 +26,7 @@ Packages, in data-flow order:
 ## Guidelines
 
 - **Hooks must never break a session.** They exit 0 (except the waiter's deliberate exit 2), they are fast, and they swallow errors.
-- **Agents decide what reaches the human.** No guessing from chat text, and no model calls in capture or ingest. The one model job (rule proposals) lives in `internal/server/brain.go`, and it is optional and capped.
+- **Agents decide what reaches the human.** No guessing from chat text, and no model calls in capture or ingest. The model jobs are few and bounded: rule proposals (`internal/server/brain.go`, optional and capped) and the Ideas router (`internal/server/ideas.go`, one budgeted call per dictation the human sends, never part of capture).
 - **docket never decides for the human.** Code that answers an item must come from a human action in the UI.
 - **Tests come with behaviour changes.** The server tests run the whole loop in-process: file, collect, answer, deliver, receipt.
 - **Nothing personal in the repo.** Host names, topics and leads live in `~/.config/docket/`.

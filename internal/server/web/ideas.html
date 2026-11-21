@@ -1,0 +1,91 @@
+{{define "ideas.html"}}{{template "head" .}}
+<main class="main solo" id="main" data-label="Ideas"><div class="pg ideas">
+<div class="mh"><div><h1>Ideas</h1><p>What you dictated, and what the agents are doing with it.</p></div>
+  <button type="button" class="sb pri nw" data-dictate>{{template "i" "mic"}}New idea</button></div>
+{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+{{with .Ideas}}
+{{if .Empty}}<div class="blank"><b>No ideas yet</b>Tap the mic (or press <kbd>n</kbd>) and say what you want changed, in any project. An agent researches it and brings you a plan.</div>{{end}}
+
+{{if or .Needs .Stuck}}<section>
+  <h2>Needs you <span class="cnt">{{len .Needs}}{{if .Stuck}} · {{len .Stuck}} stuck{{end}}</span></h2>
+  {{range .Needs}}
+  <form class="ia ia-d" method="post" action="/dictation/{{.ID}}/do/send" data-ia>
+    <div class="ia-h"><span class="tone {{if eq .Status "failed"}}t-bad{{else}}t-ok{{end}}">{{.Label}}</span><span class="muted">{{ago .CreatedAt}}{{with .ProjectHint}} · {{.}}{{end}}</span></div>
+    {{if or .Text .Transcript}}<textarea name="text" rows="4" aria-label="What you said">{{.Text}}</textarea>{{end}}
+    {{if .AudioSHA}}<audio controls preload="none" src="/blob/{{.AudioSHA}}?type=audio/wav"></audio>{{end}}
+    <div class="ia-a">
+      {{if or .Text .Transcript}}<button type="submit" class="sb pri">Send</button>{{end}}
+      {{if eq .Status "failed"}}<button type="submit" class="sb" formaction="/dictation/{{.ID}}/do/retry">Try again</button>{{end}}
+      <button type="submit" class="sb" formaction="/dictation/{{.ID}}/do/delete">Delete</button>
+    </div>
+  </form>
+  {{end}}
+  {{range .Stuck}}{{template "ideacard" .}}{{end}}
+</section>{{end}}
+
+{{if .Proposed}}<section>
+  <h2>Proposals waiting on you <span class="cnt">{{len .Proposed}}</span></h2>
+  <ul class="rows">{{range .Proposed}}
+    <li class="rw" data-id="{{.ItemID}}"><div class="row" data-id="{{.ItemID}}"{{with .SessionURL}} data-session="{{.}}"{{end}}>
+      <span class="chip k-idea">{{template "i" "bulb"}}Idea</span>
+      <div class="txt"><a class="t" href="/item/{{.ItemID}}">{{.Title}}</a>
+        <div class="m"><span>{{.Project}}</span><span>{{ago .UpdatedAt}}</span></div></div>
+      <div class="th"></div><div class="qa"></div>
+    </div></li>{{end}}
+  </ul>
+</section>{{end}}
+
+{{if or .Working .Pending}}<section>
+  <h2>In progress <span class="cnt">{{len .Working}}</span></h2>
+  {{range .Pending}}
+  <div class="ia ia-p"><div class="ia-h"><span class="tone t-busy">{{.Label}}</span><span class="muted">{{ago .CreatedAt}}</span></div>
+    {{with .Text}}<p class="ia-q">{{.}}</p>{{end}}</div>
+  {{end}}
+  {{range .Working}}{{template "ideacard" .}}{{end}}
+</section>{{end}}
+
+{{if .Saved}}<section>
+  <h2>Saved for later</h2>
+  {{range .Saved}}<h3 class="ia-g">{{.Project}} <span class="cnt">{{len .Ideas}}</span></h3>{{range .Ideas}}{{template "ideacard" .}}{{end}}{{end}}
+</section>{{end}}
+
+{{if .Recent}}<section>
+  <h2>Lately</h2>
+  {{range .Recent}}{{template "ideacard" .}}{{end}}
+</section>{{end}}
+{{end}}
+</div></main>
+{{template "foot" .}}{{end}}
+
+{{/* One idea: its status, what it is, what an agent found, and what the
+     human can do with it here. Open/closed survives a refresh (data-wt). */}}
+{{define "ideacard"}}
+<details class="ia" id="{{.ID}}" data-wt="{{.ID}}">
+  <summary>
+    <span class="ia-t">{{.Title}}</span>
+    <span class="ia-h"><span class="tone t-{{.Tone}}">{{.Label}}</span><span class="muted">{{.Project}} · {{ago .CreatedAt}}</span></span>
+  </summary>
+  <div class="ia-b">
+    <div class="prose">{{md .Body}}</div>
+    {{with .Note}}<div class="ia-n"><b>What an agent found</b><div class="prose">{{md .}}</div></div>{{end}}
+    {{with .Reason}}<p class="muted small">Routed: {{.}}</p>{{end}}
+    {{if or .SessionURL .ItemID}}<p class="ia-l">
+      {{with .SessionURL}}<a class="sb" href="{{.}}" target="_blank" rel="noopener">{{template "i" "ext"}}Open the session</a>{{end}}
+      {{with .ItemID}}<a class="sb" href="/item/{{.}}">See the proposal</a>{{end}}
+    </p>{{end}}
+    {{if .Dict.Text}}<details class="ia-said"><summary>What you said</summary>
+      <p class="ia-q">{{.Dict.Text}}</p>
+      {{with .Dict.AudioSHA}}<audio controls preload="none" src="/blob/{{.}}?type=audio/wav"></audio>{{end}}
+    </details>{{end}}
+    <form class="ia-a" method="post" action="/idea/{{.ID}}/research" data-ia>
+      {{if or (eq .Status "saved") (eq .Status "dismissed") (eq .Status "built") (eq .Status "sent")}}
+        <button type="submit" class="sb{{if eq .Status "saved"}} pri{{end}}">Research it</button>
+        <button type="submit" class="sb" formaction="/idea/{{.ID}}/build">Just build it</button>
+      {{end}}
+      {{if eq .Status "failed"}}<button type="submit" class="sb pri" formaction="/idea/{{.ID}}/retry">Try again</button>{{end}}
+      {{if or (eq .Status "queued") (eq .Status "waiting_machine") (eq .Status "failed") (eq .Status "dismissed")}}<button type="submit" class="sb" formaction="/idea/{{.ID}}/save">Save for later</button>{{end}}
+      {{if or (eq .Status "saved") (eq .Status "queued") (eq .Status "waiting_machine") (eq .Status "failed") (eq .Status "proposed")}}<button type="submit" class="sb" formaction="/idea/{{.ID}}/dismiss">Dismiss</button>{{end}}
+    </form>
+  </div>
+</details>
+{{end}}

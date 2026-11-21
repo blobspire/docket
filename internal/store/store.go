@@ -220,6 +220,67 @@ CREATE TABLE IF NOT EXISTS kv (
   k TEXT PRIMARY KEY,
   v TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS dictations (
+  id TEXT PRIMARY KEY,
+  login TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT 'text',
+  status TEXT NOT NULL,
+  audio_sha TEXT NOT NULL DEFAULT '',
+  audio_ms INTEGER NOT NULL DEFAULT 0,
+  next_seq INTEGER NOT NULL DEFAULT 0,
+  transcript TEXT NOT NULL DEFAULT '',
+  text TEXT NOT NULL DEFAULT '',
+  project_hint TEXT NOT NULL DEFAULT '',
+  auto_send INTEGER NOT NULL DEFAULT 0,
+  error TEXT NOT NULL DEFAULT '',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  sent_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS dictations_status ON dictations(status);
+CREATE TABLE IF NOT EXISTS ideas (
+  id TEXT PRIMARY KEY,
+  dictation_id TEXT NOT NULL DEFAULT '',
+  project TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL,
+  body TEXT NOT NULL DEFAULT '',
+  route TEXT NOT NULL DEFAULT '',
+  reason TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  machine TEXT NOT NULL DEFAULT '',
+  dir TEXT NOT NULL DEFAULT '',
+  place TEXT NOT NULL DEFAULT '',
+  session_name TEXT NOT NULL DEFAULT '',
+  session_id TEXT NOT NULL DEFAULT '',
+  item_id TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  error TEXT NOT NULL DEFAULT '',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  started_at INTEGER NOT NULL DEFAULT 0,
+  ended_at INTEGER NOT NULL DEFAULT 0,
+  stopped_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ideas_status ON ideas(status);
+CREATE INDEX IF NOT EXISTS ideas_item ON ideas(item_id);
+CREATE INDEX IF NOT EXISTS ideas_session ON ideas(session_id);
+CREATE TABLE IF NOT EXISTS starts (
+  id TEXT PRIMARY KEY,
+  machine TEXT NOT NULL,
+  op TEXT NOT NULL DEFAULT 'start',
+  name TEXT NOT NULL,
+  cwd TEXT NOT NULL DEFAULT '',
+  idea_id TEXT NOT NULL DEFAULT '',
+  prompt TEXT NOT NULL DEFAULT '',
+  args TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL,
+  error TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  sent_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS starts_status ON starts(machine, status);
 `
 
 // Active statuses: the item still needs someone.
@@ -300,6 +361,9 @@ var added = []struct{ table, column, ddl string }{
 	{"item_aliases", "created_at", "INTEGER NOT NULL DEFAULT 0"},
 	{"item_aliases", "session_id", "TEXT NOT NULL DEFAULT ''"},
 	{"project_dirs", "votes", "INTEGER NOT NULL DEFAULT 1"},
+	{"project_dirs", "remote", "TEXT NOT NULL DEFAULT ''"},
+	{"project_dirs", "clone", "INTEGER NOT NULL DEFAULT 0"},
+	{"sessions", "idea", "TEXT NOT NULL DEFAULT ''"},
 }
 
 func migrate(db *sql.DB) error {
@@ -588,14 +652,15 @@ type Session struct {
 	HasPlugin         bool
 	Kind              string // interactive | bg | … (from the session registry)
 	WaitingSince      int64
+	Idea              string // the idea docket started it for (DOCKET_IDEA)
 }
 
-const sessionCols = `id, COALESCE(machine,''), COALESCE(cwd,''), COALESCE(lead,''), COALESCE(name,''), COALESCE(tmux,''), COALESCE(bridge_id,''), COALESCE(pid,0), COALESCE(state,''), COALESCE(waiting_for,''), COALESCE(transcript_path,''), COALESCE(started_at,0), COALESCE(last_event_at,0), COALESCE(ended_at,0), COALESCE(pending_permission,''), COALESCE(last_message,''), has_plugin, kind, waiting_since`
+const sessionCols = `id, COALESCE(machine,''), COALESCE(cwd,''), COALESCE(lead,''), COALESCE(name,''), COALESCE(tmux,''), COALESCE(bridge_id,''), COALESCE(pid,0), COALESCE(state,''), COALESCE(waiting_for,''), COALESCE(transcript_path,''), COALESCE(started_at,0), COALESCE(last_event_at,0), COALESCE(ended_at,0), COALESCE(pending_permission,''), COALESCE(last_message,''), has_plugin, kind, waiting_since, idea`
 
 func scanSession(sc interface{ Scan(...any) error }) (Session, error) {
 	var x Session
 	var plugin int
-	err := sc.Scan(&x.ID, &x.Machine, &x.Cwd, &x.Lead, &x.Name, &x.Tmux, &x.BridgeID, &x.PID, &x.State, &x.WaitingFor, &x.TranscriptPath, &x.StartedAt, &x.LastEventAt, &x.EndedAt, &x.PendingPermission, &x.LastMessage, &plugin, &x.Kind, &x.WaitingSince)
+	err := sc.Scan(&x.ID, &x.Machine, &x.Cwd, &x.Lead, &x.Name, &x.Tmux, &x.BridgeID, &x.PID, &x.State, &x.WaitingFor, &x.TranscriptPath, &x.StartedAt, &x.LastEventAt, &x.EndedAt, &x.PendingPermission, &x.LastMessage, &plugin, &x.Kind, &x.WaitingSince, &x.Idea)
 	x.HasPlugin = plugin != 0
 	return x, err
 }
@@ -611,9 +676,9 @@ func (s *Store) GetSession(id string) (Session, bool, error) {
 
 // SessionPatch updates only the fields that are set.
 type SessionPatch struct {
-	Machine, Cwd, Lead, Name, Tmux, BridgeID, State, WaitingFor, TranscriptPath, PendingPermission, LastMessage, Kind *string
-	PID, StartedAt, LastEventAt, EndedAt, WaitingSince                                                                *int64
-	HasPlugin                                                                                                         *bool
+	Machine, Cwd, Lead, Name, Tmux, BridgeID, State, WaitingFor, TranscriptPath, PendingPermission, LastMessage, Kind, Idea *string
+	PID, StartedAt, LastEventAt, EndedAt, WaitingSince                                                                      *int64
+	HasPlugin                                                                                                               *bool
 }
 
 func Str(s string) *string { return &s }
@@ -631,7 +696,7 @@ func (s *Store) PatchSession(id string, p SessionPatch) error {
 	var sets []string
 	var args []any
 	add := func(col string, v any) { sets = append(sets, col+"=?"); args = append(args, v) }
-	for col, v := range map[string]*string{"machine": p.Machine, "cwd": p.Cwd, "lead": p.Lead, "name": p.Name, "tmux": p.Tmux, "bridge_id": p.BridgeID, "state": p.State, "waiting_for": p.WaitingFor, "transcript_path": p.TranscriptPath, "pending_permission": p.PendingPermission, "last_message": p.LastMessage, "kind": p.Kind} {
+	for col, v := range map[string]*string{"machine": p.Machine, "cwd": p.Cwd, "lead": p.Lead, "name": p.Name, "tmux": p.Tmux, "bridge_id": p.BridgeID, "state": p.State, "waiting_for": p.WaitingFor, "transcript_path": p.TranscriptPath, "pending_permission": p.PendingPermission, "last_message": p.LastMessage, "kind": p.Kind, "idea": p.Idea} {
 		if v != nil {
 			add(col, *v)
 		}

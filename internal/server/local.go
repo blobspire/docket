@@ -115,14 +115,17 @@ func localRun(stdin io.Reader, args ...string) ([]byte, error) {
 		}
 		if len(args) > 1 && args[1] == "start" {
 			home, _ := os.UserHomeDir()
-			return nil, sessions.Start(sessions.StartOpts{Name: flags["--name"], Cwd: flags["--cwd"], Lead: flags["--lead"], ResumeID: flags["--resume"], Args: extra, Prompt: string(text), Home: home})
+			return nil, sessions.Start(sessions.StartOpts{Name: flags["--name"], Cwd: flags["--cwd"], Lead: flags["--lead"], Idea: flags["--idea"], ResumeID: flags["--resume"], Args: extra, Prompt: string(text), Home: home})
 		}
 		if len(args) > 1 && args[1] == "send" {
 			return nil, sessions.SendTmux(flags["--pane"], string(text))
 		}
 		if len(args) > 1 && args[1] == "resume" {
 			home, _ := os.UserHomeDir()
-			return nil, sessions.Resume(flags["--id"], flags["--cwd"], flags["--name"], string(text), home)
+			return nil, sessions.ResumeIdea(flags["--id"], flags["--cwd"], flags["--name"], flags["--idea"], string(text), home)
+		}
+		if len(args) > 1 && args[1] == "stop" {
+			return nil, sessions.Stop(flags["--name"])
 		}
 	}
 	return nil, fmt.Errorf("unsupported local command %v", args)

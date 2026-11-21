@@ -181,6 +181,9 @@ func (s *Server) wakeFor(ctx context.Context, j store.Job, l Lead, hasLead bool,
 // lead, its name is (or starts with) the lead's session name, or, with
 // match_dir, it works in the lead's folder.
 func (l Lead) owns(x store.Session) bool {
+	if x.Idea != "" {
+		return false // docket started it for an idea, even if it works in the lead's folder
+	}
 	if x.Lead != "" {
 		return x.Lead == l.Name
 	}

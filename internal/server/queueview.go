@@ -71,6 +71,7 @@ type itemView struct {
 	LastAction  string           // the human's latest logged action on it
 	Projects    []string         // where it can be moved
 	Person      string
+	Idea        string // the idea it proposes a plan for (docket propose)
 }
 
 // AnswerVerb and AnswerWhat split Answered for templates.
@@ -336,9 +337,10 @@ func (s *Server) rows(rs []Ranked, list string, showProject bool, projects []str
 	if list != "docket" {
 		last = s.st.LastDecisions(ids)
 	}
+	ideas := s.st.IdeaItems()
 	out := make([]itemView, len(rs))
 	for i, r := range rs {
-		v := itemView{Ranked: r, List: list, ShowProject: showProject, Delivery: ds[r.ID], LastAction: last[r.ID], Person: s.cfg.Person}
+		v := itemView{Ranked: r, List: list, ShowProject: showProject, Delivery: ds[r.ID], LastAction: last[r.ID], Person: s.cfg.Person, Idea: ideas[r.ID]}
 		if projects != nil {
 			v.Projects = withProject(projects, projectName(r.Item))
 		}

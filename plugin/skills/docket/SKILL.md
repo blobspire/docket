@@ -111,3 +111,13 @@ docket job done nightly-backtest --why "sharpe 1.4"     # add --failed if it fai
 ```
 
 A job that misses two beats shows up on their docket, and its lead is woken to look. When it finishes, file the **results** with `docket review` if they're waiting on them.
+
+## Ideas the human dictated
+
+They can dictate (or type) an idea into docket from anywhere. docket splits it into ideas and starts a fresh session for each one that needs work. If that's you, `DOCKET_IDEA` is set and your first message (tagged `[docket idea-…]`) says what to do: research the idea, critique it honestly, and bring a plan with `docket propose`, then end your turn and wait.
+
+- `docket propose "<what you'd build>" --idea <idea-id> --project <p> --why "<markdown>"` files your plan with the options **Build it** and **Save for later**. Run it again to revise the same proposal.
+- **Build it** is their approval to build, test, open the pull request, merge and release it, following the repository's own rules. Don't ask again. Run `docket idea done <idea-id> --why "<what shipped, PR link>"` when it has shipped.
+- **Save for later**: `docket idea save <idea-id> --why "<what you found>"` keeps your findings with the idea.
+
+Saved ideas are a backlog any agent can pick from: `docket ideas` lists this project's (`--all` for every project). To work on one, `docket idea take <idea-id>`, then propose or ship it as above. Pick one up only when it fits work you're already doing, or when you were asked to.

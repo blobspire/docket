@@ -66,6 +66,8 @@ type Item struct {
 	Urgency    string `json:"urgency,omitempty"` // now | soon | normal
 	Expires    int64  `json:"expires,omitempty"` // unix; the item closes on its own after this
 	Root       string `json:"root,omitempty"`    // the filing folder's main repository root
+	Remote     string `json:"remote,omitempty"`  // that repository's origin URL (no credentials)
+	Idea       string `json:"idea,omitempty"`    // a proposal for this idea (docket propose)
 }
 
 type Evidence struct {
@@ -103,7 +105,7 @@ func New(event string, getenv func(string) string) Record {
 
 // Environment values worth keeping: where the session runs (tmux), which
 // lead it is, and Claude Code's own non-secret session metadata.
-var keepEnv = []string{"TMUX", "TMUX_PANE", "DOCKET_LEAD", "DOCKET_SESSION", "TERM_PROGRAM"}
+var keepEnv = []string{"TMUX", "TMUX_PANE", "DOCKET_LEAD", "DOCKET_SESSION", "DOCKET_IDEA", "TERM_PROGRAM"}
 
 var secretish = regexp.MustCompile(`(?i)TOKEN|KEY|SECRET|AUTH|PASS|CRED|COOKIE`)
 

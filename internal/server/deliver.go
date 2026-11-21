@@ -35,6 +35,15 @@ type Action struct {
 // hear about it, queues a delivery to the session that filed it. docket only
 // relays decisions the human actually made here; it never decides itself.
 func (s *Server) Decide(id string, a Action) error {
+	before, _, _ := s.st.GetItem(id)
+	err := s.decide(id, a)
+	if err == nil && before.ID != "" {
+		s.ideaDecided(before, a) // a proposal's idea follows what was decided
+	}
+	return err
+}
+
+func (s *Server) decide(id string, a Action) error {
 	it, ok, err := s.st.GetItem(id)
 	if err != nil {
 		return err
@@ -460,7 +469,12 @@ func (s *Server) resume(ctx context.Context, m Machine, sess store.Session, d st
 	if name == "" {
 		name = "docket-" + short(d.SessionID)
 	}
-	if _, err := s.remote(ctx, m, strings.NewReader(d.Text), "session", "resume", "--id", d.SessionID, "--cwd", sess.Cwd, "--name", name); err != nil {
+	args := []string{"session", "resume", "--id", d.SessionID, "--cwd", sess.Cwd, "--name", name}
+	if sess.Idea != "" {
+		// An idea's session keeps its idea, and the name docket stops it by.
+		args = []string{"session", "resume", "--id", d.SessionID, "--cwd", sess.Cwd, "--name", sess.Idea, "--idea", sess.Idea}
+	}
+	if _, err := s.remote(ctx, m, strings.NewReader(d.Text), args...); err != nil {
 		s.st.DeliveryFailed(d.ID, err.Error())
 		return
 	}

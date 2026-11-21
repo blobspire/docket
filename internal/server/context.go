@@ -92,6 +92,17 @@ func (s *Server) ContextFor(machine string) ([]byte, error) {
 	var lastDir int64
 	s.st.DB.QueryRow(`SELECT COALESCE(MAX(updated_at),0) FROM project_dirs WHERE machine=?`, machine).Scan(&lastDir)
 	c.AsOf = max(asOf, lastDir)
+	// The saved ideas, newest first, for agents looking for what to pick up.
+	if saved, err := s.st.Ideas(store.IdeaSaved); err == nil {
+		sort.Slice(saved, func(i, j int) bool { return saved[i].CreatedAt > saved[j].CreatedAt })
+		for _, i := range saved {
+			if len(c.Ideas) == 200 {
+				break
+			}
+			c.Ideas = append(c.Ideas, agentctx.Idea{ID: i.ID, Project: i.Project, Title: i.Title, Body: clipStr(i.Body, 1500), Note: clipStr(i.Note, 600), CreatedAt: i.CreatedAt})
+			c.AsOf = max(c.AsOf, i.UpdatedAt)
+		}
+	}
 	return json.Marshal(c)
 }
 

@@ -155,8 +155,17 @@ func apply(s *store.Store, e store.RawEvent, o Options) error {
 		if pane := r.Env["TMUX_PANE"]; pane != "" && r.Env["TMUX"] != "" {
 			patch.Tmux = store.Str(pane)
 		}
+		idea := r.Env["DOCKET_IDEA"]
+		if idea != "" {
+			patch.Idea = store.Str(idea)
+		}
 		if err := s.PatchSession(sid, patch); err != nil {
 			return err
+		}
+		if idea != "" {
+			if _, err := s.IdeaSessionSeen(idea, sid, r.Machine); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -342,6 +351,12 @@ func apply(s *store.Store, e store.RawEvent, o Options) error {
 		}
 		return nil
 
+	case "cli.idea":
+		return ideaRecord(s, r, sid)
+
+	case "session.started":
+		return sessionStarted(s, r)
+
 	case "job.register", "job.beat", "job.done":
 		var j struct {
 			Name   string `json:"name"`
@@ -443,6 +458,14 @@ func fileItem(s *store.Store, r record.Record, base store.Item, o Options) error
 		// CLI filled in from that default confirms it.
 		if in.Root != "" {
 			_ = s.LearnDir(base.Machine, in.Root, explicit, in.Explicit)
+		}
+	}
+	if in.Root != "" && in.Remote != "" {
+		_ = s.SetDirRemote(base.Machine, in.Root, in.Remote)
+	}
+	if in.Idea != "" {
+		if err := linkProposal(s, in.Idea, id, it.SessionID, base.Machine); err != nil {
+			return err
 		}
 	}
 	for _, ev := range in.Evidence {

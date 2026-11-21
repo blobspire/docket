@@ -284,6 +284,20 @@ type SyncReply struct {
 	WantBlobs  []string           `json:"want_blobs"`
 	Rules      *string            `json:"rules,omitempty"`   // new ~/.docket/rules.md, when it changed
 	Context    *string            `json:"context,omitempty"` // new ~/.docket/context.json, when it changed
+	Starts     []StartCmd         `json:"starts,omitempty"`  // sessions to start (or stop) there, for ideas
+}
+
+// StartCmd asks a push machine to start (or stop) a session docket can't
+// start itself. The machine reports a start's result in a session.started
+// record.
+type StartCmd struct {
+	ID     string   `json:"id"`
+	Op     string   `json:"op"` // start | stop
+	Name   string   `json:"name"`
+	Cwd    string   `json:"cwd,omitempty"`
+	Idea   string   `json:"idea,omitempty"`
+	Prompt string   `json:"prompt,omitempty"`
+	Args   []string `json:"args,omitempty"`
 }
 
 // Hashes is what a laptop already has: the hashes of its rules.md and
@@ -333,6 +347,13 @@ func (s *Server) Receive(machine string, r io.Reader, sessionsJSON []byte, have 
 			s.st.DeliverySent(d.ID, "mailbox")
 		}
 	}
+	if starts, err := s.st.Starts(machine, "pending"); err == nil {
+		for _, st := range starts {
+			if s.st.StartSent(st.ID) { // handed out once, even if two syncs overlap
+				reply.Starts = append(reply.Starts, StartCmd{ID: st.ID, Op: st.Op, Name: st.Name, Cwd: st.Cwd, Idea: st.IdeaID, Prompt: st.Prompt, Args: st.Args})
+			}
+		}
+	}
 	reply.WantBlobs, _ = s.st.MissingBlobs(machine)
 	if have.Rules == "-" {
 		// An older client: send rules when they changed, as before.
@@ -352,6 +373,23 @@ func (s *Server) Receive(machine string, r io.Reader, sessionsJSON []byte, have 
 	}
 	s.st.Bump()
 	return reply, nil
+}
+
+// ApplyRemotes records the git remotes a push machine reported for its
+// mapped folders, so docket can clone them while that machine sleeps.
+func (s *Server) ApplyRemotes(machine string, raw []byte) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return
+	}
+	var remotes map[string]string
+	if json.Unmarshal(raw, &remotes) != nil {
+		return
+	}
+	for dir, remote := range remotes {
+		if cloneable(remote) && !filepath.IsAbs(remote) {
+			s.st.SetDirRemote(machine, dir, remote)
+		}
+	}
 }
 
 // PutBlob stores an evidence file pushed by `docket sync`.

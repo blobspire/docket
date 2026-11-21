@@ -15,6 +15,7 @@
     <a class="brand{{if eq .Nav "docket"}} on{{end}}" href="/" aria-label="docket: what needs you"><svg class="mk" viewBox="0 0 24 24" aria-hidden="true"><rect x="1.5" y="1.5" width="21" height="21" rx="6.5" fill="var(--accent)"/><path d="M7 8.3h10M7 12h10M7 15.7h5.5" stroke="var(--accent-fg)" stroke-width="2" stroke-linecap="round" fill="none"/></svg><span>docket</span>{{if .Count}}<b class="bc{{if .Hot}} hot{{end}}" title="{{.Count}} need{{if eq .Count 1}}s{{end}} you">{{.Count}}</b>{{end}}</a>
     <a href="/stash"{{if eq .Nav "stash"}} class="on"{{end}}>Stash{{if .StashCount}} <b class="tc">{{.StashCount}}</b>{{end}}</a>
     <a href="/done"{{if eq .Nav "done"}} class="on"{{end}}>Done</a>
+    <a class="x{{if eq .Nav "ideas"}} on{{end}}" href="/ideas">Ideas{{if .IdeaCount}} <b class="pill pill-i">{{.IdeaCount}}</b>{{end}}</a>
     <a class="x{{if eq .Nav "checklist"}} on{{end}}" href="/checklist">Only you</a>
     <a class="x{{if eq .Nav "brain"}} on{{end}}" href="/brain">Brain{{if .RuleCount}} <b class="pill">{{.RuleCount}}</b>{{end}}</a>
     <a class="x{{if eq .Nav "leads"}} on{{end}}" href="/leads">Leads</a>
@@ -26,6 +27,7 @@
     <button class="ib keys" type="button" data-help aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">{{template "i" "key"}}</button>
     <div class="morew"><button class="ib more-b" type="button" aria-label="More pages" aria-haspopup="menu" aria-expanded="false">{{template "i" "more"}}</button>
       <div class="menu more-m" role="menu" hidden>
+        <a role="menuitem" href="/ideas"{{if eq .Nav "ideas"}} class="on"{{end}}>Ideas{{if .IdeaCount}} <b class="pill pill-i">{{.IdeaCount}}</b>{{end}}</a>
         <a role="menuitem" href="/checklist"{{if eq .Nav "checklist"}} class="on"{{end}}>Only you</a>
         <a role="menuitem" href="/brain"{{if eq .Nav "brain"}} class="on"{{end}}>Brain{{if .RuleCount}} <b class="pill">{{.RuleCount}}</b>{{end}}</a>
         <a role="menuitem" href="/leads"{{if eq .Nav "leads"}} class="on"{{end}}>Leads</a>
@@ -72,14 +74,39 @@
       <dt>u</dt><dd>undo the last action</dd>
       <dt>[ / ]</dt><dd>previous / next project</dd>
       <dt>/</dt><dd>search</dd>
-      <dt>g d · g t · g c · g h</dt><dd>docket · stash · only you · health</dd>
+      <dt>n</dt><dd>new idea: dictate or type it</dd>
+      <dt>g d · g t · g i · g c · g h</dt><dd>docket · stash · ideas · only you · health</dd>
     </dl>
     <p class="muted">Press ? or Esc, or click outside, to close.</p>
   </div>
 </div>
 <div class="toast" id="toast" hidden role="status"><span id="toast-t"></span><button type="button" id="toast-k" hidden>Stash</button><button type="button" id="toast-u" hidden>Undo</button></div>
 <div class="updated" hidden><span>The list changed.</span> <button type="button" data-refresh>Refresh</button></div>
+<button type="button" class="fab" data-dictate aria-label="New idea (n)" title="New idea (n)">{{template "i" "mic"}}{{if .IdeaCount}}<i class="fab-dot" aria-hidden="true"></i>{{end}}</button>
+<div class="dscrim" id="dscrim" hidden>
+  <form class="dsheet" id="dsheet" role="dialog" aria-modal="true" aria-labelledby="ds-title" data-mic="{{if .Mic}}1{{end}}">
+    <div class="ds-h">
+      <h3 id="ds-title">New idea</h3>
+      <select id="ds-p" aria-label="Project">
+        <option value="">Any project</option>
+        {{range .ProjectList}}<option value="{{.}}">{{.}}</option>{{end}}
+      </select>
+      <button type="button" class="ans-x" data-ds-close aria-label="Close">{{template "i" "x"}}</button>
+    </div>
+    {{if .Mic}}<div class="ds-rec">
+      <button type="button" class="recb" id="ds-rec" aria-label="Start recording">{{template "i" "mic"}}</button>
+      <div class="ds-st">
+        <div class="ds-l"><span id="ds-time">0:00</span><span class="ds-lv" id="ds-lv" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></div>
+        <div class="ds-msg" id="ds-msg">Tap to talk. Say which project and what you want; ramble freely.</div>
+      </div>
+    </div>
+    <label class="ds-auto"><input type="checkbox" id="ds-auto" checked> Send when I stop</label>{{end}}
+    <textarea id="ds-text" rows="3" placeholder="{{if .Mic}}Or type it…{{else}}What's the idea? Name the project if it isn't obvious.{{end}}"></textarea>
+    <div class="ds-a"><a class="ds-link" href="/ideas">Your ideas</a><span class="err" id="ds-err" role="alert"></span><button type="submit" class="sb pri" id="ds-send">Send</button></div>
+  </form>
+</div>
 <script src="/static/app.js?v={{staticVer}}"></script>
+<script src="/static/dictate.js?v={{staticVer}}"></script>
 </body>
 </html>
 {{end}}
@@ -111,6 +138,8 @@
   <symbol id="i-stash" viewBox="0 0 24 24"><path d="M4 13.5V18a1.5 1.5 0 0 0 1.5 1.5h13A1.5 1.5 0 0 0 20 18v-4.5"/><path d="M4 13.5h4.5l1.5 2h4l1.5-2H20"/><path d="M12 4v8M8.8 9l3.2 3 3.2-3"/></symbol>
   <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14.5L4.5 10 9 5.5"/><path d="M4.5 10H15a4.5 4.5 0 0 1 0 9h-3"/></symbol>
   <symbol id="i-pen" viewBox="0 0 24 24"><path d="M4.5 19.5l1-4.2L15.8 5a2 2 0 0 1 2.8 0l.4.4a2 2 0 0 1 0 2.8L8.7 18.5z"/><path d="M13.5 7.3l3.2 3.2"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3.5" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v2.5"/></symbol>
+  <symbol id="i-bulb" viewBox="0 0 24 24"><path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.6 10.8c.7.6 1.1 1.4 1.1 2.2v.5h5V16c0-.8.4-1.6 1.1-2.2A6 6 0 0 0 12 3z"/></symbol>
   <symbol id="i-key" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M6.5 10h.01M10 10h.01M13.5 10h.01M17 10h.01M7.5 14h9"/></symbol>
 </svg>{{end}}
 
@@ -131,7 +160,7 @@
 <li class="rw" data-id="{{.ID}}">
   {{if eq .List "docket"}}<div class="swipe-bg" aria-hidden="true"><span>{{template "i" "check"}}Done</span><span>Dismiss{{template "i" "x"}}</span></div>{{end}}
   <div class="row{{if and (eq .List "docket") (not $w)}} u-{{.Urgency}}{{end}}{{if $w}} is-wait{{end}}{{if and (eq .List "docket") .Stale}} stale{{end}}" data-id="{{.ID}}"{{with .Session.BridgeID}} data-session="{{rcURL .}}"{{end}}{{if or $w (eq .Status "snoozed")}} data-quiet="1"{{end}}{{if .Kept}} data-kept="1"{{end}}{{if .NoStash}} data-nostash{{end}}>
-    {{if $w}}<span class="chip k-wait">{{template "i" "clock"}}Waiting</span>{{else}}<span class="chip k-{{kindClass .Kind}}">{{kindName .Kind}}</span>{{end}}
+    {{if $w}}<span class="chip k-wait">{{template "i" "clock"}}Waiting</span>{{else if .Idea}}<span class="chip k-idea" title="An agent's plan for an idea you dictated">{{template "i" "bulb"}}Idea</span>{{else}}<span class="chip k-{{kindClass .Kind}}">{{kindName .Kind}}</span>{{end}}
     <div class="txt">
       <a class="t" href="/item/{{.ID}}">{{.Title}}</a>
       <div class="m">
@@ -195,8 +224,9 @@
     {{else if eq $it.Status "snoozed"}}<div class="banner">{{template "i" "moon"}}<div><b>Snoozed until {{clock $it.SnoozedUntil}}.</b> It comes back on its own.</div></div>
     {{end}}
     <div class="kick">
-      {{if and $it.Waiting (not $it.Kept)}}<span class="chip k-wait">{{template "i" "clock"}}Waiting</span>{{else}}<span class="chip k-{{kindClass $it.Kind}}">{{kindName $it.Kind}}</span>{{end}}
+      {{if and $it.Waiting (not $it.Kept)}}<span class="chip k-wait">{{template "i" "clock"}}Waiting</span>{{else if $it.Idea}}<span class="chip k-idea">{{template "i" "bulb"}}Idea</span>{{else}}<span class="chip k-{{kindClass $it.Kind}}">{{kindName $it.Kind}}</span>{{end}}
       <span>{{projectName $it.Item}}{{with $it.Component}} · {{.}}{{end}}</span>
+      {{with $it.Idea}}<span><a class="ia-from" href="/ideas#{{.}}">from your idea</a></span>{{end}}
       {{if not $it.Kept}}{{if eq $it.Urgency "now"}}<span class="now">Act now</span>{{else if eq $it.Urgency "soon"}}<span class="soon">Soon</span>{{end}}{{end}}
       {{with $it.Place}}<span>{{template "i" "pin"}}{{.}}</span>{{end}}
       {{if not $it.Kept}}{{with $it.Due}}<span class="due-{{dueState .}}">due {{dueLabel .}}</span>{{end}}{{if $it.ExpiresAt}}<span>expires in {{until $it.ExpiresAt}}</span>{{end}}{{end}}

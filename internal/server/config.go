@@ -28,11 +28,13 @@ type Config struct {
 	AllowLogins []string `toml:"allow_logins"`
 	// SystemProject is where docket's own health items go (machines,
 	// logins, quota). Default "system".
-	SystemProject string    `toml:"system_project"`
-	Ntfy          Ntfy      `toml:"ntfy"`
-	Machines      []Machine `toml:"machine"`
-	Leads         []Lead    `toml:"lead"`
-	Chief         Chief     `toml:"chief"`
+	SystemProject string      `toml:"system_project"`
+	Ntfy          Ntfy        `toml:"ntfy"`
+	Machines      []Machine   `toml:"machine"`
+	Leads         []Lead      `toml:"lead"`
+	Chief         Chief       `toml:"chief"`
+	Transcribe    Transcribe  `toml:"transcribe"`
+	Ideas         IdeasConfig `toml:"ideas"`
 
 	loc *time.Location
 }
@@ -87,6 +89,26 @@ func (l Lead) WakesOn(event string) bool {
 		}
 	}
 	return false
+}
+
+// Transcribe is the [transcribe] section: the speech-to-text server that
+// turns dictations into text (whisper.cpp's whisper-server, self-hosted).
+type Transcribe struct {
+	URL        string   `toml:"url"`        // e.g. http://127.0.0.1:8178/inference; empty: dictation is typed only
+	Vocabulary []string `toml:"vocabulary"` // words to spell right; project, component and place names are added
+	KeepAudio  string   `toml:"keep_audio"` // how long recordings are kept, e.g. "90d" (default); transcripts stay
+	Language   string   `toml:"language"`   // default "en"
+}
+
+// IdeasConfig is the [ideas] section: how dictated ideas are routed and
+// researched.
+type IdeasConfig struct {
+	Model       string   `toml:"model"`        // for research sessions and the router (default claude-opus-5-5)
+	RouterModel string   `toml:"router_model"` // default: model
+	MaxRunning  int      `toml:"max_running"`  // sessions researching or building at once (default 4)
+	CloneDir    string   `toml:"clone_dir"`    // where docket clones repositories on the server (default ~/code/git)
+	ClaudeArgs  []string `toml:"claude_args"`  // flags for the sessions it starts (default --permission-mode auto)
+	BudgetUSD   float64  `toml:"router_budget_usd"`
 }
 
 // Lead looks up a lead by name.
@@ -189,6 +211,33 @@ func LoadConfig(path string) (*Config, error) {
 		if m.Interval.Duration == 0 {
 			m.Interval.Duration = time.Minute
 		}
+	}
+	if c.Transcribe.Language == "" {
+		c.Transcribe.Language = "en"
+	}
+	if c.Transcribe.KeepAudio == "" {
+		c.Transcribe.KeepAudio = "90d"
+	}
+	if _, err := parseEvery(c.Transcribe.KeepAudio); err != nil {
+		return nil, fmt.Errorf("config: transcribe.keep_audio: %w", err)
+	}
+	if c.Ideas.Model == "" {
+		c.Ideas.Model = "claude-opus-5-5"
+	}
+	if c.Ideas.RouterModel == "" {
+		c.Ideas.RouterModel = c.Ideas.Model
+	}
+	if c.Ideas.MaxRunning <= 0 {
+		c.Ideas.MaxRunning = 4
+	}
+	if c.Ideas.CloneDir == "" {
+		c.Ideas.CloneDir = "~/code/git"
+	}
+	if len(c.Ideas.ClaudeArgs) == 0 {
+		c.Ideas.ClaudeArgs = []string{"--permission-mode", "auto"}
+	}
+	if c.Ideas.BudgetUSD <= 0 {
+		c.Ideas.BudgetUSD = 1
 	}
 	seenLead := map[string]bool{}
 	for i := range c.Leads {
