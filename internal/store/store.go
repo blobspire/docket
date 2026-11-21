@@ -261,7 +261,8 @@ CREATE TABLE IF NOT EXISTS ideas (
   updated_at INTEGER NOT NULL,
   started_at INTEGER NOT NULL DEFAULT 0,
   ended_at INTEGER NOT NULL DEFAULT 0,
-  stopped_at INTEGER NOT NULL DEFAULT 0
+  stopped_at INTEGER NOT NULL DEFAULT 0,
+  reset_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ideas_status ON ideas(status);
 CREATE INDEX IF NOT EXISTS ideas_item ON ideas(item_id);
@@ -296,7 +297,7 @@ func (s *Store) Path() string { return s.path }
 
 // Open opens (creating if needed) the database at path.
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)")
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)&_txlock=immediate")
 	if err != nil {
 		return nil, err
 	}
@@ -364,6 +365,7 @@ var added = []struct{ table, column, ddl string }{
 	{"project_dirs", "remote", "TEXT NOT NULL DEFAULT ''"},
 	{"project_dirs", "clone", "INTEGER NOT NULL DEFAULT 0"},
 	{"sessions", "idea", "TEXT NOT NULL DEFAULT ''"},
+	{"ideas", "reset_at", "INTEGER NOT NULL DEFAULT 0"},
 }
 
 func migrate(db *sql.DB) error {

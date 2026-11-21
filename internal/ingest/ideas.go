@@ -32,7 +32,7 @@ func ideaRecord(s *store.Store, r record.Record, sid string) error {
 		case "save":
 			i.Status = store.IdeaSaved
 		case "take":
-			if store.IdeaRunning(i.Status) || i.Status == store.IdeaProposed {
+			if sid == "" || store.IdeaRunning(i.Status) || i.Status == store.IdeaProposed {
 				return nil // someone is already on it
 			}
 			i.Status = store.IdeaResearching

@@ -105,7 +105,7 @@ func New(event string, getenv func(string) string) Record {
 
 // Environment values worth keeping: where the session runs (tmux), which
 // lead it is, and Claude Code's own non-secret session metadata.
-var keepEnv = []string{"TMUX", "TMUX_PANE", "DOCKET_LEAD", "DOCKET_SESSION", "DOCKET_IDEA", "TERM_PROGRAM"}
+var keepEnv = []string{"TMUX", "TMUX_PANE", "DOCKET_LEAD", "DOCKET_SESSION", "DOCKET_IDEA", "DOCKET_RUN", "TERM_PROGRAM"}
 
 var secretish = regexp.MustCompile(`(?i)TOKEN|KEY|SECRET|AUTH|PASS|CRED|COOKIE`)
 

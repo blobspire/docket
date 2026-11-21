@@ -282,9 +282,10 @@ type SyncReply struct {
 	Cursor     string             `json:"cursor"`
 	Deliveries []mailbox.Delivery `json:"deliveries"`
 	WantBlobs  []string           `json:"want_blobs"`
-	Rules      *string            `json:"rules,omitempty"`   // new ~/.docket/rules.md, when it changed
-	Context    *string            `json:"context,omitempty"` // new ~/.docket/context.json, when it changed
-	Starts     []StartCmd         `json:"starts,omitempty"`  // sessions to start (or stop) there, for ideas
+	Rules      *string            `json:"rules,omitempty"`      // new ~/.docket/rules.md, when it changed
+	Context    *string            `json:"context,omitempty"`    // new ~/.docket/context.json, when it changed
+	Starts     []StartCmd         `json:"starts,omitempty"`     // sessions to start (or stop) there, for ideas
+	RemotesOK  bool               `json:"remotes_ok,omitempty"` // the server recorded the _remotes it was sent
 }
 
 // StartCmd asks a push machine to start (or stop) a session docket can't

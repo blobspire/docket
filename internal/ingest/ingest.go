@@ -163,7 +163,7 @@ func apply(s *store.Store, e store.RawEvent, o Options) error {
 			return err
 		}
 		if idea != "" {
-			if _, err := s.IdeaSessionSeen(idea, sid, r.Machine); err != nil {
+			if _, err := s.IdeaSessionSeen(idea, sid, r.Machine, r.Env["DOCKET_RUN"]); err != nil {
 				return err
 			}
 		}

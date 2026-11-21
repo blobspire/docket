@@ -353,7 +353,7 @@ dir = "/srv/site"
 	if !strings.Contains((*got)[0].prompt, "docket propose") || !strings.Contains((*got)[0].prompt, "--idea idea-aaaaaaa1") {
 		t.Fatalf("research prompt: %s", (*got)[0].prompt)
 	}
-	if i, _, _ := st.GetIdea("idea-aaaaaaa1"); i.Status != store.IdeaStarting || i.Machine != "box" || i.SessionName != "idea-aaaaaaa1" {
+	if i, _, _ := st.GetIdea("idea-aaaaaaa1"); i.Status != store.IdeaStarting || i.Machine != "box" || i.SessionName != "idea-aaaaaaa1-1" {
 		t.Fatalf("idea = %+v", i)
 	}
 
@@ -549,8 +549,8 @@ mode = "push"
 	st := e.s.st
 	old := time.Now().Add(-time.Hour).Unix()
 	st.AddIdea(store.Idea{ID: "idea-eeeeeee1", Project: "p", Title: "local", Status: store.IdeaStarting, Machine: "box", SessionName: "idea-eeeeeee1", StartedAt: old})
-	st.AddIdea(store.Idea{ID: "idea-eeeeeee2", Project: "p", Title: "laptop", Status: store.IdeaStarting, Machine: "mac", SessionName: "idea-eeeeeee2", StartedAt: old})
-	st.AddStart(store.Start{ID: "start-1", Machine: "mac", Name: "idea-eeeeeee2", IdeaID: "idea-eeeeeee2"})
+	st.AddIdea(store.Idea{ID: "idea-eeeeeee2", Project: "p", Title: "laptop", Status: store.IdeaStarting, Machine: "mac", SessionName: "idea-eeeeeee2-1", StartedAt: old})
+	st.AddStart(store.Start{ID: "start-1", Machine: "mac", Name: "idea-eeeeeee2-1", IdeaID: "idea-eeeeeee2"})
 	e.s.watchIdeas(e.ctx)
 	if i, _, _ := st.GetIdea("idea-eeeeeee1"); i.Status != store.IdeaFailed || !strings.Contains(i.Error, "didn't report in") {
 		t.Fatalf("local = %+v", i)
@@ -558,7 +558,7 @@ mode = "push"
 	if i, _, _ := st.GetIdea("idea-eeeeeee2"); i.Status != store.IdeaQueued {
 		t.Fatalf("laptop = %+v", i)
 	}
-	if ss, _ := st.StartsForIdea("idea-eeeeeee2"); len(ss) != 1 || ss[0].Status != "failed" {
+	if ss, _ := st.StartsForIdea("idea-eeeeeee2"); len(ss) != 1 || ss[0].Status != "expired" {
 		t.Fatalf("start = %+v", ss)
 	}
 }

@@ -45,7 +45,7 @@ sh ./models/download-ggml-model.sh large-v3-turbo ~/.local/share/whisper
 curl -L -o ~/.local/share/whisper/ggml-silero-v5.1.2.bin https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin
 ```
 
-Run it as a user service with [deploy/systemd/whisper.service](../deploy/systemd/whisper.service). Keep VAD on and leave `--max-context` at its default: `-mc 0` (once a fix for whisper repeating itself over long pauses) makes it ignore the glossary, and VAD handles pauses instead.
+Run it as a user service with [deploy/systemd/whisper.service](../deploy/systemd/whisper.service). Keep VAD on, add `--carry-initial-prompt` (or the glossary only helps the first 30 seconds), and leave `--max-context` at its default: `-mc 0` (once a fix for whisper repeating itself over long pauses) makes it ignore the glossary, and VAD handles pauses instead.
 
 ### 2. The server config
 

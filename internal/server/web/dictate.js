@@ -87,6 +87,19 @@
     for (const c of list) await putChunk({ id, seq: seq++, data: c.data });
   };
   // upload sends every stored chunk of d; finish=true also finishes it.
+  // The server already finished this dictation (the page was away too
+  // long, or another tab finished it): move what's left to a new one.
+  const carryOn = async (d) => {
+    const list = await chunksOf(d.id);
+    const old = d.id;
+    d.id = newID(); d.seq = list.length; d.cont = old;
+    for (const c of list) await dropChunk(old, c.seq);
+    let seq = 0;
+    for (const c of list) await putChunk({ id: d.id, seq: seq++, data: c.data });
+    await dropDict(old);
+    await putDict(d);
+    if (rec && rec.d === d) rec.seq = d.seq;
+  };
   const upload = (d, finish) => {
     const prev = pumps.get(d.id) || Promise.resolve();
     const p = prev.then(async () => {
@@ -94,9 +107,11 @@
       for (;;) {
         try {
           await ensureCreated(d);
+          d.beat = Date.now(); await putDict(d);
           for (const c of await chunksOf(d.id)) {
             const res = await post(`/dictation/${d.id}/audio?seq=${c.seq}`, c.data);
             const j = await res.json().catch(() => ({}));
+            if (res.status === 410) { await carryOn(d); created.delete(d.id); break; }
             if (res.ok || (res.status === 409 && j.next > c.seq)) { await dropChunk(d.id, c.seq); continue; }
             if (res.status === 409 && typeof j.next === "number") {
               // An earlier chunk is missing: send it if this page has it, else close the gap.
@@ -110,6 +125,7 @@
           if (!finish) return;
           const cur = (await allDicts()).find((x) => x.id === d.id) || d;
           const res = await post(`/dictation/${d.id}/finish`, form2({ auto_send: cur.auto ? "1" : "0", project: cur.project || "", text: cur.text || "" }), 60000);
+          if (res.status === 410) { await carryOn(d); continue; } // typed words it didn't have: send them as a new one
           if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "HTTP " + res.status);
           await dropDict(d.id);
           return;
@@ -211,6 +227,12 @@
       r.node = ctx.createScriptProcessor(4096, 1, 1);
       r.node.onaudioprocess = (e) => onFrames(new Float32Array(e.inputBuffer.getChannelData(0)));
     }
+    if (!isOpen()) { // closed while the recorder was being set up
+      starting = false;
+      stream.getTracks().forEach((t) => t.stop());
+      ctx.close().catch(() => {});
+      return;
+    }
     src.connect(r.node); r.node.connect(mute);
     rec = r; paused = null; starting = false;
     await putDict(d);
@@ -221,8 +243,10 @@
     recBtn.setAttribute("aria-label", "Stop recording");
     setMsg("Listening… tap to stop.");
     clearInterval(tick);
+    let lastBeat = 0;
     tick = setInterval(() => {
       const ms = r.before + Date.now() - r.started;
+      if (Date.now() - lastBeat > 5000) { lastBeat = Date.now(); r.d.beat = lastBeat; putDict(r.d); }
       showTime(ms);
       if (ms > 59.5 * 60 * 1000) stopRec(true); // an hour per dictation
       if (r.stream.getAudioTracks().every((t) => t.readyState === "ended")) interrupted();
@@ -411,7 +435,8 @@
 
   // ---- recordings an earlier page left unsent ---------------------------------------------------------
   (async () => {
-    const left = (await allDicts()).filter((d) => !rec || d.id !== rec.d.id);
+    // Only what no open tab is still recording or sending (each beats every few seconds).
+    const left = (await allDicts()).filter((d) => (!rec || d.id !== rec.d.id) && Date.now() - (d.beat || d.created || 0) > 30000);
     for (const d of left) {
       if (!d.done) d.auto = d.auto !== false; // the page went away mid-recording: finish it as it was set up
       upload(d, true).then(() => { toast("A recording from earlier reached docket."); refresh(); }, () => {});

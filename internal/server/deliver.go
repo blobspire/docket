@@ -472,7 +472,11 @@ func (s *Server) resume(ctx context.Context, m Machine, sess store.Session, d st
 	args := []string{"session", "resume", "--id", d.SessionID, "--cwd", sess.Cwd, "--name", name}
 	if sess.Idea != "" {
 		// An idea's session keeps its idea, and the name docket stops it by.
-		args = []string{"session", "resume", "--id", d.SessionID, "--cwd", sess.Cwd, "--name", sess.Idea, "--idea", sess.Idea}
+		run := sess.Idea
+		if i, ok, _ := s.st.GetIdea(sess.Idea); ok && i.SessionID == sess.ID && i.SessionName != "" {
+			run = i.SessionName
+		}
+		args = []string{"session", "resume", "--id", d.SessionID, "--cwd", sess.Cwd, "--name", run, "--idea", sess.Idea}
 	}
 	if _, err := s.remote(ctx, m, strings.NewReader(d.Text), args...); err != nil {
 		s.st.DeliveryFailed(d.ID, err.Error())

@@ -41,6 +41,9 @@ func Idea(args []string, stdout io.Writer, getenv func(string) string) error {
 	}
 	r := record.New("cli.idea", getenv)
 	r.SessionID = sessionID(getenv)
+	if op == "take" && r.SessionID == "" {
+		return errors.New("docket idea take is for an agent session (it marks the idea as yours); run it from inside Claude Code")
+	}
 	r.Cwd, _ = os.Getwd()
 	r.Payload, _ = json.Marshal(map[string]string{"op": op, "id": pos[0], "why": firstNonEmpty(flags["why"], flags["details"])})
 	if err := (spool.Spool{Dir: config.SpoolDir()}).Append(r); err != nil {

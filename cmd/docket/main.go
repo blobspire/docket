@@ -515,6 +515,7 @@ func syncCmd(args []string, stdout io.Writer) error {
 		env["_quota"] = q
 	}
 	remotes, sentRemotes := changedRemotes()
+	remotesTaken := false
 	if remotes != nil {
 		env["_remotes"] = remotes
 	}
@@ -542,6 +543,9 @@ func syncCmd(args []string, stdout io.Writer) error {
 		var reply server.SyncReply
 		if err := json.Unmarshal(out, &reply); err != nil {
 			return fmt.Errorf("server reply: %w", err)
+		}
+		if reply.RemotesOK {
+			remotesTaken = true // an older server ignores them: send again next time
 		}
 		c, err := spool.ParseCursor(reply.Cursor)
 		if err == nil && reply.Cursor != "" {
@@ -575,7 +579,9 @@ func syncCmd(args []string, stdout io.Writer) error {
 		sessJSON = next
 	}
 	box.GC(7 * 24 * time.Hour)
-	sentRemotes()
+	if remotesTaken {
+		sentRemotes()
+	}
 	if !*quiet {
 		fmt.Fprintf(stdout, "docket: synced %s with %s (%d answer(s) received).\n", machine, *host, delivered)
 	}
@@ -734,6 +740,7 @@ func serverCmd(args []string, stdin io.Reader, stdout io.Writer) error {
 			return err
 		}
 		var sessJSON, quotaJSON, usageJSON []byte
+		remotesSeen := false
 		have := server.Hashes{Rules: "-", Context: "-"} // an older client reports neither
 		if i := bytes.IndexByte(all, '\n'); i > 0 && bytes.HasPrefix(all, []byte(`{"_`)) {
 			var env struct {
@@ -750,6 +757,7 @@ func serverCmd(args []string, stdin io.Reader, stdout io.Writer) error {
 				}
 				quotaJSON, usageJSON = env.Quota, env.Usage
 				s.ApplyRemotes(*machine, env.Remotes)
+				remotesSeen = len(env.Remotes) > 0 && string(env.Remotes) != "null"
 				if env.ContextHash != nil {
 					have.Context = *env.ContextHash
 				}
@@ -765,6 +773,7 @@ func serverCmd(args []string, stdin io.Reader, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
+		reply.RemotesOK = remotesSeen
 		return json.NewEncoder(stdout).Encode(reply)
 	case "test-push":
 		if err := s.TestPush(context.Background()); err != nil {

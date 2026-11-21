@@ -197,21 +197,32 @@ func (s *Server) glossary() string {
 			add(it.Place)
 		}
 	}
-	out := ""
+	// A sentence in the style of the dictation: whisper copies the prompt's
+	// style, and a bare list makes the whole transcript lowercase.
+	person := s.cfg.Person
+	if person == "" || person == "the user" {
+		person = "me"
+	}
+	var picked []string
+	n := 0
 	for _, w := range words {
-		next := w
-		if out != "" {
-			next = out + ", " + w
+		if strings.EqualFold(w, s.cfg.Person) {
+			continue
 		}
-		if len(next) > 600 {
+		if n+len(w)+2 > 520 {
 			break
 		}
-		out = next
+		picked = append(picked, w)
+		n += len(w) + 2
 	}
-	if out == "" {
+	if len(picked) == 0 {
 		return ""
 	}
-	return "Names and terms: " + out + "."
+	list := strings.Join(picked, ", ")
+	if len(picked) > 1 {
+		list = strings.Join(picked[:len(picked)-1], ", ") + ", or " + picked[len(picked)-1]
+	}
+	return "Okay. This is " + person + ", dictating an idea for one of my projects: " + list + ". Here it is."
 }
 
 func sortedKeys(m map[string]string) []string {

@@ -196,13 +196,14 @@ type Idea struct {
 	Error                                                        string
 	Attempts                                                     int
 	CreatedAt, UpdatedAt, StartedAt, EndedAt, StoppedAt          int64
+	ResetAt                                                      int64 // the human asked for a fresh try: earlier failed starts no longer count
 }
 
-const ideaCols = `id, dictation_id, project, title, body, route, reason, status, machine, dir, place, session_name, session_id, item_id, note, error, attempts, created_at, updated_at, started_at, ended_at, stopped_at`
+const ideaCols = `id, dictation_id, project, title, body, route, reason, status, machine, dir, place, session_name, session_id, item_id, note, error, attempts, created_at, updated_at, started_at, ended_at, stopped_at, reset_at`
 
 func scanIdea(sc interface{ Scan(...any) error }) (Idea, error) {
 	var i Idea
-	err := sc.Scan(&i.ID, &i.DictationID, &i.Project, &i.Title, &i.Body, &i.Route, &i.Reason, &i.Status, &i.Machine, &i.Dir, &i.Place, &i.SessionName, &i.SessionID, &i.ItemID, &i.Note, &i.Error, &i.Attempts, &i.CreatedAt, &i.UpdatedAt, &i.StartedAt, &i.EndedAt, &i.StoppedAt)
+	err := sc.Scan(&i.ID, &i.DictationID, &i.Project, &i.Title, &i.Body, &i.Route, &i.Reason, &i.Status, &i.Machine, &i.Dir, &i.Place, &i.SessionName, &i.SessionID, &i.ItemID, &i.Note, &i.Error, &i.Attempts, &i.CreatedAt, &i.UpdatedAt, &i.StartedAt, &i.EndedAt, &i.StoppedAt, &i.ResetAt)
 	return i, err
 }
 
@@ -215,8 +216,8 @@ func (s *Store) AddIdea(i Idea) error {
 	if IdeaTerminal(i.Status) && i.EndedAt == 0 {
 		i.EndedAt = t
 	}
-	_, err := s.DB.Exec(`INSERT INTO ideas(`+ideaCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		i.ID, i.DictationID, i.Project, i.Title, i.Body, i.Route, i.Reason, i.Status, i.Machine, i.Dir, i.Place, i.SessionName, i.SessionID, i.ItemID, i.Note, i.Error, i.Attempts, i.CreatedAt, t, i.StartedAt, i.EndedAt, i.StoppedAt)
+	_, err := s.DB.Exec(`INSERT INTO ideas(`+ideaCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		i.ID, i.DictationID, i.Project, i.Title, i.Body, i.Route, i.Reason, i.Status, i.Machine, i.Dir, i.Place, i.SessionName, i.SessionID, i.ItemID, i.Note, i.Error, i.Attempts, i.CreatedAt, t, i.StartedAt, i.EndedAt, i.StoppedAt, i.ResetAt)
 	if err == nil {
 		s.bumpIdeas()
 	}
@@ -260,9 +261,9 @@ func (s *Store) EditIdea(id string, fn func(*Idea) error) (Idea, error) {
 		i.EndedAt = 0
 	}
 	if _, err := tx.Exec(`UPDATE ideas SET dictation_id=?, project=?, title=?, body=?, route=?, reason=?, status=?, machine=?, dir=?, place=?, session_name=?,
-		session_id=?, item_id=?, note=?, error=?, attempts=?, updated_at=?, started_at=?, ended_at=?, stopped_at=? WHERE id=?`,
+		session_id=?, item_id=?, note=?, error=?, attempts=?, updated_at=?, started_at=?, ended_at=?, stopped_at=?, reset_at=? WHERE id=?`,
 		i.DictationID, i.Project, i.Title, i.Body, i.Route, i.Reason, i.Status, i.Machine, i.Dir, i.Place, i.SessionName,
-		i.SessionID, i.ItemID, i.Note, i.Error, i.Attempts, i.UpdatedAt, i.StartedAt, i.EndedAt, i.StoppedAt, i.ID); err != nil {
+		i.SessionID, i.ItemID, i.Note, i.Error, i.Attempts, i.UpdatedAt, i.StartedAt, i.EndedAt, i.StoppedAt, i.ResetAt, i.ID); err != nil {
 		return i, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -342,15 +343,21 @@ func (s *Store) IdeaItems() map[string]string {
 
 // IdeaSessionSeen links an idea to the session docket started for it the
 // first time that session reports in. It returns whether anything changed.
-func (s *Store) IdeaSessionSeen(ideaID, sessionID, machine string) (bool, error) {
+func (s *Store) IdeaSessionSeen(ideaID, sessionID, machine, run string) (bool, error) {
 	if ideaID == "" || sessionID == "" {
 		return false, nil
 	}
 	i, ok, err := s.GetIdea(ideaID)
-	if err != nil || !ok || i.SessionID == sessionID {
+	if err != nil || !ok || i.SessionID == sessionID || i.SessionID != "" {
 		return false, err
 	}
+	if run != "" && i.SessionName != "" && run != i.SessionName {
+		return false, nil // an earlier run of this idea; the current one is another session
+	}
 	_, err = s.EditIdea(ideaID, func(i *Idea) error {
+		if i.SessionID != "" {
+			return nil
+		}
 		i.SessionID = sessionID
 		if machine != "" {
 			i.Machine = machine
@@ -510,6 +517,17 @@ func (s *Store) StartsForIdea(ideaID string) ([]Start, error) {
 // call was the one that did (a start is only ever handed out once).
 func (s *Store) StartSent(id string) bool {
 	res, err := s.DB.Exec(`UPDATE starts SET status='sent', sent_at=? WHERE id=? AND status='pending'`, now(), id)
+	if err != nil {
+		return false
+	}
+	n, _ := res.RowsAffected()
+	return n > 0
+}
+
+// ExpireStart withdraws a start no machine has picked up yet. It reports
+// whether it did (a start already handed out can't be withdrawn).
+func (s *Store) ExpireStart(id string) bool {
+	res, err := s.DB.Exec(`UPDATE starts SET status='expired', error='withdrawn: never picked up' WHERE id=? AND status='pending'`, id)
 	if err != nil {
 		return false
 	}

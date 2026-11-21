@@ -80,3 +80,12 @@ func TestCleanRemote(t *testing.T) {
 		}
 	}
 }
+
+func TestTakeNeedsASession(t *testing.T) {
+	t.Setenv("DOCKET_HOME", t.TempDir())
+	none := func(string) string { return "" }
+	var out bytes.Buffer
+	if err := Idea([]string{"take", "idea-abcdefgh"}, &out, none); err == nil {
+		t.Fatal("take outside an agent session would hold the idea forever")
+	}
+}

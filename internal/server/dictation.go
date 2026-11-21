@@ -32,10 +32,14 @@ const (
 	maxChunk       = 1 << 20            // one upload (the page sends ~3 s, ~96 KB)
 	maxAudioMS     = 60 * 60 * 1000     // an hour per dictation
 	maxDictText    = 100 << 10
-	staleRecording = 10 * time.Minute // no chunk for this long: the page is gone, finish what arrived
+	staleRecording = 30 * time.Minute // no chunk for this long: the page is gone, finish what arrived
 )
 
 var dictIDOK = regexp.MustCompile(`^dict-[a-z0-9]{8}$`)
+
+// errGone: the dictation was already finished (or dropped) and can't take
+// more; the page carries what's left into a new dictation instead of losing it.
+var errGone = errors.New("this recording was already finished")
 
 func (s *Server) partPath(id string, seq int64) string {
 	return filepath.Join(s.cfg.DataDir, "dictations", fmt.Sprintf("%s.%06d.pcm", id, seq))
@@ -120,14 +124,22 @@ func (s *Server) dictationAudio(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "audio must be 16-bit samples"})
 		return
 	}
+	// One at a time with finishing, so a chunk never lands after its
+	// recording was assembled.
+	s.finishMu.Lock()
+	defer s.finishMu.Unlock()
 	d, ok, err := s.st.GetDictation(id)
 	if err != nil || !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such dictation"})
 		return
 	}
-	if d.Status != store.DictRecording || seq < d.NextSeq {
-		// Already have it (a retry), or the recording was finished: nothing to add.
+	if seq < d.NextSeq {
+		// Already have it (a retry): nothing to add.
 		writeJSON(w, http.StatusOK, map[string]any{"next": d.NextSeq, "status": d.Status})
+		return
+	}
+	if d.Status != store.DictRecording {
+		writeJSON(w, http.StatusGone, map[string]any{"error": errGone.Error(), "next": d.NextSeq, "status": d.Status})
 		return
 	}
 	if seq > d.NextSeq {
@@ -173,6 +185,10 @@ func (s *Server) dictationFinish(w http.ResponseWriter, r *http.Request) {
 		auto = &b
 	}
 	d, err := s.finishDictation(id, auto, r.PostFormValue("project"), r.PostFormValue("text"), false)
+	if errors.Is(err, errGone) {
+		writeJSON(w, http.StatusGone, map[string]string{"error": err.Error(), "status": d.Status})
+		return
+	}
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
@@ -191,7 +207,12 @@ func (s *Server) finishDictation(id string, auto *bool, project, text string, cu
 		return d, errors.New("no such dictation")
 	}
 	if d.Status != store.DictRecording {
-		return d, nil // already finished
+		// Finishing twice is harmless; typed words it doesn't have yet are
+		// refused (the page sends them as a new dictation).
+		if t := strings.TrimSpace(text); t != "" && !strings.Contains(d.Text, t) {
+			return d, errGone
+		}
+		return d, nil
 	}
 	sha, err := s.assembleWAV(id, d.NextSeq)
 	if err != nil {

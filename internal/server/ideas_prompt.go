@@ -218,6 +218,9 @@ func (s *Server) researchPrompt(i store.Idea, d store.Dictation, sp spot) string
 	fmt.Fprintf(&b, "[docket %s] %s dictated an idea for the %s project, and docket started you to work on it.", i.ID, p, firstNonEmptyStr(i.Project, "unsorted"))
 	if d.Source == "voice" {
 		b.WriteString(" It came from speech-to-text, so a few words may be wrong; the full dictation is at the end.")
+		for _, name := range sortedKeys(s.cfg.Transcribe.SaidAs) {
+			fmt.Fprintf(&b, " In it, %q usually means %s.", s.cfg.Transcribe.SaidAs[name], name)
+		}
 	}
 	fmt.Fprintf(&b, "\n\n## The idea: %s\n\n%s\n\n", i.Title, strings.TrimSpace(i.Body))
 

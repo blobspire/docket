@@ -23,6 +23,7 @@ import (
 
 const (
 	ideaStartTimeout = 10 * time.Minute // a start no session has answered
+	laptopSilence    = 6 * time.Hour    // a laptop took a start and never said how it went
 	routeAttempts    = 2
 	stopAfterDone    = 2 * time.Hour  // an idea's session is stopped this long after the idea ended
 	stopIdleProposal = 24 * time.Hour // a session idle this long on a proposal is stopped (an answer resumes it)
@@ -233,8 +234,7 @@ func (s *Server) placeOne(ctx context.Context, i store.Idea) bool {
 				return nil
 			}
 			if wait {
-				x.Status = store.IdeaWaiting
-				x.Error = ""
+				x.Status = store.IdeaWaiting // keeps the last error, if any
 				return nil
 			}
 			x.Status, x.Error = store.IdeaFailed, err.Error()
@@ -242,26 +242,45 @@ func (s *Server) placeOne(ctx context.Context, i store.Idea) bool {
 		})
 		return false
 	}
-	d, _, _ := s.st.GetDictation(i.DictationID)
-	prompt := s.researchPrompt(i, d, sp)
-	args := s.ideaClaudeArgs()
-	if sp.m.Mode == "push" {
-		err = s.st.AddStart(store.Start{ID: ulid.New(time.Now()), Machine: sp.m.Name, Op: "start", Name: i.ID, Cwd: sp.dir, IdeaID: i.ID, Prompt: prompt, Args: args})
-	} else {
-		err = s.startSession(ctx, sp.m, prompt, append([]string{"session", "start", "--name", i.ID, "--cwd", sp.dir, "--idea", i.ID, "--"}, args...))
-	}
-	s.st.EditIdea(i.ID, func(x *store.Idea) error {
-		x.Attempts++
-		if err != nil {
-			x.Status, x.Error = store.IdeaFailed, "couldn't start a session on "+sp.m.Name+": "+err.Error()
-			return nil
+	// Claim it before starting anything: a dismiss or save that landed
+	// meanwhile wins, and once it's starting the page won't take one.
+	old := i
+	run := ""
+	claimed, err := s.st.EditIdea(i.ID, func(x *store.Idea) error {
+		if x.Status != store.IdeaQueued && x.Status != store.IdeaWaiting {
+			return errors.New("no longer queued")
 		}
+		x.Attempts++
+		run = fmt.Sprintf("%s-%d", x.ID, x.Attempts) // never the name of an earlier try's session
 		x.Status, x.Error = store.IdeaStarting, ""
-		x.Machine, x.Dir, x.Place, x.SessionName, x.StartedAt = sp.m.Name, sp.dir, sp.describe(), i.ID, time.Now().Unix()
+		x.Machine, x.Dir, x.Place, x.SessionName, x.StartedAt = sp.m.Name, sp.dir, sp.describe(), run, time.Now().Unix()
 		x.SessionID, x.StoppedAt = "", 0
 		return nil
 	})
-	return err == nil
+	if err != nil {
+		return false
+	}
+	if old.SessionName != "" && old.SessionName != run {
+		s.stopRun(ctx, old.Machine, old.SessionName, old.ID) // an earlier try's session, if it's still there
+	}
+	d, _, _ := s.st.GetDictation(claimed.DictationID)
+	prompt := s.researchPrompt(claimed, d, sp)
+	args := s.ideaClaudeArgs()
+	if sp.m.Mode == "push" {
+		err = s.st.AddStart(store.Start{ID: ulid.New(time.Now()), Machine: sp.m.Name, Op: "start", Name: run, Cwd: sp.dir, IdeaID: i.ID, Prompt: prompt, Args: args})
+	} else {
+		err = s.startSession(ctx, sp.m, prompt, append([]string{"session", "start", "--name", run, "--cwd", sp.dir, "--idea", i.ID, "--"}, args...))
+	}
+	if err != nil {
+		s.st.EditIdea(i.ID, func(x *store.Idea) error {
+			if x.Status == store.IdeaStarting && x.SessionName == run {
+				x.Status, x.Error = store.IdeaFailed, "couldn't start a session on "+sp.m.Name+": "+err.Error()
+			}
+			return nil
+		})
+		return false
+	}
+	return true
 }
 
 func (s *Server) ideaClaudeArgs() []string {
@@ -300,18 +319,20 @@ func (s *Server) localMachine() (Machine, bool) {
 //  5. nothing reachable and no repository to clone: wait for the laptop
 //  6. no folder anywhere (a new project): a scratch folder on the server
 func (s *Server) place(ctx context.Context, i store.Idea) (sp spot, wait bool, err error) {
-	avoid := map[string]bool{} // machines a start for this idea already failed on
+	avoid := map[string]string{} // machines a start for this idea failed on since the last fresh try, and why
 	if starts, _ := s.st.StartsForIdea(i.ID); len(starts) > 0 {
 		for _, st := range starts {
-			if st.Op == "start" && st.Status == "failed" {
-				avoid[st.Machine] = true
+			if st.Op == "start" && st.Status == "failed" && st.CreatedAt > i.ResetAt {
+				if _, seen := avoid[st.Machine]; !seen {
+					avoid[st.Machine] = firstNonEmptyStr(st.Error, "it failed")
+				}
 			}
 		}
 	}
 	awake := s.awakeMachines()
 	reachable := func(name string, laptopOK bool) (Machine, bool) {
 		m, ok := s.cfg.Machine(name)
-		if !ok || avoid[name] {
+		if _, bad := avoid[name]; !ok || bad {
 			return m, false
 		}
 		if m.Mode == "push" {
@@ -361,6 +382,10 @@ func (s *Server) place(ctx context.Context, i store.Idea) (sp spot, wait bool, e
 		return spot{m: local, dir: dir, kind: "clone", remote: remote, away: firstNonEmptyStr(pushHome, "on another machine")}, false, nil
 	}
 	if len(homes) > 0 || pushHome != "" {
+		// Waiting only helps if the machine with its code can take it.
+		if why, bad := avoid[strings.SplitN(pushHome, ":", 2)[0]]; pushHome != "" && bad {
+			return sp, false, fmt.Errorf("couldn't start on %s (%s), and there's no repository to clone; fix that, then Try again", strings.SplitN(pushHome, ":", 2)[0], why)
+		}
 		return sp, true, nil
 	}
 	if !hasLocal {
@@ -498,17 +523,29 @@ func (s *Server) watchStart(i store.Idea, now time.Time) {
 	if m.Mode == "push" {
 		starts, _ := s.st.StartsForIdea(i.ID)
 		for _, st := range starts {
-			if st.Op == "start" && (st.Status == "pending" || st.Status == "sent") {
-				s.st.StartResult(st.ID, false, "the machine didn't pick it up in time")
+			if st.Op != "start" || st.Name != i.SessionName {
+				continue
+			}
+			switch {
+			case st.Status == "pending" && s.st.ExpireStart(st.ID):
+				// Never handed out (the laptop went to sleep): place it again.
+				s.st.EditIdea(i.ID, func(x *store.Idea) error {
+					if x.Status == store.IdeaStarting && x.SessionID == "" && x.SessionName == i.SessionName {
+						x.Status, x.Error = store.IdeaQueued, i.Machine+" went to sleep before it picked this up"
+					}
+					return nil
+				})
+			case st.Status == "sent" && now.Sub(time.Unix(st.SentAt, 0)) > laptopSilence:
+				// Handed out: it may yet run there, so never start a second one.
+				s.st.EditIdea(i.ID, func(x *store.Idea) error {
+					if x.Status == store.IdeaStarting && x.SessionID == "" && x.SessionName == i.SessionName {
+						x.Status = store.IdeaFailed
+						x.Error = i.Machine + " took the session but never reported it started; check tmux there (" + i.SessionName + "), then Try again"
+					}
+					return nil
+				})
 			}
 		}
-		// Back to the queue; placement skips that machine for it now.
-		s.st.EditIdea(i.ID, func(x *store.Idea) error {
-			if x.Status == store.IdeaStarting && x.SessionID == "" {
-				x.Status, x.Error = store.IdeaQueued, i.Machine+" didn't start it in time"
-			}
-			return nil
-		})
 		return
 	}
 	s.st.EditIdea(i.ID, func(x *store.Idea) error {
@@ -526,21 +563,25 @@ func (s *Server) stopIdeaSession(ctx context.Context, i store.Idea, sess store.S
 	if i.SessionName == "" || (i.StoppedAt > 0 && time.Since(time.Unix(i.StoppedAt, 0)) < 10*time.Minute) {
 		return
 	}
-	machine := firstNonEmptyStr(sess.Machine, i.Machine)
+	s.stopRun(ctx, firstNonEmptyStr(sess.Machine, i.Machine), i.SessionName, i.ID)
+	s.st.EditIdea(i.ID, func(x *store.Idea) error { x.StoppedAt = time.Now().Unix(); return nil })
+}
+
+// stopRun ends one tmux session docket started for an idea, on its machine.
+func (s *Server) stopRun(ctx context.Context, machine, name, ideaID string) {
 	m, ok := s.cfg.Machine(machine)
-	if !ok {
+	if !ok || name == "" {
 		return
 	}
 	var err error
 	if m.Mode == "push" {
-		err = s.st.AddStart(store.Start{ID: ulid.New(time.Now()), Machine: m.Name, Op: "stop", Name: i.SessionName, IdeaID: i.ID})
-	} else {
-		_, err = s.remote(ctx, m, nil, "session", "stop", "--name", i.SessionName)
+		err = s.st.AddStart(store.Start{ID: ulid.New(time.Now()), Machine: m.Name, Op: "stop", Name: name, IdeaID: ideaID})
+	} else if s.startFn == nil { // tests replace starts; they never stop real sessions
+		_, err = s.remote(ctx, m, nil, "session", "stop", "--name", name)
 	}
 	if err != nil {
-		s.log.Printf("idea %s: stop %s: %v", i.ID, i.SessionName, err)
+		s.log.Printf("idea %s: stop %s: %v", ideaID, name, err)
 	}
-	s.st.EditIdea(i.ID, func(x *store.Idea) error { x.StoppedAt = time.Now().Unix(); return nil })
 }
 
 // ---- the human's decisions ------------------------------------------------------
@@ -605,27 +646,33 @@ func (s *Server) ideaAct(w http.ResponseWriter, r *http.Request) {
 func (s *Server) doIdeaAct(ctx context.Context, i store.Idea, action string) error {
 	switch action {
 	case "research", "build":
-		if store.IdeaRunning(i.Status) || i.Status == store.IdeaProposed {
-			return errors.New("an agent is already on it")
-		}
 		_, err := s.st.EditIdea(i.ID, func(x *store.Idea) error {
+			if store.IdeaRunning(x.Status) || x.Status == store.IdeaProposed {
+				return errors.New("an agent is already on it")
+			}
 			x.Route, x.Status, x.Error = action, store.IdeaQueued, ""
-			x.SessionID, x.ItemID, x.Attempts = "", "", 0
+			x.SessionID, x.ItemID, x.ResetAt = "", "", time.Now().Unix()
 			return nil
 		})
 		s.kickIdeas()
 		return err
 	case "save":
-		if store.IdeaRunning(i.Status) {
-			return errors.New("an agent is working on it")
-		}
-		_, err := s.st.EditIdea(i.ID, func(x *store.Idea) error { x.Status, x.Error = store.IdeaSaved, ""; return nil })
+		_, err := s.st.EditIdea(i.ID, func(x *store.Idea) error {
+			if store.IdeaRunning(x.Status) {
+				return errors.New("an agent is working on it")
+			}
+			x.Status, x.Error = store.IdeaSaved, ""
+			return nil
+		})
 		return err
 	case "dismiss":
-		if store.IdeaRunning(i.Status) {
-			return errors.New("an agent is working on it; dismiss its proposal when it comes")
-		}
-		if _, err := s.st.EditIdea(i.ID, func(x *store.Idea) error { x.Status = store.IdeaDismissed; return nil }); err != nil {
+		if _, err := s.st.EditIdea(i.ID, func(x *store.Idea) error {
+			if store.IdeaRunning(x.Status) {
+				return errors.New("an agent is working on it; dismiss its proposal when it comes")
+			}
+			x.Status = store.IdeaDismissed
+			return nil
+		}); err != nil {
 			return err
 		}
 		if i.ItemID != "" {
@@ -659,7 +706,10 @@ func (s *Server) doIdeaAct(ctx context.Context, i store.Idea, action string) err
 			return err
 		}
 		_, err := s.st.EditIdea(i.ID, func(x *store.Idea) error {
-			x.Status, x.Error, x.SessionID = store.IdeaQueued, "", ""
+			if x.Status != store.IdeaFailed {
+				return errors.New("only a failed idea can be retried")
+			}
+			x.Status, x.Error, x.SessionID, x.ResetAt = store.IdeaQueued, "", "", time.Now().Unix()
 			return nil
 		})
 		s.kickIdeas()
