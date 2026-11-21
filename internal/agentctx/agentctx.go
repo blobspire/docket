@@ -34,6 +34,17 @@ type Context struct {
 	Leads    map[string]string `json:"leads,omitempty"` // lead name → project
 	Open     []Item            `json:"open,omitempty"`  // this machine's open items only
 	Seen     []string          `json:"seen,omitempty"`  // ids (items, aliases, done/project records) from this machine the server has processed lately
+	Ideas    []Idea            `json:"ideas,omitempty"` // the human's saved ideas, every project (docket ideas)
+}
+
+// Idea is one idea the human dictated and saved for later.
+type Idea struct {
+	ID        string `json:"id"`
+	Project   string `json:"project"`
+	Title     string `json:"title"`
+	Body      string `json:"body,omitempty"`
+	Note      string `json:"note,omitempty"` // what an agent found, if one looked
+	CreatedAt int64  `json:"created_at"`
 }
 
 type Project struct {

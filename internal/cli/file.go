@@ -36,7 +36,18 @@ var kinds = map[string]string{
 	"task":   "human_task",
 	"issue":  "issue",
 	"fyi":    "fyi",
+	// propose: a research session's plan for an idea the human dictated, an
+	// ask with fixed options (Build it | Save for later).
+	"propose": "ask",
 }
+
+// The options of a proposal (the server matches them by these words).
+const (
+	proposeBuild = "Build it"
+	proposeSave  = "Save for later"
+)
+
+var ideaIDOK = regexp.MustCompile(`^idea-[a-z0-9]{8}$`)
 
 const (
 	maxEvidence = 200 << 20
@@ -46,16 +57,17 @@ const (
 var (
 	boolFlags  = map[string]bool{"blocking": true, "physical": true, "all": true}
 	valueFlags = map[string]bool{"options": true, "recommend": true, "why": true, "details": true, "blocks": true, "due": true, "key": true, "evidence": true,
-		"project": true, "new-project": true, "component": true, "place": true, "urgency": true, "expires": true}
+		"project": true, "new-project": true, "component": true, "place": true, "urgency": true, "expires": true, "idea": true}
 	// The flags each command takes; anything else is an error, not ignored.
-	fileFlags = set("options", "recommend", "why", "details", "blocks", "due", "key", "evidence", "project", "new-project", "component", "place", "urgency", "expires", "blocking", "physical")
-	doneFlags = set("why", "details", "key", "project")
-	addFlags  = set("why", "details", "evidence")
-	listFlags = set("project", "all")
-	dashWord  = regexp.MustCompile(`^-[A-Za-z]`)
-	dateOK    = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
-	slugBad   = regexp.MustCompile(`[^a-z0-9]+`)
-	relative  = regexp.MustCompile(`^(\d+)([mhd])$`)
+	fileFlags    = set("options", "recommend", "why", "details", "blocks", "due", "key", "evidence", "project", "new-project", "component", "place", "urgency", "expires", "blocking", "physical")
+	proposeFlags = set("recommend", "why", "details", "evidence", "project", "component", "idea")
+	doneFlags    = set("why", "details", "key", "project")
+	addFlags     = set("why", "details", "evidence")
+	listFlags    = set("project", "all")
+	dashWord     = regexp.MustCompile(`^-[A-Za-z]`)
+	dateOK       = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+	slugBad      = regexp.MustCompile(`[^a-z0-9]+`)
+	relative     = regexp.MustCompile(`^(\d+)([mhd])$`)
 )
 
 // IsFileCommand reports whether cmd is one of the filing commands.
@@ -67,9 +79,29 @@ func File(cmd string, args []string, stdout io.Writer, getenv func(string) strin
 	if !ok {
 		return fmt.Errorf("unknown command %q", cmd)
 	}
-	pos, flags, err := parse(args, fileFlags)
+	allowed := fileFlags
+	if cmd == "propose" {
+		allowed = proposeFlags
+	}
+	pos, flags, err := parse(args, allowed)
 	if err != nil {
 		return err
+	}
+	idea := ""
+	if cmd == "propose" {
+		idea = firstNonEmpty(flags["idea"], getenv("DOCKET_IDEA"))
+		if !ideaIDOK.MatchString(idea) {
+			return errors.New("docket propose is for an idea docket started you for: give its id with --idea idea-… (it was in your first message)")
+		}
+		switch r := flags["recommend"]; r {
+		case "":
+			flags["recommend"] = proposeBuild
+		case proposeBuild, proposeSave:
+		default:
+			return fmt.Errorf("--recommend is %q or %q", proposeBuild, proposeSave)
+		}
+		flags["options"] = proposeBuild + "|" + proposeSave
+		flags["key"] = idea // re-proposing updates the same item
 	}
 	ctx, hasCtx := agentctx.Load()
 	ctx = ctx.Merged(agentctx.LoadOverlay())
@@ -109,6 +141,7 @@ func File(cmd string, args []string, stdout io.Writer, getenv func(string) strin
 		Urgency:   urgency,
 		Component: strings.TrimSpace(flags["component"]),
 		Place:     Slug(flags["place"]),
+		Idea:      idea,
 	}
 	if utf8.RuneCountInString(it.Component) > 40 {
 		return errors.New("--component is a short name for a part of the project (at most 40 characters)")
@@ -136,6 +169,7 @@ func File(cmd string, args []string, stdout io.Writer, getenv func(string) strin
 	}
 	cwd, _ := os.Getwd()
 	it.Root = RepoRoot(cwd)
+	it.Remote = RepoRemote(it.Root)
 	project, warn, err := resolveProject(flags["project"], flags["new-project"], ctx, hasCtx, it.Root, realPath(cwd), getenv("DOCKET_LEAD"), true)
 	if err != nil {
 		return err
@@ -181,6 +215,11 @@ func File(cmd string, args []string, stdout io.Writer, getenv func(string) strin
 	where := ""
 	if project != "" {
 		where = " in " + project
+	}
+	if idea != "" {
+		fmt.Fprintf(stdout, "docket: proposal %s filed%s for %s. End your turn now and wait: %s's answer (Build it, Save for later, or a reply) arrives as a message tagged [docket %s]. To revise it, run docket propose again.\n",
+			it.ID, where, idea, capitalize(person), it.ID)
+		return nil
 	}
 	fmt.Fprintf(stdout, "docket: filed %s%s (%s). %s will see it in docket; keep working. An answer arrives as a message tagged [docket %s]. If it's settled in chat instead, run `docket done %s`.\n",
 		it.ID, where, firstNonEmpty(urgency, "normal"), capitalize(person), it.ID, it.ID)
@@ -439,6 +478,53 @@ func RepoRoot(dir string) string {
 		return ""
 	}
 	return root
+}
+
+// RepoRemote is a repository's origin URL without any credentials in it,
+// so docket can clone it elsewhere. "" when there is none.
+func RepoRemote(root string) string {
+	if root == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", root, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return ""
+	}
+	return CleanRemote(strings.TrimSpace(string(out)))
+}
+
+// CleanRemote drops user names and tokens from a git URL. Only plain
+// https, ssh and scp-like (git@host:path) remotes are kept; anything else
+// gives "".
+func CleanRemote(u string) string {
+	if u == "" || strings.ContainsAny(u, " \t\r\n") || strings.HasPrefix(u, "-") {
+		return ""
+	}
+	for _, scheme := range []string{"https://", "ssh://"} {
+		if strings.HasPrefix(u, scheme) {
+			rest := u[len(scheme):]
+			host, path, ok := strings.Cut(rest, "/")
+			if !ok || path == "" {
+				return ""
+			}
+			if at := strings.LastIndex(host, "@"); at >= 0 {
+				if scheme == "ssh://" && host[:at] == "git" {
+					return u // ssh://git@host/path: the usual user, no secret
+				}
+				host = host[at+1:]
+			}
+			return scheme + host + "/" + path
+		}
+	}
+	if strings.Contains(u, "://") {
+		return ""
+	}
+	if at := strings.Index(u, "@"); at > 0 && strings.Contains(u[at:], ":") && !strings.Contains(u[:at], "/") {
+		return "git@" + u[at+1:] // scp-like: keep the usual git@ user, never another
+	}
+	return ""
 }
 
 // realPath resolves symlinks (on macOS, /tmp and /var are links into

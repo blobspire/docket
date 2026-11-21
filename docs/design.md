@@ -89,6 +89,7 @@ The first version tried to catch every ask: a regex over agents' messages, a tra
   - It orders the queue and expires moot items.
   - It pushes act-now items.
 - **Brain:** one optional, capped model job proposes preference rules from the human's corrections, decisions and "not worth my time" notes. The human approves each rule. It never answers an item.
+- **Ideas** (see [ideas.md](ideas.md)): the human dictates or types an idea; docket transcribes it on a self-hosted whisper.cpp server, and a router (the second model job: one capped `claude -p` call per dictation, started by the human, never part of capture) splits it into ideas and picks a route for each. Ideas that need work get a session of their own in the project's repo, which proposes a plan as an ordinary item; **Build it** is the approval to build, merge and release. The router only routes, and docket checks its answer; nothing is built without the human's tap or their explicit "just build it".
 - **No keyword guards.** docket relays the human's answer as given. Whether a robot may move is for the agent that asks and the robot's own safety layer, which bind every path to it; a word list on the docket can't tell an experiment arm from a robot arm.
 
 ## The docket's actions

@@ -41,3 +41,16 @@ mode = "push"
 # match_dir = true
 # schedule = ["daily@09:30"]
 # wake_on = ["job_stale", "job_done"]
+
+# Ideas: dictate (or type) an idea; an agent researches it and proposes a plan.
+# See docs/ideas.md. Without [transcribe] url, ideas can only be typed.
+# [transcribe]
+# url = "http://127.0.0.1:8178/inference"   # whisper.cpp's whisper-server (deploy/systemd/whisper.service)
+# vocabulary = ["DAgger", "FR5"]           # words to spell right; project names are added on their own
+# said_as = { cwant = "quant" }            # names speech-to-text can't spell, and how they sound
+# keep_audio = "90d"
+#
+# [ideas]
+# model = "claude-opus-5-5"                # research sessions and the router
+# max_running = 4                          # sessions researching or building at once
+# clone_dir = "~/code/git"                 # where repositories are cloned on this server when their laptop sleeps

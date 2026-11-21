@@ -43,3 +43,8 @@ func encode(b [16]byte) string {
 func ItemID() string {
 	return "dk-" + strings.ToLower(New(time.Now())[10:18])
 }
+
+// ShortID is ItemID with another prefix, e.g. "idea-7f3k9q2m".
+func ShortID(prefix string) string {
+	return prefix + "-" + strings.ToLower(New(time.Now())[10:18])
+}

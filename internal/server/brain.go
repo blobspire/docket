@@ -65,16 +65,27 @@ func (s *Server) ask(ctx context.Context, model, prompt, schema string) (json.Ra
 		return nil, errors.New("daily model-call cap reached")
 	}
 	s.st.Set(callsKey, strconv.Itoa(n+1))
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	out, cost, err := s.runClaude(ctx, c.Claude, model, prompt, schema, c.BudgetUSD, 3*time.Minute)
+	costKey := "chief:cost:" + day
+	prev, _ := strconv.ParseFloat(s.st.Get(costKey), 64)
+	s.st.Set(costKey, strconv.FormatFloat(prev+cost, 'f', 4, 64))
+	return out, err
+}
+
+// runClaude runs one headless, tool-less `claude -p` call that must return
+// JSON matching schema, and reports its cost. It never runs docket's hooks
+// and keeps no session.
+func (s *Server) runClaude(ctx context.Context, claude, model, prompt, schema string, budget float64, timeout time.Duration) (json.RawMessage, float64, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, c.Claude, "-p", "--model", model, "--safe-mode", "--no-session-persistence", "--tools", "",
-		"--output-format", "json", "--max-budget-usd", strconv.FormatFloat(c.BudgetUSD, 'f', 2, 64), "--json-schema", schema, prompt)
+	cmd := exec.CommandContext(ctx, claude, "-p", "--model", model, "--safe-mode", "--no-session-persistence", "--tools", "",
+		"--output-format", "json", "--max-budget-usd", strconv.FormatFloat(budget, 'f', 2, 64), "--json-schema", schema, prompt)
 	cmd.Dir = os.TempDir()
 	cmd.Env = append(os.Environ(), "DOCKET_INTERNAL=1")
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("claude: %v %s", err, clipErr(errb.String()))
+		return nil, 0, fmt.Errorf("claude: %v %s", err, clipErr(errb.String()))
 	}
 	var res struct {
 		IsError    bool            `json:"is_error"`
@@ -83,18 +94,15 @@ func (s *Server) ask(ctx context.Context, model, prompt, schema string) (json.Ra
 		Cost       float64         `json:"total_cost_usd"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &res); err != nil {
-		return nil, fmt.Errorf("claude output: %w", err)
+		return nil, 0, fmt.Errorf("claude output: %w", err)
 	}
-	costKey := "chief:cost:" + day
-	prev, _ := strconv.ParseFloat(s.st.Get(costKey), 64)
-	s.st.Set(costKey, strconv.FormatFloat(prev+res.Cost, 'f', 4, 64))
 	if res.IsError {
-		return nil, errors.New("claude: " + clipErr(res.Result))
+		return nil, res.Cost, errors.New("claude: " + clipErr(res.Result))
 	}
 	if len(res.Structured) > 0 && string(res.Structured) != "null" {
-		return res.Structured, nil
+		return res.Structured, res.Cost, nil
 	}
-	return json.RawMessage(res.Result), nil
+	return json.RawMessage(res.Result), res.Cost, nil
 }
 
 func clipStr(s string, n int) string {

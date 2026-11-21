@@ -6,6 +6,11 @@
        launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.docket.sync.plist -->
 <plist version="1.0">
 <dict>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
   <key>Label</key><string>dev.docket.sync</string>
   <key>ProgramArguments</key>
   <array>

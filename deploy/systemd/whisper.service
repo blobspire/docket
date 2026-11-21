@@ -1,0 +1,18 @@
+# Speech-to-text for docket's Ideas: whisper.cpp's server, on the docket server.
+# Install: cp whisper.service ~/.config/systemd/user/ && systemctl --user enable --now whisper
+# Then set [transcribe] url = "http://127.0.0.1:8178/inference" in docket.toml.
+#
+# Keep --vad on and --max-context at its default: -mc 0 makes whisper ignore
+# the glossary docket sends with each recording. --carry-initial-prompt keeps
+# the glossary in force past the first 30 seconds.
+[Unit]
+Description=whisper.cpp speech-to-text for docket
+After=network.target
+
+[Service]
+ExecStart=%h/src/whisper.cpp/build/bin/whisper-server --host 127.0.0.1 --port 8178 -m %h/.local/share/whisper/ggml-large-v3-turbo.bin -l en --carry-initial-prompt --vad -vm %h/.local/share/whisper/ggml-silero-v5.1.2.bin
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

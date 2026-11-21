@@ -108,7 +108,7 @@
         const r = new URL(document.referrer);
         if (r.origin === location.origin && !r.pathname.startsWith("/item/")) {
           back.href = r.pathname + r.search;
-          const names = { "/stash": "Stash", "/done": "Done", "/search": "Search", "/checklist": "Only you", "/brain": "Brain", "/leads": "Leads", "/evidence": "Evidence", "/health": "Health" };
+          const names = { "/stash": "Stash", "/done": "Done", "/ideas": "Ideas", "/search": "Search", "/checklist": "Only you", "/brain": "Brain", "/leads": "Leads", "/evidence": "Evidence", "/health": "Health" };
           const q = r.searchParams;
           $("span", back).textContent = r.pathname === "/" ? (q.get("p") || q.get("place") || (q.get("view") === "now" ? "Act now" : "All")) : names[r.pathname] || "Back";
         }
@@ -587,6 +587,7 @@
   let g = false;
   document.addEventListener("keydown", (e) => {
     pointer = false;
+    if (window.docketDictate && window.docketDictate.isOpen()) return; // the capture sheet has the keys
     const k = e.key, a = document.activeElement;
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName);
     if (e.metaKey || e.ctrlKey || e.altKey) {
@@ -617,7 +618,7 @@
     if ((k === "Enter" || k === " ") && a && a !== document.body && a.matches("a, button, summary")) return;
     if (g) {
       g = false;
-      const to = { d: "/", q: "/", t: "/stash", c: "/checklist", l: "/leads", e: "/evidence", b: "/brain", h: "/health", s: "/search" }[k];
+      const to = { d: "/", q: "/", t: "/stash", i: "/ideas", c: "/checklist", l: "/leads", e: "/evidence", b: "/brain", h: "/health", s: "/search" }[k];
       if (to) location.href = to;
       return;
     }
@@ -625,6 +626,7 @@
     if (k === "?") return toggleHelp();
     if (k === "/") { e.preventDefault(); const q = $("#q"); return q ? q.focus() : (location.href = "/search"); }
     if (k === "u") { e.preventDefault(); return undoLast(); }
+    if (k === "n" && window.docketDictate && !sheetEl()) { e.preventDefault(); return window.docketDictate.open(); }
     if (sheetEl()) {
       const sh = solo ? sheetEl() : liveSheet(), id = openId;
       if (k === "Escape") { e.preventDefault(); return solo ? $("[data-back]", sheetEl()).click() : closeSheet(); }
@@ -686,6 +688,9 @@
   const busyList = () => {
     const a = document.activeElement;
     if (a.id === "q" && a.value === a.defaultValue) return !!$(".project-edit:not([hidden])");
+    if (window.docketDictate && window.docketDictate.isOpen()) return true;
+    // Don't cut off a recording you're listening to.
+    if (a.tagName === "AUDIO" || [...document.querySelectorAll("audio")].some((x) => !x.paused)) return true;
     return (/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && !a.closest("#scrim, #nscrim")) || !!$(".project-edit:not([hidden])");
   };
   let refreshing = false, again = false;
@@ -747,6 +752,10 @@
     pending.clear();
     if (!solo) refresh(true);
   });
+
+  // For the capture sheet (dictate.js).
+  window.docketToast = toast;
+  window.docketRefresh = () => refresh(true);
 
   // ---- start --------------------------------------------------------------------------------------
   applyFolds();

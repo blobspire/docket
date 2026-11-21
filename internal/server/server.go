@@ -20,9 +20,15 @@ type Server struct {
 	st  *store.Store
 	log *log.Logger
 
-	processKick chan struct{}
-	deliverKick chan struct{}
-	pullKick    map[string]chan struct{}
+	processKick    chan struct{}
+	deliverKick    chan struct{}
+	transcribeKick chan struct{}
+	ideasKick      chan struct{}
+	pullKick       map[string]chan struct{}
+
+	finishMu sync.Mutex // one dictation finishes at a time
+	// startFn starts a session on a local or pull machine (tests replace it).
+	startFn func(ctx context.Context, m Machine, prompt string, args []string) error
 }
 
 // Open loads the store for cfg. Commands that only touch the database (for
@@ -36,7 +42,8 @@ func Open(cfg *Config) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{cfg: cfg, st: st, log: log.New(os.Stderr, "docket: ", log.LstdFlags),
-		processKick: make(chan struct{}, 1), deliverKick: make(chan struct{}, 1), pullKick: map[string]chan struct{}{}}
+		processKick: make(chan struct{}, 1), deliverKick: make(chan struct{}, 1), transcribeKick: make(chan struct{}, 1), ideasKick: make(chan struct{}, 1),
+		pullKick: map[string]chan struct{}{}}
 	for _, m := range cfg.Machines {
 		s.pullKick[m.Name] = make(chan struct{}, 1)
 	}
@@ -71,8 +78,10 @@ func kick(c chan struct{}) {
 	}
 }
 
-func (s *Server) kickProcess() { kick(s.processKick) }
-func (s *Server) kickDeliver() { kick(s.deliverKick) }
+func (s *Server) kickProcess()    { kick(s.processKick) }
+func (s *Server) kickDeliver()    { kick(s.deliverKick) }
+func (s *Server) kickTranscribe() { kick(s.transcribeKick) }
+func (s *Server) kickIdeas()      { kick(s.ideasKick) }
 
 // KickPull asks for an immediate collection from a machine (or all).
 func (s *Server) KickPull(name string) {
@@ -127,11 +136,14 @@ func (s *Server) Run(ctx context.Context) error {
 			s.log.Printf("ingest: %v", err)
 		} else if n > 0 {
 			s.kickDeliver()
+			s.kickIdeas() // a proposal, a session reporting in, a start's result
 		}
 	})
 	loop("deliver", 5*time.Second, s.deliverKick, s.deliverAll)
 	loop("chief", 30*time.Second, nil, s.chiefTick)
 	loop("leads", 30*time.Second, nil, s.leadTick)
+	loop("transcribe", 20*time.Second, s.transcribeKick, s.transcribeTick)
+	loop("ideas", 30*time.Second, s.ideasKick, s.ideasTick)
 
 	srv := &http.Server{Addr: s.cfg.Listen, Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)

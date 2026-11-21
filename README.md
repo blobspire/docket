@@ -39,6 +39,7 @@ docket gives your agents one place to bring you what really needs you: results y
   - by resuming a session that has ended,
   - or as soon as a sleeping laptop reconnects.
 - **Pushes to your phone (ntfy) only for act-now items,** at any hour. Nothing else buzzes.
+- **Ideas: dictate it, and an agent researches it.** Tap the mic (or type), say what you want changed in any project, and stop. docket transcribes it on your own server (whisper.cpp, primed with your project names), routes each idea, and starts a session in the right repo that researches it and brings you a plan. **Build it** ships it: build, PR, merge, release. Unsent audio survives reloads and dead signal. See [docs/ideas.md](docs/ideas.md).
 - **Leads:** one long-running agent per area, woken by your answers, job events or schedules that survive reboots.
 - **Job liveness:** a job that stops sending heartbeats becomes an alert, and its lead is woken.
 - **Watchdog:** unreachable machines, expired logins, usage limits per account, which lead is spending. It never answers anything for you.

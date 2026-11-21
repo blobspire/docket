@@ -13,6 +13,25 @@ import (
 var nameOK = regexp.MustCompile(`^[A-Za-z0-9_-]{1,60}$`)
 var idOK = regexp.MustCompile(`^[A-Za-z0-9-]{8,64}$`)
 var argOK = regexp.MustCompile(`^[A-Za-z0-9_./:=@,+-]{1,200}$`)
+var ideaOK = regexp.MustCompile(`^idea-[a-z0-9]{8}$`)
+
+// runOK is a tmux name docket gives an idea's session: the idea id and the
+// attempt, so a fresh try never collides with an earlier session.
+var runOK = regexp.MustCompile(`^idea-[a-z0-9]{8}(-[0-9]{1,4})?$`)
+
+// Tmux finds tmux even when PATH lacks it (launchd runs docket sync with
+// /usr/bin:/bin:/usr/sbin:/sbin; Homebrew puts tmux elsewhere).
+func Tmux() string {
+	if p, err := exec.LookPath("tmux"); err == nil {
+		return p
+	}
+	for _, p := range []string{"/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux", "/home/linuxbrew/.linuxbrew/bin/tmux"} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return "tmux"
+}
 
 // StartOpts describes a Claude Code session docket starts in tmux.
 type StartOpts struct {
@@ -20,6 +39,7 @@ type StartOpts struct {
 	Cwd      string   // folder to start in
 	ResumeID string   // optional: resume this conversation
 	Lead     string   // optional: exported as DOCKET_LEAD so its items are attributed
+	Idea     string   // optional: exported as DOCKET_IDEA, the idea it was started for
 	Args     []string // extra claude flags
 	Prompt   string   // first message
 	Home     string
@@ -38,6 +58,9 @@ func Start(o StartOpts) error {
 	if o.Lead != "" && !nameOK.MatchString(o.Lead) {
 		return fmt.Errorf("bad lead name %q", o.Lead)
 	}
+	if o.Idea != "" && !ideaOK.MatchString(o.Idea) {
+		return fmt.Errorf("bad idea id %q", o.Idea)
+	}
 	for _, a := range o.Args {
 		if !argOK.MatchString(a) {
 			return fmt.Errorf("unsupported claude argument %q", a)
@@ -52,7 +75,7 @@ func Start(o StartOpts) error {
 	if strings.TrimSpace(o.Prompt) == "" {
 		return errors.New("empty prompt")
 	}
-	if exec.Command("tmux", "has-session", "-t", "="+o.Name).Run() == nil {
+	if exec.Command(Tmux(), "has-session", "-t", "="+o.Name).Run() == nil {
 		return fmt.Errorf("a tmux session named %s is already running", o.Name)
 	}
 	claude, err := exec.LookPath("claude")
@@ -70,11 +93,31 @@ func Start(o StartOpts) error {
 	if err := os.WriteFile(promptFile, []byte(o.Prompt), 0o600); err != nil {
 		return err
 	}
+	script := filepath.Join(dir, o.Name+".sh")
+	if err := os.WriteFile(script, []byte(Script(o, claude, promptFile, filepath.Join(dir, o.Name+".exited"))), 0o700); err != nil {
+		return err
+	}
+
+	out, err := exec.Command(Tmux(), "new-session", "-d", "-s", o.Name, "-x", "200", "-y", "50", "sh", script).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tmux: %v %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// Script is the shell script that runs a started session.
+func Script(o StartOpts, claude, promptFile, exitedFile string) string {
 	var b strings.Builder
 	b.WriteString("#!/bin/sh\n# Started by docket.\n")
+	// docket may run from launchd or a bare ssh command, with a minimal
+	// PATH: give the session the usual tool folders.
+	b.WriteString("export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$PATH\"\n")
 	fmt.Fprintf(&b, "cd %s || exit 1\n", shq(o.Cwd))
 	if o.Lead != "" {
 		fmt.Fprintf(&b, "export DOCKET_LEAD=%s\n", shq(o.Lead))
+	}
+	if o.Idea != "" {
+		fmt.Fprintf(&b, "export DOCKET_IDEA=%s DOCKET_RUN=%s\n", shq(o.Idea), shq(o.Name))
 	}
 	fmt.Fprintf(&b, "%s", shq(claude))
 	if o.ResumeID != "" {
@@ -84,12 +127,20 @@ func Start(o StartOpts) error {
 	for _, a := range o.Args {
 		fmt.Fprintf(&b, " %s", shq(a))
 	}
-	fmt.Fprintf(&b, " \"$(cat %s)\"\necho $? > %s\n", shq(promptFile), shq(filepath.Join(dir, o.Name+".exited")))
-	script := filepath.Join(dir, o.Name+".sh")
-	if err := os.WriteFile(script, []byte(b.String()), 0o700); err != nil {
-		return err
+	fmt.Fprintf(&b, " \"$(cat %s)\"\necho $? > %s\n", shq(promptFile), shq(exitedFile))
+	return b.String()
+}
+
+// Stop ends a session docket started for an idea. Only idea sessions: a
+// lead or the human's own session is never stopped this way.
+func Stop(name string) error {
+	if !runOK.MatchString(name) {
+		return fmt.Errorf("docket only stops the sessions it started for ideas, not %q", name)
 	}
-	out, err := exec.Command("tmux", "new-session", "-d", "-s", o.Name, "-x", "200", "-y", "50", "sh", script).CombinedOutput()
+	if exec.Command(Tmux(), "has-session", "-t", "="+name).Run() != nil {
+		return nil // already gone
+	}
+	out, err := exec.Command(Tmux(), "kill-session", "-t", "="+name).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("tmux: %v %s", err, strings.TrimSpace(string(out)))
 	}
@@ -98,10 +149,16 @@ func Start(o StartOpts) error {
 
 // Resume restarts a finished session with prompt as its first message.
 func Resume(id, cwd, name, prompt, home string) error {
+	return ResumeIdea(id, cwd, name, "", prompt, home)
+}
+
+// ResumeIdea is Resume for a session started for an idea: it keeps its
+// DOCKET_IDEA.
+func ResumeIdea(id, cwd, name, idea, prompt, home string) error {
 	if !idOK.MatchString(id) {
 		return fmt.Errorf("bad session id %q", id)
 	}
-	return Start(StartOpts{Name: name, Cwd: cwd, ResumeID: id, Prompt: prompt, Home: home, Args: []string{"--permission-mode", "auto"}})
+	return Start(StartOpts{Name: name, Cwd: cwd, ResumeID: id, Idea: idea, Prompt: prompt, Home: home, Args: []string{"--permission-mode", "auto"}})
 }
 
 func cleanName(name string) string {

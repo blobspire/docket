@@ -64,6 +64,14 @@ The bar is high: file only what needs them and would otherwise be missed.
   docket projects                         projects, components and places in use
   docket projects add <name> --why "<one-line description>"   create a project
 
+Ideas the human dictated (docket starts a session per idea; its first message says what to do):
+  docket propose "<what you'd build>" --idea <idea-id> --project <p> --why "<markdown>" [--recommend "Save for later"]
+      Your plan for the idea, with the options Build it | Save for later. Run it again to revise.
+  docket idea done <idea-id> [--why "<what shipped>"]    it has shipped
+  docket idea save <idea-id> [--why "<what you found>"]  back to the saved ideas, with your notes
+  docket idea take <idea-id>                             pick up a saved idea
+  docket ideas [--project <p>] [--all]                   the saved ideas (for this folder's project)
+
 Long-running jobs (so a stall gets noticed):
   docket job register <name> --every 10m [--why "..."]
   docket job beat <name> [--why "progress"]
@@ -87,8 +95,9 @@ Used by the server and the plugin:
   docket mailbox put | rules put | context put
   docket sessions --json | quota | usage [--json] [--since 7d]
   docket statusline [-- <your statusline command>]   record quota as Claude Code renders its status line
-  docket session send --pane <%id> [--check] | resume --id <id> --cwd <dir> --name <name>
-  docket session start --name <n> --cwd <dir> [--lead <l>] [--resume <id>] [-- <claude flags>]
+  docket session send --pane <%id> [--check] | resume --id <id> --cwd <dir> --name <name> [--idea <id>]
+  docket session start --name <n> --cwd <dir> [--lead <l>] [--idea <id>] [--resume <id>] [-- <claude flags>]
+  docket session stop --name <idea-id>
   docket hook <Event>
   docket version
 `
@@ -140,6 +149,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (code int) {
 		err = cli.Add(rest, stdout, os.Getenv)
 	case cmd == "list":
 		err = cli.List(rest, stdout, os.Getenv)
+	case cmd == "idea":
+		err = cli.Idea(rest, stdout, os.Getenv)
+	case cmd == "ideas":
+		err = cli.Ideas(rest, stdout, os.Getenv)
 	case cmd == "projects":
 		err = cli.Projects(rest, stdout, os.Getenv)
 	case cmd == "context":
@@ -318,21 +331,29 @@ func sessionCmd(args []string, stdin io.Reader) error {
 		name := fs.String("name", "", "tmux session name")
 		cwd := fs.String("cwd", "", "folder to start in")
 		lead := fs.String("lead", "", "lead name (exported as DOCKET_LEAD)")
+		idea := fs.String("idea", "", "the idea it is started for (exported as DOCKET_IDEA)")
 		resume := fs.String("resume", "", "resume this Claude Code session id")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
 		home, _ := os.UserHomeDir()
-		return sessions.Start(sessions.StartOpts{Name: *name, Cwd: *cwd, Lead: *lead, ResumeID: *resume, Args: fs.Args(), Prompt: string(text), Home: home})
+		return sessions.Start(sessions.StartOpts{Name: *name, Cwd: *cwd, Lead: *lead, Idea: *idea, ResumeID: *resume, Args: fs.Args(), Prompt: string(text), Home: home})
 	case "resume":
 		id := fs.String("id", "", "Claude Code session id")
 		cwd := fs.String("cwd", "", "folder the session ran in")
 		name := fs.String("name", "", "name for the resumed session")
+		idea := fs.String("idea", "", "the idea it was started for")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
 		home, _ := os.UserHomeDir()
-		return sessions.Resume(*id, *cwd, *name, string(text), home)
+		return sessions.ResumeIdea(*id, *cwd, *name, *idea, string(text), home)
+	case "stop":
+		name := fs.String("name", "", "tmux session name (only idea-… sessions)")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		return sessions.Stop(*name)
 	}
 	return fmt.Errorf("unknown session command %q", args[0])
 }
@@ -493,6 +514,11 @@ func syncCmd(args []string, stdout io.Writer) error {
 	if q, ok := tokens.Read(); ok {
 		env["_quota"] = q
 	}
+	remotes, sentRemotes := changedRemotes()
+	remotesTaken := false
+	if remotes != nil {
+		env["_remotes"] = remotes
+	}
 	stamp := filepath.Join(config.Home(), "usage-sent")
 	if info, err := os.Stat(stamp); err != nil || time.Since(info.ModTime()) > 15*time.Minute {
 		if days, err := tokens.Scan(time.Now().Add(-8 * 24 * time.Hour)); err == nil {
@@ -518,6 +544,9 @@ func syncCmd(args []string, stdout io.Writer) error {
 		if err := json.Unmarshal(out, &reply); err != nil {
 			return fmt.Errorf("server reply: %w", err)
 		}
+		if reply.RemotesOK {
+			remotesTaken = true // an older server ignores them: send again next time
+		}
 		c, err := spool.ParseCursor(reply.Cursor)
 		if err == nil && reply.Cursor != "" {
 			sp.Ack(c, 72*time.Hour)
@@ -533,6 +562,9 @@ func syncCmd(args []string, stdout io.Writer) error {
 		if reply.Context != nil {
 			agentctx.Write([]byte(*reply.Context))
 		}
+		for _, st := range reply.Starts {
+			runStart(st, sp)
+		}
 		for _, sha := range reply.WantBlobs {
 			if f, err := os.Open(filepath.Join(sp.Dir, "blobs", sha)); err == nil {
 				sshRun(*host, *remoteBin+" server put-blob "+sha, f)
@@ -547,10 +579,60 @@ func syncCmd(args []string, stdout io.Writer) error {
 		sessJSON = next
 	}
 	box.GC(7 * 24 * time.Hour)
+	if remotesTaken {
+		sentRemotes()
+	}
 	if !*quiet {
 		fmt.Fprintf(stdout, "docket: synced %s with %s (%d answer(s) received).\n", machine, *host, delivered)
 	}
 	return nil
+}
+
+// runStart starts (or stops) a session the server asked for, and records
+// how a start went for the next sync.
+func runStart(st server.StartCmd, sp spool.Spool) {
+	home, _ := os.UserHomeDir()
+	if st.Op == "stop" {
+		sessions.Stop(st.Name)
+		return
+	}
+	err := sessions.Start(sessions.StartOpts{Name: st.Name, Cwd: st.Cwd, Idea: st.Idea, Args: st.Args, Prompt: st.Prompt, Home: home})
+	r := record.New("session.started", os.Getenv)
+	p := map[string]any{"start_id": st.ID, "ok": err == nil}
+	if err != nil {
+		p["error"] = err.Error()
+	}
+	r.Payload, _ = json.Marshal(p)
+	sp.Append(r)
+}
+
+// changedRemotes lists the git remotes of this machine's mapped folders,
+// when they differ from what the last sync sent; call sent once they've
+// reached the server.
+func changedRemotes() (remotes map[string]string, sent func()) {
+	none := func() {}
+	ctx, ok := agentctx.Load()
+	if !ok || len(ctx.Dirs) == 0 {
+		return nil, none
+	}
+	out := map[string]string{}
+	for _, d := range ctx.Dirs {
+		if r := cli.RepoRemote(d.Dir); r != "" {
+			out[d.Dir] = r
+		}
+	}
+	if len(out) == 0 {
+		return nil, none
+	}
+	data, _ := json.Marshal(out)
+	stamp := filepath.Join(config.Home(), "state", "remotes-sent")
+	if old, err := os.ReadFile(stamp); err == nil && string(old) == string(data) {
+		return nil, none
+	}
+	return out, func() {
+		os.MkdirAll(filepath.Dir(stamp), 0o700)
+		os.WriteFile(stamp, data, 0o600)
+	}
 }
 
 func sshRun(host, command string, stdin io.Reader) ([]byte, error) {
@@ -658,12 +740,14 @@ func serverCmd(args []string, stdin io.Reader, stdout io.Writer) error {
 			return err
 		}
 		var sessJSON, quotaJSON, usageJSON []byte
+		remotesSeen := false
 		have := server.Hashes{Rules: "-", Context: "-"} // an older client reports neither
 		if i := bytes.IndexByte(all, '\n'); i > 0 && bytes.HasPrefix(all, []byte(`{"_`)) {
 			var env struct {
 				Sessions    json.RawMessage `json:"_sessions"`
 				Quota       json.RawMessage `json:"_quota"`
 				Usage       json.RawMessage `json:"_usage"`
+				Remotes     json.RawMessage `json:"_remotes"`
 				ContextHash *string         `json:"_context_hash"`
 				RulesHash   *string         `json:"_rules_hash"`
 			}
@@ -672,6 +756,8 @@ func serverCmd(args []string, stdin io.Reader, stdout io.Writer) error {
 					sessJSON = env.Sessions
 				}
 				quotaJSON, usageJSON = env.Quota, env.Usage
+				s.ApplyRemotes(*machine, env.Remotes)
+				remotesSeen = len(env.Remotes) > 0 && string(env.Remotes) != "null"
 				if env.ContextHash != nil {
 					have.Context = *env.ContextHash
 				}
@@ -687,6 +773,7 @@ func serverCmd(args []string, stdin io.Reader, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
+		reply.RemotesOK = remotesSeen
 		return json.NewEncoder(stdout).Encode(reply)
 	case "test-push":
 		if err := s.TestPush(context.Background()); err != nil {

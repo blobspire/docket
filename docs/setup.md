@@ -75,6 +75,10 @@ docket projects add website --why "The company website and blog"
 
 Map a lead to its project with `project = "website"` in its `[[lead]]`. Put docket's own health items (machines, logins, quota) where you like with `system_project = "admin"`. You can rename, merge or archive projects from a project's page on the dashboard.
 
+### Ideas (dictation)
+
+To dictate ideas from your phone and have agents research and build them, run a whisper.cpp server next to docket and add `[transcribe]` and `[ideas]` to the config. [ideas.md](ideas.md) has the steps; without a speech-to-text server, ideas can still be typed.
+
 ## 4. Leads (optional)
 
 A lead is a long-running agent responsible for one area. Add one per area:

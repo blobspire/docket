@@ -31,7 +31,7 @@ const fontVer = "4"
 // versioned URLs can be cached for good.
 var staticVer = func() string {
 	h := sha256.New()
-	for _, f := range []string{"web/app.css", "web/app.js"} {
+	for _, f := range []string{"web/app.css", "web/app.js", "web/dictate.js", "web/pcm-worklet.js"} {
 		b, _ := webFS.ReadFile(f)
 		h.Write(b)
 	}
@@ -148,12 +148,7 @@ var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 	},
 	"isImage": func(m string) bool { return strings.HasPrefix(m, "image/") },
 	"isVideo": func(m string) bool { return strings.HasPrefix(m, "video/") },
-	"rcURL": func(bridge string) string {
-		if bridge == "" {
-			return ""
-		}
-		return "https://claude.ai/code/" + bridge
-	},
+	"rcURL":   rcURL,
 	"clock": func(unix int64) string {
 		if unix == 0 {
 			return ""
@@ -170,6 +165,14 @@ var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 		return out
 	},
 }).ParseFS(webFS, "web/*.html"))
+
+// rcURL is a session's Remote Control link on claude.ai.
+func rcURL(bridge string) string {
+	if bridge == "" {
+		return ""
+	}
+	return "https://claude.ai/code/" + bridge
+}
 
 // kindName is how an item's type reads on the page: what it asks of the
 // human, in one word.
@@ -266,10 +269,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /rule/{id}/retire", s.retireRule)
 	mux.HandleFunc("POST /lead/{name}/wake", s.wakeLead)
 	mux.HandleFunc("GET /health", s.pageHealth)
+	mux.HandleFunc("GET /ideas", s.pageIdeas)
+	mux.HandleFunc("POST /idea/{id}/{action}", s.ideaAct)
+	mux.HandleFunc("POST /dictation", s.dictationNew)
+	mux.HandleFunc("GET /dictation/{id}", s.dictationGet)
+	mux.HandleFunc("POST /dictation/{id}/audio", s.dictationAudio)
+	mux.HandleFunc("POST /dictation/{id}/finish", s.dictationFinish)
+	mux.HandleFunc("POST /dictation/{id}/do/{action}", s.dictationAct)
 	mux.HandleFunc("GET /blob/{sha}", s.blob)
 	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"v": s.st.QueueDigest()})
+		json.NewEncoder(w).Encode(map[string]string{"v": s.st.Version()})
 	})
 	mux.HandleFunc("POST /api/collect", func(w http.ResponseWriter, r *http.Request) {
 		s.KickPull("")
@@ -324,6 +334,7 @@ func (s *Server) guard(next http.Handler) http.Handler {
 		}
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "same-origin")
+		w.Header().Set("Permissions-Policy", "microphone=(self), camera=(), geolocation=()")
 		next.ServeHTTP(w, r)
 	})
 }
@@ -359,6 +370,10 @@ type page struct {
 	Count       int  // open items on the docket, for the mark's badge
 	Hot         bool // one of them needs action now
 	StashCount  int
+	Ideas       *ideasView
+	IdeaCount   int      // dictations and ideas that need the human (drafts, failures)
+	Mic         bool     // speech-to-text is set up: the capture sheet records
+	ProjectList []string // for the capture sheet's project picker
 }
 
 // attachment is one piece of evidence as the item sheet shows it.
@@ -400,7 +415,16 @@ type machineRow struct {
 
 func (s *Server) render(w http.ResponseWriter, name string, p page) {
 	p.Person = s.cfg.Person
-	p.Version = s.st.QueueDigest()
+	p.Version = s.st.Version()
+	p.Mic = s.cfg.Transcribe.URL != ""
+	p.IdeaCount = s.ideaAttention()
+	if ps, err := s.st.Projects(false); err == nil {
+		for _, pr := range ps {
+			if pr.Name != store.Unsorted && pr.Name != s.cfg.SystemProject {
+				p.ProjectList = append(p.ProjectList, pr.Name)
+			}
+		}
+	}
 	if items, err := s.st.Items("open"); err == nil {
 		for _, it := range items {
 			if it.Kind == "rule" {
