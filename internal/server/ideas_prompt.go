@@ -40,7 +40,18 @@ func (s *Server) routerPrompt(d store.Dictation) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You route ideas that %s dictated (or typed) into docket, the dashboard where they run their coding agents. Split what they said into separate ideas and decide where each one goes. You can't run tools: everything you know is below.\n\n", p)
 	if d.Source == "voice" {
-		fmt.Fprintf(&b, "It came from speech-to-text, so expect misheard words, above all names: the projects, components and sessions below are the real names.\n\n")
+		fmt.Fprintf(&b, "It came from speech-to-text, so expect misheard words, above all names: the projects, components and sessions below are the real names.")
+		if said := s.cfg.Transcribe.SaidAs; len(said) > 0 {
+			b.WriteString(" Some names come out as they sound:")
+			for i, name := range sortedKeys(said) {
+				if i > 0 {
+					b.WriteString(";")
+				}
+				fmt.Fprintf(&b, " %q usually means %s", said[name], name)
+			}
+			b.WriteString(" (unless the context says otherwise).")
+		}
+		b.WriteString("\n\n")
 	}
 	fmt.Fprintf(&b, "<dictation>\n%s\n</dictation>\n\n", strings.TrimSpace(d.Text))
 	if d.ProjectHint != "" {

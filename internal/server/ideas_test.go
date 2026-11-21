@@ -168,6 +168,7 @@ func TestTranscriptionUsesTheGlossary(t *testing.T) {
 [transcribe]
 url = "`+whisper.URL+`"
 vocabulary = ["DAgger", "FR5"]
+said_as = { cwant = "quant" }
 [[machine]]
 name = "box"
 mode = "local"
@@ -189,7 +190,7 @@ mode = "local"
 		t.Fatal("a failed transcription must keep the audio")
 	}
 	mu.Lock()
-	if !strings.Contains(prompt, "cwant") || !strings.Contains(prompt, "vlm-teacher") || !strings.Contains(prompt, "DAgger") || !strings.Contains(prompt, "Cole") || lang != "en" {
+	if !strings.Contains(prompt, "cwant (pronounced quant)") || strings.Count(prompt, "cwant") != 1 || !strings.Contains(prompt, "vlm-teacher") || !strings.Contains(prompt, "DAgger") || !strings.Contains(prompt, "Cole") || lang != "en" {
 		t.Fatalf("glossary = %q, language %q", prompt, lang)
 	}
 	fail = false

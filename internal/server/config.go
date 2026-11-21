@@ -96,8 +96,11 @@ func (l Lead) WakesOn(event string) bool {
 type Transcribe struct {
 	URL        string   `toml:"url"`        // e.g. http://127.0.0.1:8178/inference; empty: dictation is typed only
 	Vocabulary []string `toml:"vocabulary"` // words to spell right; project, component and place names are added
-	KeepAudio  string   `toml:"keep_audio"` // how long recordings are kept, e.g. "90d" (default); transcripts stay
-	Language   string   `toml:"language"`   // default "en"
+	// SaidAs maps a name to how it sounds, when speech-to-text can't spell
+	// it (cwant = "quant"): the glossary says so, and the router maps it back.
+	SaidAs    map[string]string `toml:"said_as"`
+	KeepAudio string            `toml:"keep_audio"` // how long recordings are kept, e.g. "90d" (default); transcripts stay
+	Language  string            `toml:"language"`   // default "en"
 }
 
 // IdeasConfig is the [ideas] section: how dictated ideas are routed and

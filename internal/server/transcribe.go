@@ -175,6 +175,10 @@ func (s *Server) glossary() string {
 	}
 	add(s.cfg.Person)
 	add("docket")
+	for _, name := range sortedKeys(s.cfg.Transcribe.SaidAs) {
+		add(name + " (pronounced " + s.cfg.Transcribe.SaidAs[name] + ")")
+		seen[strings.ToLower(name)] = true
+	}
 	for _, w := range s.cfg.Transcribe.Vocabulary {
 		add(w)
 	}
@@ -208,6 +212,15 @@ func (s *Server) glossary() string {
 		return ""
 	}
 	return "Names and terms: " + out + "."
+}
+
+func sortedKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // pruneAudio deletes recordings older than [transcribe] keep_audio; their

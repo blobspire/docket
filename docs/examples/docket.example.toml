@@ -47,6 +47,7 @@ mode = "push"
 # [transcribe]
 # url = "http://127.0.0.1:8178/inference"   # whisper.cpp's whisper-server (deploy/systemd/whisper.service)
 # vocabulary = ["DAgger", "FR5"]           # words to spell right; project names are added on their own
+# said_as = { cwant = "quant" }            # names speech-to-text can't spell, and how they sound
 # keep_audio = "90d"
 #
 # [ideas]

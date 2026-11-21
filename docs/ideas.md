@@ -53,6 +53,7 @@ Run it as a user service with [deploy/systemd/whisper.service](../deploy/systemd
 [transcribe]
 url = "http://127.0.0.1:8178/inference"
 vocabulary = ["DAgger", "FR5"]   # extra words to spell right
+said_as = { cwant = "quant" }    # names speech-to-text can't spell: how they sound
 # keep_audio = "90d"
 
 [ideas]
