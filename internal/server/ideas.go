@@ -522,10 +522,20 @@ func (s *Server) watchStart(i store.Idea, now time.Time) {
 	m, _ := s.cfg.Machine(i.Machine)
 	if m.Mode == "push" {
 		starts, _ := s.st.StartsForIdea(i.ID)
+		found := false
+		fail := func(why string) {
+			s.st.EditIdea(i.ID, func(x *store.Idea) error {
+				if x.Status == store.IdeaStarting && x.SessionID == "" && x.SessionName == i.SessionName {
+					x.Status, x.Error = store.IdeaFailed, why
+				}
+				return nil
+			})
+		}
 		for _, st := range starts {
 			if st.Op != "start" || st.Name != i.SessionName {
 				continue
 			}
+			found = true
 			switch {
 			case st.Status == "pending" && s.st.ExpireStart(st.ID):
 				// Never handed out (the laptop went to sleep): place it again.
@@ -537,14 +547,24 @@ func (s *Server) watchStart(i store.Idea, now time.Time) {
 				})
 			case st.Status == "sent" && now.Sub(time.Unix(st.SentAt, 0)) > laptopSilence:
 				// Handed out: it may yet run there, so never start a second one.
-				s.st.EditIdea(i.ID, func(x *store.Idea) error {
-					if x.Status == store.IdeaStarting && x.SessionID == "" && x.SessionName == i.SessionName {
-						x.Status = store.IdeaFailed
-						x.Error = i.Machine + " took the session but never reported it started; check tmux there (" + i.SessionName + "), then Try again"
-					}
-					return nil
-				})
+				fail(i.Machine + " took the session but never reported it started; check tmux there (" + i.SessionName + "), then Try again")
+			case st.Status == "started" && now.Sub(time.Unix(i.StartedAt, 0)) > 3*ideaStartTimeout:
+				fail("the session started on " + i.Machine + " but never reported in (Claude may have failed to launch); check `tmux attach -t " + i.SessionName + "` there, then Try again")
+			case st.Status == "failed":
+				fail("couldn't start on " + i.Machine + ": " + st.Error)
 			}
+		}
+		if !found {
+			// Claimed, but its start never got queued (a crash between the
+			// two): nothing went out, so place it again.
+			s.st.EditIdea(i.ID, func(x *store.Idea) error {
+				if x.Status == store.IdeaStarting && x.SessionID == "" && x.SessionName == i.SessionName {
+					x.Status = store.IdeaQueued
+				}
+				return nil
+			})
+		} else if now.Sub(time.Unix(i.StartedAt, 0)) > laptopSilence {
+			fail("no session reported in on " + i.Machine + " for " + i.SessionName + "; check tmux there, then Try again")
 		}
 		return
 	}

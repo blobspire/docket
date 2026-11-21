@@ -239,6 +239,24 @@ func TestAHandedOutStartIsNeverDoubled(t *testing.T) {
 	}
 }
 
+func TestAStartedLaptopSessionThatNeverReportsFails(t *testing.T) {
+	e := newEnv(t, "person = \"Cole\"\n[[machine]]\nname = \"box\"\nmode = \"local\"\n[[machine]]\nname = \"mac\"\nmode = \"push\"\n")
+	st := e.s.st
+	old := time.Now().Add(-48 * time.Hour).Unix()
+	st.AddIdea(store.Idea{ID: "idea-strt0001", Project: "p", Title: "x", Status: store.IdeaStarting, Machine: "mac", SessionName: "idea-strt0001-1", StartedAt: old, Attempts: 1})
+	st.AddStart(store.Start{ID: "st-strt", Machine: "mac", Name: "idea-strt0001-1", IdeaID: "idea-strt0001"})
+	st.StartSent("st-strt")
+	st.StartResult("st-strt", true, "")
+	st.AddIdea(store.Idea{ID: "idea-strt0002", Project: "p", Title: "y", Status: store.IdeaStarting, Machine: "mac", SessionName: "idea-strt0002-1", StartedAt: old, Attempts: 1})
+	e.s.watchIdeas(e.ctx)
+	if i, _, _ := st.GetIdea("idea-strt0001"); i.Status != store.IdeaFailed || !strings.Contains(i.Error, "never reported in") {
+		t.Fatalf("a started session that never reports in must fail, not hold a slot forever: %+v", i)
+	}
+	if i, _, _ := st.GetIdea("idea-strt0002"); i.Status != store.IdeaQueued {
+		t.Fatalf("a claim whose start never got queued goes back to the queue: %+v", i)
+	}
+}
+
 func TestStartsAreHandedOutOnceAcrossProcesses(t *testing.T) {
 	e := newEnv(t, "")
 	other, err := store.Open(e.s.st.Path()) // `docket server receive` is another process

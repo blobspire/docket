@@ -68,7 +68,7 @@
 
   // ---- uploading --------------------------------------------------------------------------------
   // One dictation's chunks go up in order; failures retry with a growing wait.
-  const pumps = new Map(); // id -> promise of its upload finishing
+  const pumps = new WeakMap(); // dictation -> promise of its upload finishing (one pump each, even across a re-key)
   const created = new Set();
   const ensureCreated = async (d) => {
     if (created.has(d.id)) return;
@@ -89,19 +89,25 @@
   // upload sends every stored chunk of d; finish=true also finishes it.
   // The server already finished this dictation (the page was away too
   // long, or another tab finished it): move what's left to a new one.
-  const carryOn = async (d) => {
-    const list = await chunksOf(d.id);
-    const old = d.id;
-    d.id = newID(); d.seq = list.length; d.cont = old;
-    for (const c of list) await dropChunk(old, c.seq);
-    let seq = 0;
-    for (const c of list) await putChunk({ id: d.id, seq: seq++, data: c.data });
-    await dropDict(old);
-    await putDict(d);
-    if (rec && rec.d === d) rec.seq = d.seq;
+  const carryOn = (d) => {
+    const move = async () => {
+      const list = await chunksOf(d.id);
+      const old = d.id;
+      d.id = newID(); d.seq = list.length; d.cont = old;
+      for (const c of list) await dropChunk(old, c.seq);
+      let seq = 0;
+      for (const c of list) await putChunk({ id: d.id, seq: seq++, data: c.data });
+      await dropDict(old);
+      await putDict(d);
+      if (rec && rec.d === d) rec.seq = d.seq; // later chunks continue the new numbering
+    };
+    // While it's still recording, take a turn with its flushes: a chunk
+    // stored mid-move would otherwise land under the wrong id or number.
+    if (rec && rec.d === d) return (rec.q = rec.q.then(move));
+    return move();
   };
   const upload = (d, finish) => {
-    const prev = pumps.get(d.id) || Promise.resolve();
+    const prev = pumps.get(d) || Promise.resolve();
     const p = prev.then(async () => {
       let wait = 1000;
       for (;;) {
@@ -136,7 +142,7 @@
         }
       }
     });
-    pumps.set(d.id, p.catch(() => {}));
+    pumps.set(d, p.catch(() => {}));
     return p;
   };
 
