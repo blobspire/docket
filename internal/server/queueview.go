@@ -112,6 +112,29 @@ func (v itemView) Stashed() bool {
 	return v.StashedAt >= store.StashCutoff() && v.Status != "open" && v.Status != "snoozed" && v.Status != "maybe"
 }
 
+// settleTime is how long after filing a change still counts as part of the
+// filing (the agent adding to what it just filed, docket filling in the
+// project): a row says "updated" only for changes after that.
+const settleTime = 10 * time.Minute
+
+// UpdatedAgo is when the item last changed ("6d ago"), which its row shows
+// beside when it was filed. It's empty when nothing changed after the filing,
+// or when the two would read the same. A week with no change fades the row
+// (Stale), so this is what explains a faded row.
+func (v itemView) UpdatedAgo() string {
+	return updatedAgo(time.Now(), v.CreatedAt, v.UpdatedAt)
+}
+
+func updatedAgo(now time.Time, created, updated int64) string {
+	if updated-created < int64(settleTime/time.Second) {
+		return ""
+	}
+	if u := agoAt(now, updated); u != agoAt(now, created) {
+		return u
+	}
+	return ""
+}
+
 // Thumbs is the images a row shows (two at most).
 func (v itemView) Thumbs() []store.Evidence {
 	if len(v.Images) > 2 {

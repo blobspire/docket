@@ -301,6 +301,14 @@ func age(now time.Time, unix int64) string {
 	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
+// agoAt says how long before now a time was: "just now", "5m ago", "8d ago".
+func agoAt(now time.Time, unix int64) string {
+	if now.Sub(time.Unix(unix, 0)) < time.Minute {
+		return "just now"
+	}
+	return age(now, unix) + " ago"
+}
+
 // watch files or refreshes one of docket's own health items, unless the
 // human marked that check "not worth my time" in the last week.
 func (s *Server) watch(it store.Item) {
