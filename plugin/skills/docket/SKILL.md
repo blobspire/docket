@@ -45,10 +45,10 @@ docket issue "ARC login expired: all training jobs are failing" --project vlm-te
 |---|---|
 | `ask` | A decision, or an action you're holding for approval. Give `--options` and `--recommend` when you have them. |
 | `task` | Something only a person can do: anything physical, their identity (signing in, sending as them), money, or a secret only they hold. `--blocks "<what it blocks>"` if it blocks work. |
-
-**Could you do it yourself once they say yes? Then it's an `ask`, not a `task`.** That includes work that auto mode or a permission stopped, work outside your repository (another machine, a service's config, docket's own config), and anything you'd otherwise write up as steps for them to run. File it with options, such as `--options "Do it|Leave it" --recommend "Do it"`, so one tap approves it, then do it when the answer comes. A `task` that hands them commands to run, or a config to edit, costs them a context switch and a terminal, for something you could have done.
 | `review` | Results or work for them to look at. Attach `--evidence` (screenshots, report, video). If you need a verdict, give `--options` (say, Retrain or Drop it): Done only means they've seen it. |
 | `issue` | Something broken that needs them. |
+
+**Could you do it yourself once they say yes? Then it's an `ask`, not a `task`.** That includes work that auto mode or a permission stopped, work outside your repository (another machine, a service's config, docket's own config), and anything you'd otherwise write up as steps for them to run. File it with options, such as `--options "Do it|Leave it" --recommend "Do it"`, so one tap approves it, then do it when the answer comes. A `task` that hands them commands to run, or a config to edit, costs them a context switch and a terminal, for something you could have done.
 
 ### Title: they read it in a second
 
@@ -97,7 +97,7 @@ Lead with what you need from them and why, in a sentence or two. Then at most ~5
 It shows up as a message starting with `[docket dk-xxxxxxxx #nonce]`. Act on it:
 - If they approved an action auto mode refused earlier, retry it.
 - If they declined, don't do it.
-- If they **handed it back** ("Handed back to you: do it yourself"), they want you to do the task or fix the issue yourself, and the message is their go-ahead, including steps outside your repository. Do it, then `docket done <id> --why "<what you did>"`. If one step truly needs them (a password, money, signing in, something physical), do everything else and file just that step.
+- If they **handed it back** ("Handed back to you: do it yourself"), they want you to do the task or fix the issue yourself, and the message is their go-ahead, including steps outside your repository. If they typed a note with it, it comes first, and the go-ahead is within it. Do it, then `docket done <id> --why "<what you did>"`. If one step truly needs them (a password, money, signing in, something physical), do everything else, file just that step as a new item, and still close this one, saying what you filed.
 - If they **reopen** it (a done taken back, or something you closed), it's open again and still needs something: pick it back up, or wait for their answer.
 - If they marked it **done** without answering, you'll hear that at your next turn (right away if you filed it `--blocking`): a review was looked at and needs nothing more; a question marked done is not a yes (they may have handled it themselves). Don't act as if they approved.
 - If they marked your item **not worth their time**, take their note to heart: don't re-file it, and file fewer things like it.

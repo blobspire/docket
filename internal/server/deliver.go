@@ -247,8 +247,8 @@ func (s *Server) handOffText(it store.Item, note string) string {
 	}
 	return fmt.Sprintf("%s do it yourself%s. This is %s's go-ahead for every step it takes%s, including steps outside this repository "+
 		"(another machine, a service's config, a restart). If one step truly needs %s (a password or sudo, money, signing in, "+
-		"sending something as them, anything physical), do everything else, then file just that step and say what's left. "+
-		"When it's finished, close the item: docket done %s --why \"<what you did>\".",
+		"sending something as them, anything physical), do everything else and file just that step as a new item. "+
+		"Either way, close this one when you're through: docket done %s --why \"<what you did, and anything you filed for what's left>\".",
 		handOffMark, how, p, within, p, it.ID)
 }
 

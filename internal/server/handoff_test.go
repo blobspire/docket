@@ -51,7 +51,11 @@ func TestHandOffReachesTheAgentAndItClosesTheItem(t *testing.T) {
 	var hookOut bytes.Buffer
 	hook.Run("PostToolUse", strings.NewReader(`{"session_id":"sess-1"}`), &hookOut, io.Discard, agent)
 	got := hookOut.String()
-	for _, want := range []string{"Cole's answer to", "Handed back to you: do it yourself", "Cole's go-ahead", "docket done " + id} {
+	for _, want := range []string{"Cole's answer to", "Handed back to you: do it yourself", "Cole's go-ahead",
+		"including steps outside this repository",                           // the go-ahead reaches past the repo
+		"If one step truly needs Cole", "file just that step as a new item", // the limit of it
+		"Either way, close this one when you're through: docket done " + id + " --why", // and the item doesn't rot
+	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("delivered text lacks %q:\n%s", want, got)
 		}
