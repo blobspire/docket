@@ -29,6 +29,9 @@ type Server struct {
 	finishMu sync.Mutex // one dictation finishes at a time
 	// startFn starts a session on a local or pull machine (tests replace it).
 	startFn func(ctx context.Context, m Machine, prompt string, args []string) error
+	// hold is how long a delivery carrying the human's decision waits before
+	// it goes out (undoHold; tests set 0).
+	hold time.Duration
 }
 
 // Open loads the store for cfg. Commands that only touch the database (for
@@ -43,7 +46,7 @@ func Open(cfg *Config) (*Server, error) {
 	}
 	s := &Server{cfg: cfg, st: st, log: log.New(os.Stderr, "docket: ", log.LstdFlags),
 		processKick: make(chan struct{}, 1), deliverKick: make(chan struct{}, 1), transcribeKick: make(chan struct{}, 1), ideasKick: make(chan struct{}, 1),
-		pullKick: map[string]chan struct{}{}}
+		pullKick: map[string]chan struct{}{}, hold: undoHold}
 	for _, m := range cfg.Machines {
 		s.pullKick[m.Name] = make(chan struct{}, 1)
 	}
