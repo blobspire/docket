@@ -93,6 +93,13 @@ func (v itemView) Waiting() bool {
 	return v.Status == "answered" || v.Status == "delivered"
 }
 
+// CanHandOff reports an item still waiting on the human that its agent could
+// be asked to do itself (a task or an issue it filed): its dock and its row
+// offer "Have the agent do it".
+func (v itemView) CanHandOff() bool {
+	return canHandOff(v.Item) && !v.Kept() && !v.Waiting()
+}
+
 // Closed reports an item that's no longer on the docket's to-do list.
 func (v itemView) Closed() bool { return closedStatus(v.Status) }
 
@@ -139,6 +146,8 @@ func (v itemView) Answered() (verb, what string) {
 		return "You approved it", ""
 	case strings.HasPrefix(a, "Declined: "):
 		return "You declined it", ""
+	case strings.HasPrefix(a, handOffMark):
+		return "You handed it back", clip(handOffNote(a), 80)
 	}
 	return "You replied", clip(a, 80)
 }

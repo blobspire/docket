@@ -1,7 +1,7 @@
 {
   "name": "docket",
   "displayName": "docket",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Lets your agents bring you what really needs you (results, decisions, things only you can do, things that broke) on one dashboard by project, and delivers your answers back to them.",
   "author": {
     "name": "Cole Wendrowski"

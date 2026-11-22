@@ -21,7 +21,7 @@ const unconfirmedAfter = 3 * time.Minute
 
 // Action is a decision the human made on an item in the queue.
 type Action struct {
-	Kind    string // approve | decline | choose | answer | done | dismiss | noise | snooze | stash | unstash | reopen | reclassify | undo
+	Kind    string // approve | decline | choose | answer | handoff | done | dismiss | noise | snooze | stash | unstash | reopen | reclassify | undo
 	Text    string // optional comment / free-form answer / the human's "not worth it" note
 	Option  int    // for choose: index into item.Options
 	Until   time.Time
@@ -76,7 +76,7 @@ func (s *Server) decide(id string, a Action) error {
 		// second tab) would reach the agent twice. Nor can it be snoozed: it
 		// would wake as open, asking for an answer it already has.
 		switch a.Kind {
-		case "approve", "decline", "choose", "answer":
+		case "approve", "decline", "choose", "answer", "handoff":
 			return errors.New("you've already answered this; the answer is on its way to the agent")
 		case "snooze":
 			return errors.New("its answer is on its way to the agent; dismiss it to take it off the list")
@@ -191,7 +191,15 @@ func (s *Server) decide(id string, a Action) error {
 		return errors.New("this item has no session to answer")
 	}
 	var answer string
+	logged := a.Kind
 	switch a.Kind {
+	case "handoff":
+		if !canHandOff(it) {
+			return errors.New("only a task or an issue an agent filed can be handed back to it")
+		}
+		// Logged as an approval: it is one (the human's go-ahead), and undo,
+		// delivery and the closing note already treat approvals as answers.
+		answer, logged = s.handOffText(it, a.Text), "approve"
 	case "approve":
 		answer = "Approved." + comment(a.Text)
 	case "decline":
@@ -209,10 +217,52 @@ func (s *Server) decide(id string, a Action) error {
 	default:
 		return fmt.Errorf("unknown action %q", a.Kind)
 	}
-	if err := s.st.SetAnswer(id, answer, a.Kind); err != nil {
+	if err := s.st.SetAnswer(id, answer, logged); err != nil {
 		return err
 	}
 	return s.queue(it, fmt.Sprintf("%s's answer to %q %s %s", s.cfg.Person, it.Title, store.AnswerMark, answer), "answer")
+}
+
+// handOffMark starts the answer a hand-off sends, so the docket can tell it
+// from a reply.
+const handOffMark = "Handed back to you:"
+
+// canHandOff reports an item the agent that filed it could be asked to do
+// itself: a task or an issue it filed from a session docket can reach. One
+// filed with a place or as physical needs the human there in person (the
+// agent said so), so it's never offered back.
+func canHandOff(it store.Item) bool {
+	return (it.Kind == "human_task" || it.Kind == "issue") && it.SessionID != "" && it.Source == ingest.SrcCLI &&
+		it.Place == "" && !it.Physical
+}
+
+// handOffText is what the agent hears when the human hands its item back:
+// their go-ahead (within what they typed with it, which comes first), the
+// limits of it, and how to close the item.
+func (s *Server) handOffText(it store.Item, note string) string {
+	p := s.cfg.Person
+	how, within := "", ""
+	if n := strings.Join(strings.Fields(note), " "); n != "" {
+		how, within = fmt.Sprintf(", as %s says here: “%s”", p, n), " within that"
+	}
+	return fmt.Sprintf("%s do it yourself%s. This is %s's go-ahead for every step it takes%s, including steps outside this repository "+
+		"(another machine, a service's config, a restart). If one step truly needs %s (a password or sudo, money, signing in, "+
+		"sending something as them, anything physical), do everything else and file just that step as a new item. "+
+		"Either way, close this one when you're through: docket done %s --why \"<what you did, and anything you filed for what's left>\".",
+		handOffMark, how, p, within, p, it.ID)
+}
+
+// handOffNote is the human's note in a hand-off's answer, if they typed one.
+func handOffNote(answer string) string {
+	_, rest, ok := strings.Cut(answer, " says here: “")
+	if !ok {
+		return ""
+	}
+	end := strings.LastIndex(rest, "”. This is ")
+	if end < 0 {
+		return ""
+	}
+	return rest[:end]
 }
 
 func comment(t string) string {

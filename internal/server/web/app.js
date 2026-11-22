@@ -228,7 +228,7 @@
   const grow = (t) => { t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 160) + "px"; };
 
   // ---- actions --------------------------------------------------------------------------------
-  const verb = { approve: "approve it", decline: "decline it", choose: "send that", answer: "send that", done: "mark it done",
+  const verb = { approve: "approve it", decline: "decline it", choose: "send that", answer: "send that", handoff: "hand it to the agent", done: "mark it done",
     dismiss: "dismiss it", noise: "close it", snooze: "snooze it", stash: "stash it", unstash: "take it off the Stash",
     reopen: "put it back", reclassify: "move it", undo: "undo that" };
   const clip = (s) => (s.length > 28 ? s.slice(0, 27) + "…" : s);
@@ -237,6 +237,7 @@
       case "answer": return `Sent “${clip(extra.text)}” to the agent`;
       case "choose": { const b = $(`.sheet [data-option="${extra.option}"] span`); return b ? `Sent “${clip(b.textContent)}” to the agent` : "Sent to the agent"; }
       case "approve": return "Approved";
+      case "handoff": return extra.text ? "Handed to the agent, with your note" : "Handed to the agent";
       case "decline": return "Declined";
       case "done": return "Marked done";
       case "dismiss": return "Dismissed";
@@ -252,7 +253,7 @@
   };
   // What leaves the list it's on (and slides out).
   const leaves = (action) => !["reclassify", "undo"].includes(action);
-  const answers = ["approve", "decline", "choose", "answer"];
+  const answers = ["approve", "decline", "choose", "answer", "handoff"];
 
   async function act(id, action, extra = {}) {
     if (!id || pending.has(id)) return false;
@@ -481,6 +482,12 @@
       const extra = {};
       if (el.dataset.option !== undefined) extra.option = el.dataset.option;
       if (el.dataset.act === "snooze") extra.until = e.shiftKey ? "hour" : "tomorrow";
+      // Words typed in the open reply box go along with an option, an
+      // approval or a hand-off, never silently dropped.
+      if (host && answers.includes(el.dataset.act)) {
+        const f = $("[data-reply]", host), words = f && !f.hidden ? $("textarea", f).value.trim() : "";
+        if (words) extra.text = words;
+      }
       return act(id, el.dataset.act, extra);
     }
     // A row opens its item; a modified click on its title opens a tab.
@@ -644,7 +651,7 @@
         if (b && !b.disabled) { e.preventDefault(); act(id, "snooze", { until: k === "S" ? "hour" : "tomorrow" }); }
         return;
       }
-      const map = { d: "done", x: "dismiss", t: "stash" };
+      const map = { d: "done", x: "dismiss", t: "stash", h: "handoff" };
       if (map[k] && press(`[data-act="${map[k]}"]`)) e.preventDefault();
       return;
     }
@@ -674,7 +681,7 @@
     if (k === "o" && r.dataset.session) return window.open(r.dataset.session, "_blank", "noopener");
     const qa = (s) => $(`.qa ${s}`, r);
     if (k === "w" && qa("[data-noise]")) { e.preventDefault(); return openNote(sel); }
-    const map = { d: "done", x: "dismiss" };
+    const map = { d: "done", x: "dismiss", h: "handoff" };
     if (map[k] && qa(`[data-act="${map[k]}"]`)) { e.preventDefault(); return act(sel, map[k]); }
     if (k === "t" && !r.hasAttribute("data-nostash") && (qa('[data-act="stash"]') || actionable(sel) || r.classList.contains("is-wait"))) { e.preventDefault(); return act(sel, "stash"); }
     if ((k === "s" || k === "S") && actionable(sel)) { e.preventDefault(); return act(sel, "snooze", { until: k === "S" ? "hour" : "tomorrow" }); }
