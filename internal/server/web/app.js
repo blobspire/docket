@@ -58,7 +58,7 @@
   // ---- toast ----------------------------------------------------------------------------
   const toastEl = $("#toast");
   let toastTimer, undoId = null, undoDecision = "", keepId = null;
-  const toast = (msg, { undo = null, keep = null, err = false, decision = "" } = {}) => {
+  const toast = (msg, { undo = null, keep = null, err = false, decision = "", ms = 0 } = {}) => {
     $("#toast-t").textContent = msg;
     undoId = undo; keepId = keep; undoDecision = undo ? decision : "";
     $("#toast-u").hidden = !undo;
@@ -68,7 +68,7 @@
     toastEl.hidden = false;
     toastEl.style.animation = "none"; void toastEl.offsetWidth; toastEl.style.animation = "";
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(hideToast, undo || keep || err ? 6500 : 3500);
+    toastTimer = setTimeout(hideToast, ms || (undo || keep || err ? 6500 : 3500));
   };
   const hideToast = () => { toastEl.hidden = true; undoId = keepId = null; };
   // Above the dock while an item is open, and above the "list changed"
@@ -83,7 +83,7 @@
   const showPill = (on) => { const p = $(".updated"); if (p && p.hidden === on) { p.hidden = !on; placeToast(); } };
   addEventListener("resize", placeToast);
   // A toast for the page about to load (an item's own page goes back to the list).
-  const carry = (msg, undo) => ss.set("docket.toast", JSON.stringify({ msg, undo, at: Date.now() }));
+  const carry = (msg, undo, ms = 0) => ss.set("docket.toast", JSON.stringify({ msg, undo, ms, at: Date.now() }));
 
   // ---- the item sheet ---------------------------------------------------------------------
   const listLabel = () => $("main[data-label]")?.dataset.label || "docket";
@@ -254,6 +254,10 @@
   // What leaves the list it's on (and slides out).
   const leaves = (action) => !["reclassify", "undo"].includes(action);
   const answers = ["approve", "decline", "choose", "answer", "handoff"];
+  // How long an answer's toast offers Undo. The server holds the answer back a
+  // second longer (undoHold in deliver.go), so an Undo from the toast always
+  // withdraws it before the agent sees it; after that it's gone out.
+  const answerUndoMs = 5000;
 
   async function act(id, action, extra = {}) {
     if (!id || pending.has(id)) return false;
@@ -299,17 +303,18 @@
     // After a done or an answer, the toast offers to keep it on the Stash.
     const noStash = !!(rw && rw.querySelector("[data-nostash]")) || !!(sh && sh.hasAttribute("data-nostash"));
     const keep = (action === "done" || answers.includes(action)) && !noStash ? id : null;
+    const ms = undo && answers.includes(action) ? answerUndoMs : 0;
     if (solo) {
       // From an item's own page: back to the list it came from (fresh), or
       // stay for an undo, a move or a reopen, which keep it here.
-      carry(msg, undo ? `${undo} ${decision}` : null);
+      carry(msg, undo ? `${undo} ${decision}` : null, ms);
       if (["undo", "reclassify", "reopen", "stash", "unstash"].includes(action)) { location.reload(); return true; }
       let to = "/";
       try { const r = new URL(document.referrer); if (r.origin === location.origin && !r.pathname.startsWith("/item/")) to = r.pathname + r.search; } catch (_) {}
       location.href = to;
       return true;
     }
-    toast(msg, { undo, keep, decision });
+    toast(msg, { undo, keep, decision, ms });
     if (inSheet && openId === id) {
       if (!leaves(action)) openSheet(id, "replace"); // show it as it is now
       else {
@@ -771,6 +776,12 @@
   try {
     const c = JSON.parse(ss.get("docket.toast") || "null");
     ss.set("docket.toast", "");
-    if (c && Date.now() - c.at < 5000) { const [u, d] = (c.undo || "").split(" "); toast(c.msg, { undo: u || null, decision: d || "" }); }
+    if (c && Date.now() - c.at < 5000) {
+      const [u, d] = (c.undo || "").split(" ");
+      // An answer's Undo window began on the last page: offer only what's left of it.
+      const left = c.ms ? c.at + c.ms - Date.now() : 0;
+      if (u && (!c.ms || left > 500)) toast(c.msg, { undo: u, decision: d || "", ms: c.ms ? left : 0 });
+      else toast(c.msg);
+    }
   } catch (_) {}
 })();

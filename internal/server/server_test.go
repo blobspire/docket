@@ -52,6 +52,7 @@ mode = "local"
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
+	s.hold = 0 // decisions go out at once; undo_hold_test.go covers the hold
 	m, _ := cfg.Machine("box")
 	return &env{t: t, s: s, ctx: context.Background(), m: m}
 }

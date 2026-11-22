@@ -358,6 +358,7 @@ var added = []struct{ table, column, ddl string }{
 	{"deliveries", "live_only", "INTEGER NOT NULL DEFAULT 0"},
 	{"deliveries", "quiet", "INTEGER NOT NULL DEFAULT 0"},
 	{"deliveries", "kind", "TEXT NOT NULL DEFAULT ''"},
+	{"deliveries", "hold_until", "INTEGER NOT NULL DEFAULT 0"},
 	{"item_aliases", "machine", "TEXT NOT NULL DEFAULT ''"},
 	{"item_aliases", "created_at", "INTEGER NOT NULL DEFAULT 0"},
 	{"item_aliases", "session_id", "TEXT NOT NULL DEFAULT ''"},
@@ -1286,21 +1287,24 @@ type Delivery struct {
 	// Kind is what it carries: answer (the human's), done, noise or note.
 	// Older rows have none; their text tells.
 	Kind string
+	// HoldUntil (unix milliseconds) keeps a pending delivery back until then,
+	// so the human can still undo the decision it carries. 0: no hold.
+	HoldUntil int64
 }
 
-const deliveryCols = `id, item_id, machine, session_id, text, nonce, method, status, error, created_at, COALESCE(sent_at,0), COALESCE(confirmed_at,0), attempts, live_only, quiet, kind`
+const deliveryCols = `id, item_id, machine, session_id, text, nonce, method, status, error, created_at, COALESCE(sent_at,0), COALESCE(confirmed_at,0), attempts, live_only, quiet, kind, hold_until`
 
 func scanDelivery(sc interface{ Scan(...any) error }) (Delivery, error) {
 	var d Delivery
 	var live, quiet int
-	err := sc.Scan(&d.ID, &d.ItemID, &d.Machine, &d.SessionID, &d.Text, &d.Nonce, &d.Method, &d.Status, &d.Error, &d.CreatedAt, &d.SentAt, &d.ConfirmedAt, &d.Attempts, &live, &quiet, &d.Kind)
+	err := sc.Scan(&d.ID, &d.ItemID, &d.Machine, &d.SessionID, &d.Text, &d.Nonce, &d.Method, &d.Status, &d.Error, &d.CreatedAt, &d.SentAt, &d.ConfirmedAt, &d.Attempts, &live, &quiet, &d.Kind, &d.HoldUntil)
 	d.LiveOnly, d.Quiet = live != 0, quiet != 0
 	return d, err
 }
 
 func (s *Store) AddDelivery(d Delivery) error {
-	_, err := s.DB.Exec(`INSERT INTO deliveries(id, item_id, machine, session_id, text, nonce, status, created_at, live_only, quiet, kind) VALUES (?,?,?,?,?,?,'pending',?,?,?,?)`,
-		d.ID, d.ItemID, d.Machine, d.SessionID, d.Text, d.Nonce, now(), boolInt(d.LiveOnly), boolInt(d.Quiet), d.Kind)
+	_, err := s.DB.Exec(`INSERT INTO deliveries(id, item_id, machine, session_id, text, nonce, status, created_at, live_only, quiet, kind, hold_until) VALUES (?,?,?,?,?,?,'pending',?,?,?,?,?)`,
+		d.ID, d.ItemID, d.Machine, d.SessionID, d.Text, d.Nonce, now(), boolInt(d.LiveOnly), boolInt(d.Quiet), d.Kind, d.HoldUntil)
 	return err
 }
 
@@ -1312,7 +1316,17 @@ func (s *Store) DeliveryDropped(id, why string) error {
 
 // Deliveries lists deliveries with the given status, oldest first.
 func (s *Store) Deliveries(status string) ([]Delivery, error) {
-	rows, err := s.DB.Query(`SELECT `+deliveryCols+` FROM deliveries WHERE status=? ORDER BY created_at`, status)
+	return s.deliveries(`WHERE status=? ORDER BY created_at`, status)
+}
+
+// DueDeliveries lists the pending deliveries that may go out now, oldest
+// first: none still held for an undo.
+func (s *Store) DueDeliveries() ([]Delivery, error) {
+	return s.deliveries(`WHERE status='pending' AND hold_until<=? ORDER BY created_at`, time.Now().UnixMilli())
+}
+
+func (s *Store) deliveries(where string, args ...any) ([]Delivery, error) {
+	rows, err := s.DB.Query(`SELECT `+deliveryCols+` FROM deliveries `+where, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1329,20 +1343,7 @@ func (s *Store) Deliveries(status string) ([]Delivery, error) {
 }
 
 func (s *Store) ItemDeliveries(itemID string) ([]Delivery, error) {
-	rows, err := s.DB.Query(`SELECT `+deliveryCols+` FROM deliveries WHERE item_id=? ORDER BY created_at`, itemID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Delivery
-	for rows.Next() {
-		d, err := scanDelivery(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, d)
-	}
-	return out, rows.Err()
+	return s.deliveries(`WHERE item_id=? ORDER BY created_at`, itemID)
 }
 
 // DeliverySent records a send attempt by method.

@@ -323,7 +323,7 @@ func (s *Server) Receive(machine string, r io.Reader, sessionsJSON []byte, have 
 		s.applySessions(machine, sessionsJSON)
 	}
 	reply := SyncReply{Cursor: tr.Cursor}
-	pending, err := s.st.Deliveries("pending")
+	pending, err := s.st.DueDeliveries() // one still held for an undo waits for the next sync
 	if err != nil {
 		return reply, err
 	}

@@ -19,6 +19,14 @@ import (
 // another way.
 const unconfirmedAfter = 3 * time.Minute
 
+// undoHold is how long a delivery carrying the human's decision (an answer,
+// a hand-off, a "marked done", a "not worth my time") waits before it goes
+// out. The queue shows it as on its way at once, but an Undo in that time
+// withdraws it before the agent ever sees it: a misclick costs nothing. The
+// web UI offers Undo on an answer for a second less (answerUndoMs in app.js),
+// so an Undo it shows always reaches the server in time.
+const undoHold = 6 * time.Second
+
 // Action is a decision the human made on an item in the queue.
 type Action struct {
 	Kind    string // approve | decline | choose | answer | handoff | done | dismiss | noise | snooze | stash | unstash | reopen | reclassify | undo
@@ -395,12 +403,8 @@ func (s *Server) notifyQuietly(it store.Item, msg, kind string) error {
 	if a := s.st.LatestAlias(it.ID, it.SessionID); a != "" {
 		msg = "(this is the item you filed as " + a + ") " + msg
 	}
-	if err := s.st.AddDelivery(store.Delivery{ID: ulid.New(time.Now()), ItemID: it.ID, Machine: it.Machine, SessionID: it.SessionID, Nonce: nonce,
-		Text: fmt.Sprintf("[docket %s #%s] %s", it.ID, nonce, msg), LiveOnly: true, Quiet: true, Kind: kind}); err != nil {
-		return err
-	}
-	s.kickDeliver()
-	return nil
+	return s.add(store.Delivery{ID: ulid.New(time.Now()), ItemID: it.ID, Machine: it.Machine, SessionID: it.SessionID, Nonce: nonce,
+		Text: fmt.Sprintf("[docket %s #%s] %s", it.ID, nonce, msg), LiveOnly: true, Quiet: true, Kind: kind})
 }
 
 // queue creates a delivery of text to the item's session and kicks the deliverer.
@@ -410,10 +414,26 @@ func (s *Server) queue(it store.Item, text, kind string) error {
 	if a := s.st.LatestAlias(it.ID, it.SessionID); a != "" {
 		text = "(this is the item you filed as " + a + ") " + text
 	}
-	d := store.Delivery{ID: ulid.New(time.Now()), ItemID: it.ID, Machine: it.Machine, SessionID: it.SessionID, Nonce: nonce,
-		Text: fmt.Sprintf("[docket %s #%s] %s", it.ID, nonce, text), Kind: kind}
+	return s.add(store.Delivery{ID: ulid.New(time.Now()), ItemID: it.ID, Machine: it.Machine, SessionID: it.SessionID, Nonce: nonce,
+		Text: fmt.Sprintf("[docket %s #%s] %s", it.ID, nonce, text), Kind: kind})
+}
+
+// add stores a delivery and kicks the deliverer. One carrying a decision Undo
+// can take back (Store.UndoIf withdraws these kinds while they're pending) is
+// held for s.hold first, and the deliverer is kicked again when that ends.
+func (s *Server) add(d store.Delivery) error {
+	switch d.Kind {
+	case "answer", "done", "noise":
+		if s.hold > 0 {
+			d.HoldUntil = time.Now().Add(s.hold).UnixMilli()
+		}
+	}
 	if err := s.st.AddDelivery(d); err != nil {
 		return err
+	}
+	if d.HoldUntil > 0 {
+		time.AfterFunc(time.Until(time.UnixMilli(d.HoldUntil)), s.kickDeliver)
+		return nil
 	}
 	s.kickDeliver()
 	return nil
@@ -429,9 +449,10 @@ func randomNonce() string {
 	return string(b)
 }
 
-// deliverAll sends pending deliveries and retries unconfirmed ones.
+// deliverAll sends pending deliveries (once any hold for an undo is over) and
+// retries unconfirmed ones.
 func (s *Server) deliverAll(ctx context.Context) {
-	pending, err := s.st.Deliveries("pending")
+	pending, err := s.st.DueDeliveries()
 	if err != nil {
 		s.log.Printf("deliver: %v", err)
 		return
