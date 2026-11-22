@@ -147,7 +147,7 @@ func (v itemView) Answered() (verb, what string) {
 	case strings.HasPrefix(a, "Declined: "):
 		return "You declined it", ""
 	case strings.HasPrefix(a, handOffMark):
-		return "You handed it back", ""
+		return "You handed it back", clip(handOffNote(a), 80)
 	}
 	return "You replied", clip(a, 80)
 }

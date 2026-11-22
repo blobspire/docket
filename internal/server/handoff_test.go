@@ -91,6 +91,7 @@ func TestHandOffRefusals(t *testing.T) {
 		{ID: "dk-aaaaaaa4", Kind: "blocker", Title: "Stuck on a dialog", Machine: "box", SessionID: "s", Source: "notification"}, // docket filed it
 		{ID: "dk-aaaaaaa5", Kind: "rule", Title: "Don't file merged PRs", Source: "watchdog"},
 		{ID: "dk-aaaaaaa6", Kind: "human_task", Title: "Plug in the drive", Machine: "box", SessionID: "s", Source: "cli", Place: "home"}, // in person
+		{ID: "dk-aaaaaaa7", Kind: "human_task", Title: "Reseat the GPU", Machine: "box", SessionID: "s", Source: "cli", Physical: true},   // filed --physical
 	}
 	for _, it := range cases {
 		e.s.st.UpsertItem(it)
@@ -144,6 +145,7 @@ func TestHandOffOnThePage(t *testing.T) {
 	e.s.st.UpsertItem(store.Item{ID: "dk-ccccccc1", Kind: "human_task", Title: "Edit the server config", Machine: "box", SessionID: "s", Source: "cli"})
 	e.s.st.UpsertItem(store.Item{ID: "dk-ccccccc2", Kind: "ask", Title: "Ship it?", Machine: "box", SessionID: "s", Source: "cli", Options: []string{"yes", "no"}})
 	e.s.st.UpsertItem(store.Item{ID: "dk-ccccccc3", Kind: "human_task", Title: "Plug in the drive", Machine: "box", Source: "cli"})
+	e.s.st.UpsertItem(store.Item{ID: "dk-ccccccc4", Kind: "human_task", Title: "Pick a cert and install it", Machine: "box", SessionID: "s", Source: "cli", Options: []string{"staging", "prod"}})
 	h := e.s.Handler()
 	get := func(p string) string {
 		rec := httptest.NewRecorder()
@@ -162,8 +164,13 @@ func TestHandOffOnThePage(t *testing.T) {
 			t.Fatalf("%s offers the hand-off", id)
 		}
 	}
-	if list := get("/"); strings.Count(list, btn) != 1 {
-		t.Fatalf("the list has %d hand-off buttons, want 1 (the task's row)", strings.Count(list, btn))
+	// A task with options keeps them, and offers the hand-off beside them,
+	// as its row does.
+	if page := get("/item/dk-ccccccc4"); !strings.Contains(page, btn) || !strings.Contains(page, `data-act="choose"`) {
+		t.Fatal("a task with options should offer its options and the hand-off")
+	}
+	if list := get("/"); strings.Count(list, btn) != 2 {
+		t.Fatalf("the list has %d hand-off buttons, want 2 (the two tasks' rows)", strings.Count(list, btn))
 	}
 
 	req := httptest.NewRequest("POST", "/item/dk-ccccccc1/act", strings.NewReader(url.Values{"action": {"handoff"}}.Encode()))
@@ -177,5 +184,27 @@ func TestHandOffOnThePage(t *testing.T) {
 	page := get("/item/dk-ccccccc1")
 	if strings.Contains(page, btn) || !strings.Contains(page, "You handed it back") {
 		t.Fatal("after the hand-off the sheet should show it waiting on the agent")
+	}
+}
+
+// Words typed with the hand-off reach the agent ahead of the go-ahead they
+// qualify, and the docket shows them.
+func TestHandOffCarriesTheNote(t *testing.T) {
+	e := newEnv(t, "")
+	e.s.st.UpsertItem(store.Item{ID: "dk-eeeeeee1", Kind: "human_task", Title: "Renew the TLS cert", Machine: "box", SessionID: "s", Source: "cli"})
+	if err := e.s.Decide("dk-eeeeeee1", Action{Kind: "handoff", Text: "  use the staging cert,\n not prod "}); err != nil {
+		t.Fatal(err)
+	}
+	ds := mustDeliveries(t, e, "dk-eeeeeee1")
+	if len(ds) != 1 {
+		t.Fatalf("deliveries = %+v", ds)
+	}
+	want := `Handed back to you: do it yourself, as Cole says here: “use the staging cert, not prod”. This is Cole's go-ahead for every step it takes within that, including`
+	if !strings.Contains(ds[0].Text, want) {
+		t.Fatalf("delivered %q\nwant it to contain %q", ds[0].Text, want)
+	}
+	it, _, _ := e.s.st.GetItem("dk-eeeeeee1")
+	if verb, what := (itemView{Ranked: Ranked{Item: it}}).Answered(); verb != "You handed it back" || what != "use the staging cert, not prod" {
+		t.Fatalf("Answered() = %q, %q", verb, what)
 	}
 }

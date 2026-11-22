@@ -229,21 +229,40 @@ const handOffMark = "Handed back to you:"
 
 // canHandOff reports an item the agent that filed it could be asked to do
 // itself: a task or an issue it filed from a session docket can reach. One
-// filed with a place needs the human there in person (the agent said so),
-// so it's never offered back.
+// filed with a place or as physical needs the human there in person (the
+// agent said so), so it's never offered back.
 func canHandOff(it store.Item) bool {
-	return (it.Kind == "human_task" || it.Kind == "issue") && it.SessionID != "" && it.Source == ingest.SrcCLI && it.Place == ""
+	return (it.Kind == "human_task" || it.Kind == "issue") && it.SessionID != "" && it.Source == ingest.SrcCLI &&
+		it.Place == "" && !it.Physical
 }
 
 // handOffText is what the agent hears when the human hands its item back:
-// their go-ahead, the limits of it, and how to close the item.
+// their go-ahead (within what they typed with it, which comes first), the
+// limits of it, and how to close the item.
 func (s *Server) handOffText(it store.Item, note string) string {
 	p := s.cfg.Person
-	return fmt.Sprintf("%s do it yourself. This is %s's go-ahead for every step it takes, including steps outside this repository "+
+	how, within := "", ""
+	if n := strings.Join(strings.Fields(note), " "); n != "" {
+		how, within = fmt.Sprintf(", as %s says here: “%s”", p, n), " within that"
+	}
+	return fmt.Sprintf("%s do it yourself%s. This is %s's go-ahead for every step it takes%s, including steps outside this repository "+
 		"(another machine, a service's config, a restart). If one step truly needs %s (a password or sudo, money, signing in, "+
 		"sending something as them, anything physical), do everything else, then file just that step and say what's left. "+
-		"When it's finished, close the item: docket done %s --why \"<what you did>\".%s",
-		handOffMark, p, p, it.ID, comment(note))
+		"When it's finished, close the item: docket done %s --why \"<what you did>\".",
+		handOffMark, how, p, within, p, it.ID)
+}
+
+// handOffNote is the human's note in a hand-off's answer, if they typed one.
+func handOffNote(answer string) string {
+	_, rest, ok := strings.Cut(answer, " says here: “")
+	if !ok {
+		return ""
+	}
+	end := strings.LastIndex(rest, "”. This is ")
+	if end < 0 {
+		return ""
+	}
+	return rest[:end]
 }
 
 func comment(t string) string {

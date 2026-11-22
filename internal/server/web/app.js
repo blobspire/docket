@@ -237,7 +237,7 @@
       case "answer": return `Sent “${clip(extra.text)}” to the agent`;
       case "choose": { const b = $(`.sheet [data-option="${extra.option}"] span`); return b ? `Sent “${clip(b.textContent)}” to the agent` : "Sent to the agent"; }
       case "approve": return "Approved";
-      case "handoff": return "Handed to the agent";
+      case "handoff": return extra.text ? "Handed to the agent, with your note" : "Handed to the agent";
       case "decline": return "Declined";
       case "done": return "Marked done";
       case "dismiss": return "Dismissed";
@@ -482,6 +482,12 @@
       const extra = {};
       if (el.dataset.option !== undefined) extra.option = el.dataset.option;
       if (el.dataset.act === "snooze") extra.until = e.shiftKey ? "hour" : "tomorrow";
+      // Words typed in the open reply box go along with an option, an
+      // approval or a hand-off, never silently dropped.
+      if (host && answers.includes(el.dataset.act)) {
+        const f = $("[data-reply]", host), words = f && !f.hidden ? $("textarea", f).value.trim() : "";
+        if (words) extra.text = words;
+      }
       return act(id, el.dataset.act, extra);
     }
     // A row opens its item; a modified click on its title opens a tab.

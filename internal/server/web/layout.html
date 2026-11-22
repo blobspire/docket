@@ -311,6 +311,7 @@
       <div class="dk-a">
         {{if .Options}}{{$rec := .Recommend}}{{range $i, $o := .Options}}<button type="button" class="ob{{if recommended $o $rec}} rec{{end}}" data-act="choose" data-option="{{$i}}" data-key="{{add $i 1}}" title="Send “{{$o}}” to the agent">{{if lt $i 9}}<kbd>{{add $i 1}}</kbd>{{end}}<span>{{$o}}</span>{{if recommended $o $rec}}<span class="rt">Recommended</span>{{end}}</button>{{end}}
         {{else}}<button type="button" class="ob rec" data-act="approve" data-key="1" title="Approve it">{{template "i" "check"}}<span>Approve</span><kbd>1</kbd></button><button type="button" class="ob" data-act="decline" data-key="2" title="Decline it">{{template "i" "x"}}<span>Decline</span><kbd>2</kbd></button>{{end}}
+        {{if .CanHandOff}}<button type="button" class="ob" data-act="handoff" title="Send it back to the agent with your go-ahead to do it itself (h)">{{template "i" "bolt"}}<span>Have the agent do it</span><kbd>h</kbd></button>{{end}}
         <button type="button" class="ob ghost" data-reply-open title="Answer in your own words">{{template "i" "pen"}}<span>Reply</span><kbd>r</kbd></button>
       </div>
     {{else if .CanHandOff}}

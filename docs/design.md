@@ -74,7 +74,7 @@ The first version tried to catch every ask: a regex over agents' messages, a tra
 Agents sometimes file as a task something they could do themselves with the human's go-ahead: a config change outside their repository, a step auto mode refused, commands written up for the human to run. Two things keep that from costing the human a terminal:
 
 - **The skill** tells agents that anything they could do once the human says yes is an `ask` with a one-tap option ("Do it"), not a `task`. Tasks are for what only a person can do.
-- **"Have the agent do it"** on any task or issue an agent filed, in the dock and on its row (`h`). Not on one filed with a place: the agent already said it needs the human there. It is an answer like any other: it goes to the filing session by the paths below (resuming it if it ended), logged as an approval, and it can be undone until it is delivered. The message is the go-ahead, including steps outside the agent's repository; the agent closes the item when it's done and files only a step that truly needs the human.
+- **"Have the agent do it"** on any task or issue an agent filed, in the dock and on its row (`h`). Not on one filed with a place (or `--physical`): the agent already said it needs the human there. Words typed in the reply box go with it (as with an option or an approval), ahead of the go-ahead they qualify. It is an answer like any other: it goes to the filing session by the paths below (resuming it if it ended), logged as an approval, and it can be undone until it is delivered. The message is the go-ahead, including steps outside the agent's repository; the agent closes the item when it's done and files only a step that truly needs the human.
 
 ## Delivery
 
