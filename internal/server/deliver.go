@@ -23,8 +23,9 @@ const unconfirmedAfter = 3 * time.Minute
 // a hand-off, a "marked done", a "not worth my time") waits before it goes
 // out. The queue shows it as on its way at once, but an Undo in that time
 // withdraws it before the agent ever sees it: a misclick costs nothing. The
-// web UI offers Undo on an answer for a second less (answerUndoMs in app.js),
-// so an Undo it shows always reaches the server in time.
+// web UI's toast offers Undo on these for a second less (heldUndoMs in
+// app.js), so an Undo from it reaches the server in time unless the round
+// trip takes over a second.
 const undoHold = 6 * time.Second
 
 // Action is a decision the human made on an item in the queue.

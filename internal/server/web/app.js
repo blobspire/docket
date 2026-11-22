@@ -254,10 +254,14 @@
   // What leaves the list it's on (and slides out).
   const leaves = (action) => !["reclassify", "undo"].includes(action);
   const answers = ["approve", "decline", "choose", "answer", "handoff"];
-  // How long an answer's toast offers Undo. The server holds the answer back a
-  // second longer (undoHold in deliver.go), so an Undo from the toast always
-  // withdraws it before the agent sees it; after that it's gone out.
-  const answerUndoMs = 5000;
+  // The actions whose message to the agent the server holds back for a moment
+  // (undoHold in deliver.go): an answer, a "marked done" (a done, or a stash
+  // that closes the item) and a "not worth my time" note. Their toast offers
+  // Undo for a second less than the hold, so an Undo from it reaches the
+  // server while the message is still held, unless the round trip takes over
+  // a second; after the hold it has gone out.
+  const held = [...answers, "done", "noise", "stash"];
+  const heldUndoMs = 5000;
 
   async function act(id, action, extra = {}) {
     if (!id || pending.has(id)) return false;
@@ -303,7 +307,7 @@
     // After a done or an answer, the toast offers to keep it on the Stash.
     const noStash = !!(rw && rw.querySelector("[data-nostash]")) || !!(sh && sh.hasAttribute("data-nostash"));
     const keep = (action === "done" || answers.includes(action)) && !noStash ? id : null;
-    const ms = undo && answers.includes(action) ? answerUndoMs : 0;
+    const ms = undo && held.includes(action) ? heldUndoMs : 0;
     if (solo) {
       // From an item's own page: back to the list it came from (fresh), or
       // stay for an undo, a move or a reopen, which keep it here.
@@ -778,7 +782,7 @@
     ss.set("docket.toast", "");
     if (c && Date.now() - c.at < 5000) {
       const [u, d] = (c.undo || "").split(" ");
-      // An answer's Undo window began on the last page: offer only what's left of it.
+      // A held action's Undo window began on the last page: offer only what's left of it.
       const left = c.ms ? c.at + c.ms - Date.now() : 0;
       if (u && (!c.ms || left > 500)) toast(c.msg, { undo: u, decision: d || "", ms: c.ms ? left : 0 });
       else toast(c.msg);

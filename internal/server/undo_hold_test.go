@@ -187,9 +187,27 @@ func TestUndoHoldOutlastsTheToast(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := regexp.MustCompile(`const answerUndoMs = (\d+);`).FindSubmatch(js)
+	m := regexp.MustCompile(`const heldUndoMs = (\d+);`).FindSubmatch(js)
 	if m == nil {
-		t.Fatal("app.js has no answerUndoMs")
+		t.Fatal("app.js has no heldUndoMs")
+	}
+	// Every action whose delivery is held gets the short toast: if one kept the
+	// usual 6.5 s, an Undo late in it could land while that message is on its
+	// way, reopening the item while the agent still hears it (a "done" with no
+	// "reopened" after it). These are the actions Decide turns into an answer,
+	// "done" or "noise" delivery.
+	h := regexp.MustCompile(`const answers = \[([^\]]*)\];\s*(?://[^\n]*\n\s*)*const held = \[\.\.\.answers, ([^\]]*)\];`).FindSubmatch(js)
+	if h == nil {
+		t.Fatal("app.js has no held list")
+	}
+	short := map[string]bool{}
+	for _, q := range regexp.MustCompile(`"([a-z]+)"`).FindAllSubmatch(append(h[1], h[2]...), -1) {
+		short[string(q[1])] = true
+	}
+	for _, a := range []string{"approve", "decline", "choose", "answer", "handoff", "done", "noise", "stash"} {
+		if !short[a] {
+			t.Errorf("%s's toast offers Undo longer than the hold", a)
+		}
 	}
 	ms, _ := strconv.Atoi(string(m[1]))
 	if toastFor := time.Duration(ms) * time.Millisecond; ms < 3000 || undoHold-toastFor < 500*time.Millisecond {
