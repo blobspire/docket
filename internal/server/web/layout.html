@@ -65,6 +65,7 @@
       <dt>esc</dt><dd>back to the list</dd>
       <dt>1–9</dt><dd>pick one of the agent's options</dd>
       <dt>r</dt><dd>reply in your own words</dd>
+      <dt>h</dt><dd>have the agent do it (a task or issue it filed)</dd>
       <dt>d</dt><dd>done</dd>
       <dt>w</dt><dd>not worth my time (with a note)</dd>
       <dt>x</dt><dd>dismiss</dd>
@@ -139,6 +140,7 @@
   <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14.5L4.5 10 9 5.5"/><path d="M4.5 10H15a4.5 4.5 0 0 1 0 9h-3"/></symbol>
   <symbol id="i-pen" viewBox="0 0 24 24"><path d="M4.5 19.5l1-4.2L15.8 5a2 2 0 0 1 2.8 0l.4.4a2 2 0 0 1 0 2.8L8.7 18.5z"/><path d="M13.5 7.3l3.2 3.2"/></symbol>
   <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3.5" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v2.5"/></symbol>
+  <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 3L5.5 13.5H12L11 21l7.5-10.5H12z"/></symbol>
   <symbol id="i-bulb" viewBox="0 0 24 24"><path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.6 10.8c.7.6 1.1 1.4 1.1 2.2v.5h5V16c0-.8.4-1.6 1.1-2.2A6 6 0 0 0 12 3z"/></symbol>
   <symbol id="i-key" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M6.5 10h.01M10 10h.01M13.5 10h.01M17 10h.01M7.5 14h9"/></symbol>
 </svg>{{end}}
@@ -194,6 +196,7 @@
       {{else if $w}}
         <button type="button" class="qb" data-act="dismiss" title="Take it off your docket; the answer still goes to the agent">{{template "i" "x"}}<span>Dismiss</span></button>
       {{else if not .Kept}}
+        {{if .CanHandOff}}<button type="button" class="qb" data-act="handoff" title="Have the agent do it: it gets your go-ahead (h)">{{template "i" "bolt"}}<span>Hand to agent</span></button>{{end}}
         <button type="button" class="qb q-done" data-act="done" title="Done">{{template "i" "check"}}<span>Done</span></button>
         {{if and (ne .Kind "rule") (ne .Status "answered") (ne .Status "delivered")}}<button type="button" class="qb q-noise" data-noise title="Not worth my time">{{template "i" "thumb"}}<span>Not worth it</span></button>{{end}}
         <button type="button" class="qb" data-act="dismiss" title="Dismiss">{{template "i" "x"}}<span>Dismiss</span></button>
@@ -309,6 +312,13 @@
         {{if .Options}}{{$rec := .Recommend}}{{range $i, $o := .Options}}<button type="button" class="ob{{if recommended $o $rec}} rec{{end}}" data-act="choose" data-option="{{$i}}" data-key="{{add $i 1}}" title="Send “{{$o}}” to the agent">{{if lt $i 9}}<kbd>{{add $i 1}}</kbd>{{end}}<span>{{$o}}</span>{{if recommended $o $rec}}<span class="rt">Recommended</span>{{end}}</button>{{end}}
         {{else}}<button type="button" class="ob rec" data-act="approve" data-key="1" title="Approve it">{{template "i" "check"}}<span>Approve</span><kbd>1</kbd></button><button type="button" class="ob" data-act="decline" data-key="2" title="Decline it">{{template "i" "x"}}<span>Decline</span><kbd>2</kbd></button>{{end}}
         <button type="button" class="ob ghost" data-reply-open title="Answer in your own words">{{template "i" "pen"}}<span>Reply</span><kbd>r</kbd></button>
+      </div>
+    {{else if .CanHandOff}}
+      {{/* A task or issue its agent could do itself, given the go-ahead. */}}
+      {{template "reply" (reply .ID (replyHint .Kind) true)}}
+      <div class="dk-a">
+        <button type="button" class="ob" data-act="handoff" data-key="1" title="Send it back to the agent with your go-ahead to do it itself (h)">{{template "i" "bolt"}}<span>Have the agent do it</span><kbd>1</kbd></button>
+        <button type="button" class="ob ghost" data-reply-open title="Reply to the agent">{{template "i" "pen"}}<span>Reply</span><kbd>r</kbd></button>
       </div>
     {{else}}
       {{template "reply" (reply .ID (replyHint .Kind) false)}}
