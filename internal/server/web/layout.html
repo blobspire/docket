@@ -179,7 +179,7 @@
           {{if .Paused}}<span class="paused" title="The agent is waiting on your answer">agent paused</span>{{end}}
           {{if eq .Status "snoozed"}}<span>snoozed until {{clock .SnoozedUntil}}</span>{{end}}
           {{if .Closed}}<span>{{.Status}}</span>{{end}}
-          <span title="Filed {{clock .CreatedAt}}">{{ago .CreatedAt}}</span>
+          <span title="Filed {{clock .CreatedAt}}">filed {{ago .CreatedAt}}</span>{{with .UpdatedAgo}}<span title="Last changed {{clock $.UpdatedAt}}">updated {{.}}</span>{{end}}
         {{end}}
         {{if and .Docs (not .Images)}}<span title="{{.Docs}} attachment{{if gt .Docs 1}}s{{end}}">{{template "i" "clip"}}{{.Docs}}</span>{{end}}
       </div>
@@ -234,7 +234,7 @@
       {{with $it.Place}}<span>{{template "i" "pin"}}{{.}}</span>{{end}}
       {{if not $it.Kept}}{{with $it.Due}}<span class="due-{{dueState .}}">due {{dueLabel .}}</span>{{end}}{{if $it.ExpiresAt}}<span>expires in {{until $it.ExpiresAt}}</span>{{end}}{{end}}
       {{if $it.Paused}}<span class="paused">agent paused</span>{{end}}
-      <span title="Filed {{clock $it.CreatedAt}}">{{ago $it.CreatedAt}}</span>
+      <span title="Filed {{clock $it.CreatedAt}}">filed {{ago $it.CreatedAt}}</span>{{with $it.UpdatedAgo}}<span title="Last changed {{clock $it.UpdatedAt}}">updated {{.}}</span>{{end}}
     </div>
     <h2 class="sh-t">{{$it.Title}}</h2>
     {{if and $it.Recommend (not $it.Options)}}<p class="recline"><b>Recommends:</b> {{$it.Recommend}}</p>{{end}}
