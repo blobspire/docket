@@ -627,7 +627,7 @@ func (s *Store) NoteMessages(account string, msgs []EmailMessage, inbound func(f
 // ThreadsToTriage lists threads with a message to you not yet triaged,
 // oldest first.
 func (s *Store) ThreadsToTriage(limit int) ([]EmailThread, error) {
-	return s.threads(`needs_triage=1 AND inbound_at>replied_at ORDER BY inbound_at LIMIT ?`, limit)
+	return s.threads(`needs_triage=1 AND inbound_at>replied_at ORDER BY inbound_at, id LIMIT ?`, limit)
 }
 
 // Verdict is triage's call on one thread.

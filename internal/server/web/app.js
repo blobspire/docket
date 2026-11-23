@@ -57,11 +57,11 @@
 
   // ---- toast ----------------------------------------------------------------------------
   const toastEl = $("#toast");
-  let toastTimer, undoId = null, undoDecision = "", keepId = null;
-  const toast = (msg, { undo = null, keep = null, err = false, decision = "", ms = 0 } = {}) => {
+  let toastTimer, undoId = null, undoDecision = "", keepId = null, undoFn = null;
+  const toast = (msg, { undo = null, keep = null, err = false, decision = "", ms = 0, onUndo = null } = {}) => {
     $("#toast-t").textContent = msg;
-    undoId = undo; keepId = keep; undoDecision = undo ? decision : "";
-    $("#toast-u").hidden = !undo;
+    undoId = undo; keepId = keep; undoDecision = undo ? decision : ""; undoFn = onUndo;
+    $("#toast-u").hidden = !(undo || onUndo);
     $("#toast-k").hidden = !keep;
     toastEl.classList.toggle("err", err);
     placeToast();
@@ -70,7 +70,7 @@
     clearTimeout(toastTimer);
     toastTimer = setTimeout(hideToast, ms || (undo || keep || err ? 6500 : 3500));
   };
-  const hideToast = () => { toastEl.hidden = true; undoId = keepId = null; };
+  const hideToast = () => { toastEl.hidden = true; undoId = keepId = null; undoFn = null; };
   // Above the dock while an item is open, and above the "list changed"
   // pill, so it never covers a button.
   const placeToast = () => {
@@ -333,6 +333,7 @@
     return true;
   }
   const undoLast = () => {
+    if (undoFn) { const f = undoFn; hideToast(); return f(); }
     // Undo exactly the decision it reported (another tab may have acted since).
     const [id, decision] = undoId ? [undoId, undoDecision] : (ss.get("docket.last") || "").split(" ");
     hideToast();
@@ -831,6 +832,106 @@
     b.disabled = false;
     refresh(true);
   }, true);
+
+  // An email reply's dock and draft. Every button posts to /email/{thread}/…
+  // and then reloads the open item, so it shows what the server now holds.
+  const emailPost = async (thread, action, fields = {}) => {
+    const body = new URLSearchParams(fields);
+    const res = await fetch(`/email/${encodeURIComponent(thread)}/${action}`, { method: "POST", body, headers: { "X-Requested-With": "fetch" }, signal: timeout(150000) });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(j.error || `failed (${res.status})`);
+    return j;
+  };
+  const reloadSheet = () => {
+    if (solo) { location.reload(); return; }
+    if (openId) openSheet(openId, "none");
+    refresh(true);
+  };
+  const draftOf = (el) => { const sh = el.closest(".sheet") || document; return $("[data-email-draft]", sh); };
+  const threadOf = (el) => { const d = draftOf(el); if (d) return d.dataset.thread; const p = $("[data-thread]", el.closest(".sheet") || document); return p && p.dataset.thread; };
+  document.addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-email-do], [data-email-undo], [data-email-revise-open], [data-email-revise-x], [data-email-edit-open], [data-email-edit-cancel]");
+    if (!b) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const sh = b.closest(".sheet") || document;
+    const d = draftOf(b);
+    if (b.hasAttribute("data-email-revise-open")) { const f = $("[data-email-revise]", sh); if (f) { f.hidden = false; $("textarea", f).focus(); } return; }
+    if (b.hasAttribute("data-email-revise-x")) { const f = $("[data-email-revise]", sh); if (f) f.hidden = true; return; }
+    if (b.hasAttribute("data-email-edit-open") || b.hasAttribute("data-email-edit-cancel")) {
+      const f = d && $("[data-email-edit]", d), view = d && $(":scope > .dr-b", d);
+      if (!f) return;
+      const opening = b.hasAttribute("data-email-edit-open");
+      if (opening) { const ed = $(".dr-ed", f); ed.innerHTML = ed.dataset.html; }
+      f.hidden = !opening;
+      if (view) view.hidden = opening;
+      if (opening) $(".dr-ed", f).focus();
+      return;
+    }
+    const thread = threadOf(b);
+    if (!thread || b.disabled) return;
+    b.disabled = true;
+    try {
+      if (b.hasAttribute("data-email-undo")) {
+        await emailPost(thread, "undo-send", { outbox: b.dataset.emailUndo });
+        toast("Not sent");
+      } else {
+        const a = b.dataset.emailDo;
+        const j = await emailPost(thread, a, { version: b.dataset.version || (d && d.dataset.version) || "" });
+        if (a === "send" || a === "holding") {
+          const secs = Math.round((j.hold_ms || 30000) / 1000);
+          toast(`${a === "holding" ? "Holding reply" : "Reply"} goes out in ${secs} s`, {
+            ms: j.hold_ms || 30000,
+            onUndo: async () => { try { await emailPost(thread, "undo-send", { outbox: j.outbox }); toast("Not sent"); } catch (err) { toast(err.message, { err: true }); } reloadSheet(); },
+          });
+        } else if (a === "save-draft") toast("Saved to your drafts");
+        else if (a === "redraft") toast("Writing a new draft");
+      }
+    } catch (err) { toast(err.message, { err: true }); }
+    b.disabled = false;
+    reloadSheet();
+  }, true);
+  document.addEventListener("submit", async (e) => {
+    const f = e.target.closest("[data-email-revise], [data-email-edit]");
+    if (!f) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const thread = threadOf(f), d = draftOf(f);
+    if (!thread) return;
+    const btn = $("button[type=submit]", f);
+    if (btn) btn.disabled = true;
+    try {
+      if (f.hasAttribute("data-email-revise")) {
+        const text = $("textarea", f).value.trim();
+        if (!text) { toast("Say what should change", { err: true }); return; }
+        await emailPost(thread, "revise", { text });
+        toast("Asked for the changes. The new version appears here.");
+      } else {
+        await emailPost(thread, "edit", { version: d.dataset.version, html: $(".dr-ed", f).innerHTML, to: f.to.value, cc: f.cc.value });
+        toast("Saved your edit");
+      }
+      reloadSheet();
+    } catch (err) { toast(err.message, { err: true }); }
+    finally { if (btn) btn.disabled = false; }
+  }, true);
+  // The Undo countdown, and a reload when a draft that was being written
+  // (or a send in its Undo window) finishes.
+  let emailV = null;
+  setInterval(async () => {
+    const sh = solo ? document : sheetEl();
+    if (!sh || document.hidden) return;
+    const p = $("[data-email-pending]", sh);
+    if (p) {
+      const left = $("[data-left]", p);
+      if (left) { const n = Math.max(0, +left.textContent - 1); left.textContent = n; if (n === 0) setTimeout(reloadSheet, 1500); }
+    }
+    if (!$("[data-email-writing]", sh) || $("[data-email-edit]:not([hidden])", sh) || $("[data-email-revise]:not([hidden])", sh)) return;
+    try {
+      const { v } = await (await fetch("/api/version", { signal: timeout(8000) })).json();
+      if (emailV !== null && v !== emailV) reloadSheet();
+      emailV = v;
+    } catch (_) {}
+  }, 1000);
 
   // ---- start --------------------------------------------------------------------------------------
   observeDigest();
