@@ -1,7 +1,9 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -200,5 +202,35 @@ func TestAnUntriagedEarlyReplyJoinsItsConversation(t *testing.T) {
 	}
 	if msgs, _ := s.ThreadMessages("gmail", "A@x"); len(msgs) != 3 {
 		t.Fatalf("messages: %d", len(msgs))
+	}
+}
+
+// A database from before a column existed gets it on open.
+func TestEmailColumnsAreMigrated(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	old, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old.Exec(`CREATE TABLE email_outbox (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, item_id TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL,
+		kind TEXT NOT NULL, hold_until INTEGER NOT NULL, status TEXT NOT NULL, message_id TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL, sent_at INTEGER NOT NULL DEFAULT 0)`)
+	old.Exec(`CREATE TABLE email_threads (id TEXT PRIMARY KEY, account TEXT NOT NULL, thread TEXT NOT NULL, subject TEXT NOT NULL DEFAULT '',
+		from_name TEXT NOT NULL DEFAULT '', from_addr TEXT NOT NULL DEFAULT '', last_inbound TEXT NOT NULL DEFAULT '', inbound_at INTEGER NOT NULL DEFAULT 0,
+		replied_at INTEGER NOT NULL DEFAULT 0, verdict TEXT NOT NULL DEFAULT '', line TEXT NOT NULL DEFAULT '', why TEXT NOT NULL DEFAULT '',
+		project TEXT NOT NULL DEFAULT '', work TEXT NOT NULL DEFAULT '', first_time INTEGER NOT NULL DEFAULT 0, needs_triage INTEGER NOT NULL DEFAULT 0,
+		triaged_at INTEGER NOT NULL DEFAULT 0, pass_id TEXT NOT NULL DEFAULT '', item_id TEXT NOT NULL DEFAULT '', seen_at INTEGER NOT NULL DEFAULT 0,
+		read_at INTEGER NOT NULL DEFAULT 0, until_at INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, UNIQUE (account, thread))`)
+	old.Close()
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.HoldSend(Outgoing{ID: "o1", ThreadID: "t", Version: 1, Kind: "reply", Answers: "m", HoldUntil: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ThreadsToTriage(10); err != nil {
+		t.Fatal(err)
 	}
 }

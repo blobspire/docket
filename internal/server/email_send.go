@@ -167,7 +167,7 @@ func (s *Server) sendOne(ctx context.Context, o store.Outgoing) (string, error) 
 	if j, ok := s.st.Job(t.ID); ok && (j.Status == "queued" || j.Status == "running") {
 		return "", errors.New("not sent: a new version was being written; look at it first")
 	}
-	if o.Answers != "" && t.LastInbound != o.Answers {
+	if (o.Answers != "" && t.LastInbound != o.Answers) || s.st.WroteSince(t.Account, t.Thread, o.CreatedAt) {
 		return "", fmt.Errorf("not sent: %s wrote again during the Undo window; read the new message first", t.From.Display())
 	}
 	d, ok := s.st.DraftVersion(t.ID, o.Version)

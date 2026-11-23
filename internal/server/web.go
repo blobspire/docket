@@ -17,7 +17,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/blobspire/docket/internal/mail"
 	"github.com/blobspire/docket/internal/store"
 )
 
@@ -60,7 +59,7 @@ var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 	"lower":       strings.ToLower,
 	"add":         func(a, b int) int { return a + b },
 	"secs":        func(ms int64) int64 { return (ms + 999) / 1000 },
-	"addrs":       func(list []mail.Addr) string { return joinDisplay(list) },
+	"addrs":       editAddrs,
 	"pct":         func(f float64) string { return strconv.FormatFloat(f, 'f', 0, 64) + "%" },
 	"tokens": func(n int64) string {
 		switch {

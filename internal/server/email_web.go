@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	netmail "net/mail"
 	"net/url"
 	"strconv"
 	"strings"
@@ -616,8 +617,32 @@ var errUnknownAction = errors.New("unknown action")
 // the whole field when one address doesn't parse, so nobody is silently
 // dropped.
 func strictAddrs(field string) ([]mail.Addr, error) {
+	// Semicolons (Outlook) separate like commas, except inside a quoted
+	// name ("Smith, Nancy" stays one name).
+	var b strings.Builder
+	quoted := false
+	for _, r := range field {
+		switch {
+		case r == '"':
+			quoted = !quoted
+		case r == ';' && !quoted:
+			r = ','
+		}
+		b.WriteRune(r)
+	}
+	field = b.String()
+	if strings.TrimSpace(field) == "" {
+		return nil, nil
+	}
+	if list, err := netmail.ParseAddressList(field); err == nil {
+		out := make([]mail.Addr, 0, len(list))
+		for _, a := range list {
+			out = append(out, mail.Addr{Name: a.Name, Email: strings.ToLower(a.Address)})
+		}
+		return out, nil
+	}
 	var out []mail.Addr
-	for _, part := range strings.FieldsFunc(field, func(r rune) bool { return r == ',' || r == ';' }) {
+	for _, part := range strings.FieldsFunc(field, func(r rune) bool { return r == ',' }) {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
@@ -629,4 +654,22 @@ func strictAddrs(field string) ([]mail.Addr, error) {
 		out = append(out, a[0])
 	}
 	return out, nil
+}
+
+// editAddrs writes addresses for the edit form: readable names (no MIME
+// encoding), quoted when they hold a comma or quote.
+func editAddrs(list []mail.Addr) string {
+	var out []string
+	for _, a := range list {
+		n := strings.TrimSpace(a.Name)
+		switch {
+		case n == "":
+			out = append(out, a.Email)
+		case strings.ContainsAny(n, `,;"<>()@:\`):
+			out = append(out, `"`+strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(n)+`" <`+a.Email+`>`)
+		default:
+			out = append(out, n+" <"+a.Email+">")
+		}
+	}
+	return strings.Join(out, ", ")
 }

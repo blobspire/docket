@@ -426,3 +426,11 @@ func (s *Store) SentByDocketAsHolding(messageID string) bool {
 	s.DB.QueryRow(`SELECT COUNT(*) FROM email_outbox WHERE kind='holding' AND status='sent' AND message_id=?`, messageID).Scan(&n)
 	return n > 0
 }
+
+// WroteSince reports a message to you in a thread that docket stored after
+// a time (unix seconds): by arrival, not by its sender-written Date.
+func (s *Store) WroteSince(account, thread string, since int64) bool {
+	var n int
+	s.DB.QueryRow(`SELECT COUNT(*) FROM email_messages WHERE account=? AND thread=? AND from_me=0 AND fetched_at>?`, account, thread, since).Scan(&n)
+	return n > 0
+}

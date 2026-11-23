@@ -376,7 +376,7 @@ func (s *Server) fileReply(threadID string) (string, error) {
 	}
 	// A new reply, or a new message in the thread since the last draft:
 	// write a draft (a thread being drafted right now keeps its job).
-	if d, ok := s.st.LatestDraft(t.ID); !ok || d.CreatedAt < t.InboundAt {
+	if d, ok := s.st.LatestDraft(t.ID); !ok || s.st.WroteSince(t.Account, t.Thread, d.CreatedAt-1) {
 		if err := s.st.QueueDraft(t.ID, "draft", ""); err == nil {
 			kick(s.emailOutKick)
 		}

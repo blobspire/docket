@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/blobspire/docket/internal/mail"
 	"github.com/blobspire/docket/internal/mail/mailtest"
 	"github.com/blobspire/docket/internal/store"
 )
@@ -403,5 +404,49 @@ func TestAReplyToElsewhereIsShownAndFlagged(t *testing.T) {
 	b := sheet.Body.String()
 	if !strings.Contains(b, "&lt;nancy@evil.test&gt;") || !strings.Contains(b, `class="addr out"`) {
 		t.Fatal("a Reply-To nobody wrote from must show its address, in red")
+	}
+}
+
+func TestEditKeepsOutlookStyleNames(t *testing.T) {
+	e, f, _, th := replyEnv(t)
+	f.answer(strings.Replace(nancyDraft, "%s", "false", 1))
+	e.runDrafts()
+	to := editAddrs([]mail.Addr{{Name: "Smith, Nancy", Email: "nancy@example.org"}, {Name: "José Pérez", Email: "jose@example.org"}})
+	if strings.Contains(to, "=?") {
+		t.Fatalf("names must be readable in the editor: %s", to)
+	}
+	rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {"1"}, "html": {"<p>Sure.</p>"}, "to": {to}, "cc": {`"Doe, Jane" <jane@example.org>; sam@example.org`}})
+	if rec.Code != 200 {
+		t.Fatalf("edit: %d %s", rec.Code, rec.Body.String())
+	}
+	d, _ := e.s.st.LatestDraft(th.ID)
+	if len(d.To) != 2 || d.To[0].Name != "Smith, Nancy" || len(d.Cc) != 2 || d.Cc[0].Email != "jane@example.org" {
+		t.Fatalf("recipients: %+v %+v", d.To, d.Cc)
+	}
+	if rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {"2"}, "html": {"<p>x</p>"}, "to": {"nancy@example .org"}}); rec.Code != 409 {
+		t.Fatalf("a bad address must be refused: %d", rec.Code)
+	}
+}
+
+func TestABackdatedMessageDuringTheUndoWindowStopsTheSend(t *testing.T) {
+	e, f, smtp, th := replyEnv(t)
+	f.answer(strings.Replace(nancyDraft, "%s", "false", 1))
+	e.runDrafts()
+	e.s.cfg.Email.SendHold.Duration = time.Hour
+	if _, err := e.s.QueueSend(th.ID, 1, "reply"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	// Nancy writes again, but her message's Date is hours old.
+	addr := e.s.cfg.Email.Accounts[0].IMAP
+	mailtest.Append(t, addr, "INBOX", msg("n2@x", "Nancy Smith <nancy@example.org>", "me@example.com", "Re: Undo a removed resident?",
+		"Never mind, don't do it.", "In-Reply-To: <n1@x>", "References: <n1@x>", dated(at(5*time.Hour))), time.Now())
+	f.answer(`{"structured_output":{"threads":[{"key":"T1","verdict":"reply","line":"Nancy again","why":"x","project":"","work":""}]}}`)
+	e.s.emailPass(e.ctx, "test")
+	e.s.st.DB.Exec(`UPDATE email_jobs SET status='done'`)
+	e.s.st.DB.Exec(`UPDATE email_outbox SET hold_until=0`)
+	e.s.sendDue(e.ctx)
+	if len(smtp.Messages()) != 0 {
+		t.Fatal("sent over a newer (backdated) message")
 	}
 }

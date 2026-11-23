@@ -880,7 +880,7 @@
       f.hidden = !opening;
       if (view) view.hidden = opening;
       // While you edit, Send would send the saved version, not your text.
-      $$("[data-email-do]", sh).forEach((x) => { if (x.dataset.emailDo !== "redraft") x.disabled = opening; });
+      $$("[data-email-do], [data-email-edit-open], [data-email-revise-open]", sh).forEach((x) => { if (x.dataset.emailDo !== "redraft") x.disabled = opening; });
       if (opening) $(".dr-ed", f).focus();
       return;
     }

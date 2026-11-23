@@ -371,6 +371,10 @@ var added = []struct{ table, column, ddl string }{
 	{"project_dirs", "clone", "INTEGER NOT NULL DEFAULT 0"},
 	{"sessions", "idea", "TEXT NOT NULL DEFAULT ''"},
 	{"ideas", "reset_at", "INTEGER NOT NULL DEFAULT 0"},
+	{"email_threads", "idea_id", "TEXT NOT NULL DEFAULT ''"},
+	{"email_threads", "idea_status", "TEXT NOT NULL DEFAULT ''"},
+	{"email_threads", "triage_fails", "INTEGER NOT NULL DEFAULT 0"},
+	{"email_outbox", "answers", "TEXT NOT NULL DEFAULT ''"},
 }
 
 func migrate(db *sql.DB) error {

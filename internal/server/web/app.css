@@ -659,3 +659,5 @@ body.ds-open { overflow: hidden; }
 .dr-n { margin: 10px 0 0; font-size: 14px; color: var(--fg-2); }
 .dr-hold { margin-top: 12px; }
 .dr-hold > summary { cursor: pointer; font-size: 14px; color: var(--fg-2); margin-bottom: 8px; }
+
+.dock .ob:disabled, .dock .sb:disabled { opacity: .45; cursor: not-allowed; }
