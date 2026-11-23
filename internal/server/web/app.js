@@ -853,7 +853,7 @@
     if (!b) return;
     e.preventDefault();
     e.stopPropagation();
-    if (b.disabled) return;
+    if (b.disabled || !nscrim.hidden) return; // the note is open: it has the page
     // "Not worth it" asks why first.
     if (b.dataset.emailAct === "noise") return openNote($(".dg-t", b.closest("[data-thread]"))?.textContent, true, (note) => digestAct(b, note));
     digestAct(b);
