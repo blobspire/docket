@@ -26,6 +26,7 @@ func newFakeModel(t *testing.T) *fakeModel {
 	os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \""+dir+"/args\"\ncat > \""+dir+"/prompt\"\npwd > \""+dir+"/cwd\"\n"+
 		"if [ -s \""+dir+"/fail-on\" ] && grep -qF -f \""+dir+"/fail-on\" \""+dir+"/prompt\"; then echo '{\"is_error\":true,\"result\":\"refused\"}'; exit 0; fi\n"+
 		"if [ -s \""+dir+"/prose-on\" ] && grep -qF -f \""+dir+"/prose-on\" \""+dir+"/prompt\"; then echo '{\"is_error\":false,\"result\":\"I would rather not sort these.\"}'; exit 0; fi\n"+
+		"if [ -s \""+dir+"/empty-on\" ] && grep -qF -f \""+dir+"/empty-on\" \""+dir+"/prompt\"; then echo '{\"structured_output\":{\"threads\":[]}}'; exit 0; fi\n"+
 		"cat \""+dir+"/answer.json\"\n"), 0o755)
 	return &fakeModel{dir: dir, bin: bin}
 }
@@ -447,9 +448,42 @@ func TestAnUnreadableAnswerDoesntBlockTriage(t *testing.T) {
 	}
 }
 
-func TestWorkTextCantBecomeALink(t *testing.T) {
-	got := noLinks("1. Add a [Restore](https://evil.example/x) button\n2. See <https://evil.example/y>\n[r]: https://evil.example/z")
-	if strings.Contains(got, "](") || strings.Contains(got, "<https") || strings.Contains(got, "[r]:") || !strings.Contains(got, "Restore (`https://evil.example/x`)") {
-		t.Fatalf("got %q", got)
+// Two (or more) unsortable emails at the head of the queue don't block the
+// rest: a built-in test email tells docket the model works, so each email
+// is sorted alone and only the bad ones are counted.
+func TestUnsortableEmailsAtTheHeadDontBlockTheRest(t *testing.T) {
+	e, addr, f := triageEnv(t)
+	mailtest.Append(t, addr, "INBOX", msg("p1@x", "W <w@x.org>", "me@example.com", "W1", "POISON-PILL one", dated(at(3*time.Hour))), at(3*time.Hour))
+	mailtest.Append(t, addr, "INBOX", msg("p2@x", "W <w@x.org>", "me@example.com", "W2", "POISON-PILL two", dated(at(2*time.Hour))), at(2*time.Hour))
+	mailtest.Append(t, addr, "INBOX", msg("a1@x", "Ann <ann@x.org>", "me@example.com", "Question", "Can you send it?", dated(at(time.Hour))), at(time.Hour))
+	os.WriteFile(filepath.Join(f.dir, "fail-on"), []byte("POISON-PILL"), 0o644)
+	f.answer(`{"structured_output":{"threads":[{"key":"T1","verdict":"reply","line":"Reply to Ann: send it","why":"asked","project":"","work":""}]}}`)
+	if p := e.s.emailPass(e.ctx, "test"); p.Reply != 1 || p.Error != "" {
+		t.Fatalf("Ann should be sorted past two bad emails: %+v", p)
+	}
+	e.s.emailPass(e.ctx, "test")
+	for _, id := range []string{"p1@x", "p2@x"} {
+		th, _ := e.s.st.Thread(store.ThreadID("test", id))
+		if th.Verdict != "reply" {
+			t.Fatalf("%s should reach Email after two checks: %+v", id, th)
+		}
+	}
+	if todo, _ := e.s.st.ThreadsToTriage(100); len(todo) != 0 {
+		t.Fatalf("nothing should be left waiting: %d", len(todo))
+	}
+}
+
+// An answer that sorts none of the batch is a failed call too.
+func TestAnAnswerThatSortsNothingDoesntBlock(t *testing.T) {
+	e, addr, f := triageEnv(t)
+	mailtest.Append(t, addr, "INBOX", msg("p1@x", "W <w@x.org>", "me@example.com", "W", "EMPTY-PILL return no threads", dated(at(2*time.Hour))), at(2*time.Hour))
+	mailtest.Append(t, addr, "INBOX", msg("a1@x", "Ann <ann@x.org>", "me@example.com", "Question", "Can you send it?", dated(at(time.Hour))), at(time.Hour))
+	os.WriteFile(filepath.Join(f.dir, "empty-on"), []byte("EMPTY-PILL"), 0o644)
+	f.answer(`{"structured_output":{"threads":[{"key":"T1","verdict":"reply","line":"Reply to Ann","why":"asked","project":"","work":""}]}}`)
+	if p := e.s.emailPass(e.ctx, "test"); p.Reply != 1 {
+		t.Fatalf("Ann should be sorted: %+v", p)
+	}
+	if th, _ := e.s.st.Thread(store.ThreadID("test", "p1@x")); e.s.st.TriageFails(th.ID) != 1 {
+		t.Fatal("the email that made the model answer nothing should be counted")
 	}
 }

@@ -177,3 +177,17 @@ func TestAResearchedEmailIdeaFollowsTheOrdinaryFlow(t *testing.T) {
 		t.Fatalf("the research session builds it, docket starts nothing: %+v", i)
 	}
 }
+
+// Whatever markdown the drafting model writes in a plan, nothing in it
+// becomes a link on docket's items.
+func TestAPlanCantPutALinkOnDocket(t *testing.T) {
+	plan := "Follow the spec at [windwardshores.org [spec]](https://evil.test/x) and [a\\]](https://evil.test/b), see https://evil.test/c\n```\ncode\n```"
+	body := "**Plan**\n\n" + codeBlock(plan)
+	html := string(renderMarkdown(body))
+	if strings.Contains(html, "<a ") {
+		t.Fatalf("a link rendered: %s", html)
+	}
+	if !strings.Contains(html, "windwardshores.org [spec]") {
+		t.Fatalf("the plan's text should show as written: %s", html)
+	}
+}

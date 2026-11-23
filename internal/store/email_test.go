@@ -234,3 +234,27 @@ func TestEmailColumnsAreMigrated(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// "They wrote again" counts new messages in the inbound folders only, by
+// arrival: a copy of a message already seen doesn't count.
+func TestWroteSinceIgnoresCopiesAndOtherFolders(t *testing.T) {
+	s := open(t)
+	inbound := []string{"INBOX", "Important"}
+	s.AddEmail("gmail", []*mail.Message{{Folder: "INBOX", UID: 1, UIDValidity: 1, MessageID: "m1@x", From: mail.Addr{Email: "n@x.org"}, Date: time.Now()}}, me)
+	s.DB.Exec(`UPDATE email_messages SET fetched_at=fetched_at-100`)
+	basis := time.Now().Unix() - 50
+	// The same message shows up in another watched folder: not new.
+	s.AddEmail("gmail", []*mail.Message{{Folder: "Important", UID: 9, UIDValidity: 1, MessageID: "m1@x", From: mail.Addr{Email: "n@x.org"}, Date: time.Now()}}, me)
+	if s.WroteSince("gmail", "m1@x", basis, inbound) {
+		t.Fatal("a copy of a seen message counted as new")
+	}
+	// A message from an address that isn't you, in Sent: not to you.
+	s.AddEmail("gmail", []*mail.Message{{Folder: "Sent", UID: 3, UIDValidity: 1, MessageID: "s1@x", InReplyTo: []string{"m1@x"}, From: mail.Addr{Email: "alias@x.org"}, Date: time.Now()}}, me)
+	if s.WroteSince("gmail", "m1@x", basis, inbound) {
+		t.Fatal("a Sent message counted as them writing again")
+	}
+	s.AddEmail("gmail", []*mail.Message{{Folder: "INBOX", UID: 2, UIDValidity: 1, MessageID: "m2@x", InReplyTo: []string{"m1@x"}, From: mail.Addr{Email: "n@x.org"}, Date: time.Now().Add(-48 * time.Hour)}}, me)
+	if !s.WroteSince("gmail", "m1@x", basis, inbound) {
+		t.Fatal("a new (backdated) message must count")
+	}
+}

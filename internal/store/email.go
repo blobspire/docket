@@ -936,3 +936,8 @@ func (s *Store) ThreadsWithIdeas() (map[string][2]string, error) {
 func (s *Store) EmailIdeasProposed(mark string) ([]Idea, error) {
 	return s.ideaList(`WHERE status=? AND dictation_id='' AND reason LIKE ? ORDER BY created_at`, IdeaProposed, mark+"%")
 }
+
+// OpenReplyThreads lists threads whose reply item is still open.
+func (s *Store) OpenReplyThreads() ([]EmailThread, error) {
+	return s.threads(`item_id<>'' AND EXISTS (SELECT 1 FROM items i WHERE i.id=email_threads.item_id AND i.status IN ('open','snoozed','answered'))`)
+}

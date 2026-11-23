@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/blobspire/docket/internal/mail"
@@ -25,6 +26,7 @@ CREATE TABLE IF NOT EXISTS email_drafts (
   removed TEXT NOT NULL DEFAULT '[]',
   source TEXT NOT NULL DEFAULT '',
   instruction TEXT NOT NULL DEFAULT '',
+  basis INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   PRIMARY KEY (thread_id, version)
 );
@@ -82,15 +84,16 @@ type Draft struct {
 	Removed     []string // what mail.Clean took out of the agent's HTML
 	Source      string   // agent | revision | edit
 	Instruction string   // your words that asked for this version
+	Basis       int64    // the mail it saw: messages that arrived after this aren't in it
 	CreatedAt   int64
 }
 
-const draftCols = `thread_id, version, subject, to_json, cc_json, html, holding, notes, questions, work, removed, source, instruction, created_at`
+const draftCols = `thread_id, version, subject, to_json, cc_json, html, holding, notes, questions, work, removed, source, instruction, basis, created_at`
 
 func scanDraft(r interface{ Scan(...any) error }) (Draft, error) {
 	var d Draft
 	var to, cc, qs, work, removed string
-	err := r.Scan(&d.ThreadID, &d.Version, &d.Subject, &to, &cc, &d.HTML, &d.Holding, &d.Notes, &qs, &work, &removed, &d.Source, &d.Instruction, &d.CreatedAt)
+	err := r.Scan(&d.ThreadID, &d.Version, &d.Subject, &to, &cc, &d.HTML, &d.Holding, &d.Notes, &qs, &work, &removed, &d.Source, &d.Instruction, &d.Basis, &d.CreatedAt)
 	json.Unmarshal([]byte(to), &d.To)
 	json.Unmarshal([]byte(cc), &d.Cc)
 	json.Unmarshal([]byte(qs), &d.Questions)
@@ -120,8 +123,12 @@ func (s *Store) AddDraft(d Draft) (int, error) {
 	if d.Questions == nil {
 		qs = []byte("[]")
 	}
-	if _, err := tx.Exec(`INSERT INTO email_drafts(`+draftCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		d.ThreadID, v, d.Subject, js(d.To), js(d.Cc), d.HTML, d.Holding, d.Notes, string(qs), work, js(d.Removed), d.Source, d.Instruction, time.Now().Unix()); err != nil {
+	now := time.Now().Unix()
+	if d.Basis == 0 {
+		d.Basis = now
+	}
+	if _, err := tx.Exec(`INSERT INTO email_drafts(`+draftCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		d.ThreadID, v, d.Subject, js(d.To), js(d.Cc), d.HTML, d.Holding, d.Notes, string(qs), work, js(d.Removed), d.Source, d.Instruction, d.Basis, now); err != nil {
 		return 0, err
 	}
 	return v, tx.Commit()
@@ -427,10 +434,23 @@ func (s *Store) SentByDocketAsHolding(messageID string) bool {
 	return n > 0
 }
 
-// WroteSince reports a message to you in a thread that docket stored after
-// a time (unix seconds): by arrival, not by its sender-written Date.
-func (s *Store) WroteSince(account, thread string, since int64) bool {
+// WroteSince reports a message to you, in one of the inbound folders,
+// that docket first stored at or after a time (unix seconds): judged by
+// arrival, not its sender-written Date, and a copy of a message already
+// seen (another folder, a renumbered folder) doesn't count.
+func (s *Store) WroteSince(account, thread string, since int64, inbound []string) bool {
+	if len(inbound) == 0 {
+		return false
+	}
+	q := `SELECT COUNT(*) FROM email_messages m WHERE m.account=? AND m.thread=? AND m.from_me=0 AND m.fetched_at>=? AND m.folder IN (?` +
+		strings.Repeat(",?", len(inbound)-1) + `) AND (m.message_id='' OR NOT EXISTS (SELECT 1 FROM email_messages o WHERE o.account=m.account
+		AND o.message_id=m.message_id AND o.fetched_at<?))`
+	args := []any{account, thread, since}
+	for _, f := range inbound {
+		args = append(args, f)
+	}
+	args = append(args, since)
 	var n int
-	s.DB.QueryRow(`SELECT COUNT(*) FROM email_messages WHERE account=? AND thread=? AND from_me=0 AND fetched_at>?`, account, thread, since).Scan(&n)
+	s.DB.QueryRow(q, args...).Scan(&n)
 	return n > 0
 }

@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -115,6 +114,7 @@ func (s *Server) runDraft(ctx context.Context, j store.EmailJob) {
 		return
 	}
 	d := s.draftFrom(t, a, out, j)
+	d.Basis = j.StartedAt // it saw the mail stored before it started
 	if _, err := s.st.AddDraft(d); err != nil {
 		s.st.EndJob(t.ID, "failed", res.Session, err.Error())
 		return
@@ -435,7 +435,10 @@ func (s *Server) afterDraft(t store.EmailThread, d store.Draft) {
 	// The idea (what a build session is given) holds only what the drafting
 	// agent wrote: the plan and why. Who sent the email and its subject go
 	// on your item, never into a session with tools.
-	plan := fmt.Sprintf("**Plan**\n\n%s\n\n**Why**\n\n%s\n", noLinks(strings.TrimSpace(d.Work.Plan)), noLinks(d.Work.Why))
+	// Shown preformatted: markdown in it can't become a link or formatting
+	// (a regex can't strip every link form, but nothing renders in a code
+	// block). The same text is what a build session is given.
+	plan := "**Plan**\n\n" + codeBlock(strings.TrimSpace(d.Work.Plan)) + "\n**Why**\n\n" + codeBlock(strings.TrimSpace(d.Work.Why))
 	shown := fmt.Sprintf("From **%s**'s email \"%s\" ([the reply](/item/%s)). %s will send the reply once this is built, or a holding reply now.\n\n%s",
 		mdText(t.From.Display()), mdText(oneLine(t.Subject, 120)), t.ItemID, s.cfg.Person, plan)
 	i := store.Idea{ID: ulid.ShortID("idea"), Project: t.Project, Title: d.Work.Title, Body: plan, Route: "build", Status: store.IdeaProposed,
@@ -473,19 +476,14 @@ func emailProposal(it store.Item, i store.Idea) bool {
 	return isEmailIdea(i) && it.Source == SrcEmail && it.SessionID == "" && it.ID == i.ItemID
 }
 
-var (
-	mdLinkRE  = regexp.MustCompile(`!?\[([^\]]*)\]\(([^)]*)\)`)
-	mdAuto    = regexp.MustCompile(`<((?:https?|mailto):[^>]*)>`)
-	mdRefDefs = regexp.MustCompile(`(?m)^\s*\[[^\]]+\]:\s*\S+.*$`)
-)
-
-// noLinks keeps a model's markdown (lists, emphasis, code) but turns every
-// link into plain "text (address)", so text written from an email can't
-// put a clickable link in docket.
-func noLinks(md string) string {
-	md = mdRefDefs.ReplaceAllString(md, "")
-	md = mdLinkRE.ReplaceAllString(md, "$1 (`$2`)")
-	return mdAuto.ReplaceAllString(md, "`$1`")
+// codeBlock fences text so markdown renders it verbatim, with a fence
+// longer than any run of backticks inside it.
+func codeBlock(t string) string {
+	fence := "```"
+	for strings.Contains(t, fence) {
+		fence += "`"
+	}
+	return fence + "text\n" + t + "\n" + fence + "\n"
 }
 
 // startEmailBuilds starts the build for an email proposal whose Build it is
@@ -558,5 +556,36 @@ func (s *Server) followIdeas() {
 		s.st.SetThreadIdea(tid, i.ID, i.Status)
 		s.st.TouchItem(t.ItemID)
 		kick(s.emailOutKick)
+	}
+}
+
+// inbound is an account's triage folders, for WroteSince.
+func (s *Server) inbound(account string) []string {
+	a, _ := s.cfg.Email.Account(account)
+	return a.Folders
+}
+
+// staleDrafts redrafts an open reply whose newest draft doesn't know about
+// a message that arrived after it was started (it arrived while the draft
+// was being written, so the pass couldn't queue a new one then).
+func (s *Server) staleDrafts() {
+	threads, err := s.st.OpenReplyThreads()
+	if err != nil {
+		return
+	}
+	for _, t := range threads {
+		d, ok := s.st.LatestDraft(t.ID)
+		if !ok || !s.st.WroteSince(t.Account, t.Thread, d.Basis+1, s.inbound(t.Account)) {
+			continue
+		}
+		if j, ok := s.st.Job(t.ID); ok && (j.Status == "queued" || j.Status == "running" || j.StartedAt > d.Basis && j.Status == "failed") {
+			continue
+		}
+		if _, ok := s.st.PendingSend(t.ID); ok {
+			continue // its send will stop itself; the human undoes it first
+		}
+		if s.st.QueueDraft(t.ID, "draft", "") == nil {
+			s.st.TouchItem(t.ItemID)
+		}
 	}
 }

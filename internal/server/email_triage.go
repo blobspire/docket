@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -186,6 +187,14 @@ const (
 )
 
 // triage sorts threads in batches. It returns how many it decided.
+//
+// When a batch fails (an error, an answer that isn't the JSON asked for, or
+// one that sorts none of it), docket asks the model to sort one harmless
+// built-in email. If that fails too, the model is down: nothing counts
+// against any email and the pass stops. If it works, the batch's contents
+// were the problem: each email is sorted on its own, so the rest get
+// through, and only the ones that fail are counted (once per pass). After
+// two counted passes an email becomes a "Couldn't sort" reply item.
 func (s *Server) triage(ctx context.Context, todo []store.EmailThread, p *store.EmailPass, failedNow map[string]bool) (int, float64, error) {
 	fail := func(tt triageThread) {
 		if !failedNow[tt.thread.ID] {
@@ -207,82 +216,76 @@ func (s *Server) triage(ctx context.Context, todo []store.EmailThread, p *store.
 			size += len(tt.text)
 			todo = todo[1:]
 		}
-		res, err := s.runModel(ctx, modelCall{Model: s.cfg.Email.TriageModel, Prompt: s.triagePrompt(batch), Schema: triageSchema,
-			Budget: 3, Timeout: 10 * time.Minute})
-		cost += res.Cost
-		var out triageOut
+		byKey, c, err := s.sortBatch(ctx, batch, 3, 10*time.Minute)
+		cost += c
 		if err == nil {
-			if jerr := json.Unmarshal(res.Out, &out); jerr != nil {
-				err = fmt.Errorf("triage answer: %w", jerr) // handled like any failed call
-			}
-		}
-		if err != nil && len(batch) > 1 {
-			// Maybe one email breaks it: sort them one at a time, so the
-			// rest still get through. If the first two fail too, the model
-			// itself is down: stop, and count nothing against the emails.
-			var failed []triageThread
-			ok := 0
-			for n, tt := range batch {
-				if n >= 2 && ok == 0 {
-					return decided, cost, err
-				}
-				tt.key = "T1"
-				r1, err1 := s.runModel(ctx, modelCall{Model: s.cfg.Email.TriageModel, Prompt: s.triagePrompt([]triageThread{tt}), Schema: triageSchema,
-					Budget: 1, Timeout: 5 * time.Minute})
-				cost += r1.Cost
-				var o triageOut
-				if err1 != nil || json.Unmarshal(r1.Out, &o) != nil || len(o.Threads) == 0 {
-					failed = append(failed, tt)
+			for _, tt := range batch {
+				v, ok := byKey[tt.key]
+				if !ok {
+					fail(tt) // left out while the rest were answered
 					continue
 				}
-				s.applyVerdict(tt, o.Threads[0], p)
+				s.applyVerdict(tt, v, p)
 				decided++
-				ok++
 				p.Triaged++
-			}
-			if ok == 0 {
-				return decided, cost, err
-			}
-			// Others sorted fine, so these emails are the problem.
-			for _, tt := range failed {
-				fail(tt)
 			}
 			continue
 		}
-		if err != nil {
-			// Alone and failing again, after failing once while other
-			// emails sorted fine: this email is the problem.
-			if len(batch) == 1 && s.st.TriageFails(batch[0].thread.ID) > 0 {
-				fail(batch[0])
-			}
-			return decided, cost, err
-		}
-		byKey := map[string]triageVerdict{}
-		for _, v := range out.Threads {
-			byKey[strings.TrimSpace(v.Key)] = v
-		}
-		answered := 0
-		for _, tt := range batch {
-			if _, ok := byKey[tt.key]; ok {
-				answered++
-			}
+		works, c := s.modelWorks(ctx)
+		cost += c
+		if !works {
+			return decided, cost, err // an outage: nothing is the emails' fault
 		}
 		for _, tt := range batch {
-			v, ok := byKey[tt.key]
-			if !ok {
-				// Left out while others were answered: counted, so it can't
-				// be re-sent forever without ever reaching you.
-				if answered > 0 {
-					fail(tt)
-				}
+			tt.key = "T1"
+			one, c, err1 := s.sortBatch(ctx, []triageThread{tt}, 1, 5*time.Minute)
+			cost += c
+			if err1 != nil {
+				fail(tt)
 				continue
 			}
-			s.applyVerdict(tt, v, p)
+			s.applyVerdict(tt, one["T1"], p)
 			decided++
 			p.Triaged++
 		}
 	}
 	return decided, cost, nil
+}
+
+// sortBatch is one triage call. An answer that isn't the requested JSON,
+// or that sorts none of the batch, is an error like a failed call.
+func (s *Server) sortBatch(ctx context.Context, batch []triageThread, budget float64, timeout time.Duration) (map[string]triageVerdict, float64, error) {
+	res, err := s.runModel(ctx, modelCall{Model: s.cfg.Email.TriageModel, Prompt: s.triagePrompt(batch), Schema: triageSchema, Budget: budget, Timeout: timeout})
+	if err != nil {
+		return nil, res.Cost, err
+	}
+	var out triageOut
+	if err := json.Unmarshal(res.Out, &out); err != nil {
+		return nil, res.Cost, fmt.Errorf("triage answer: %w", err)
+	}
+	keys := map[string]bool{}
+	for _, tt := range batch {
+		keys[tt.key] = true
+	}
+	byKey := map[string]triageVerdict{}
+	for _, v := range out.Threads {
+		if k := strings.TrimSpace(v.Key); keys[k] {
+			byKey[k] = v
+		}
+	}
+	if len(byKey) == 0 {
+		return nil, res.Cost, errors.New("triage answer sorted none of the emails")
+	}
+	return byKey, res.Cost, nil
+}
+
+// modelWorks asks the model to sort one harmless built-in email: whether
+// a failed batch was the model's fault or its emails'.
+func (s *Server) modelWorks(ctx context.Context) (bool, float64) {
+	canary := triageThread{key: "T1", text: "=== T1 · test mail · 1 message ===\nSubject: Lunch on Friday?\nLatest from: Sam Rivera <sam@example.org> (a first-time sender: " +
+		s.cfg.Person + " has never written to them)\n\n--- Sam Rivera · Mon Jan 5 10:00 ---\nTo: you\nWould you like to get lunch on Friday?\n"}
+	_, c, err := s.sortBatch(ctx, []triageThread{canary}, 0.5, 2*time.Minute)
+	return err == nil, c
 }
 
 type triageThread struct {
@@ -414,7 +417,7 @@ func (s *Server) fileReplyItem(threadID string, draft bool) (string, error) {
 	}
 	// A new reply, or a new message in the thread since the last draft:
 	// write a draft (a thread being drafted right now keeps its job).
-	if d, ok := s.st.LatestDraft(t.ID); draft && (!ok || s.st.WroteSince(t.Account, t.Thread, d.CreatedAt-1)) {
+	if d, ok := s.st.LatestDraft(t.ID); draft && (!ok || s.st.WroteSince(t.Account, t.Thread, d.Basis+1, s.inbound(t.Account))) {
 		if err := s.st.QueueDraft(t.ID, "draft", ""); err == nil {
 			kick(s.emailOutKick)
 		}

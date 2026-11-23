@@ -665,7 +665,7 @@ func editAddrs(list []mail.Addr) string {
 		switch {
 		case n == "":
 			out = append(out, a.Email)
-		case strings.ContainsAny(n, `,;"<>()@:\`):
+		case strings.ContainsAny(n, `,;"<>()[]@:.\`):
 			out = append(out, `"`+strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(n)+`" <`+a.Email+`>`)
 		default:
 			out = append(out, n+" <"+a.Email+">")

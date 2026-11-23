@@ -450,3 +450,35 @@ func TestABackdatedMessageDuringTheUndoWindowStopsTheSend(t *testing.T) {
 		t.Fatal("sent over a newer (backdated) message")
 	}
 }
+
+// A message that arrives while a draft is being written makes that draft
+// stale: it can't be sent, and a new one is written.
+func TestAMessageDuringDraftingMakesTheDraftStale(t *testing.T) {
+	e, f, smtp, th := replyEnv(t)
+	f.answer(strings.Replace(nancyDraft, "%s", "false", 1))
+	e.runDrafts()
+	// The draft started writing a while ago; Nancy's message arrived since.
+	e.s.st.DB.Exec(`UPDATE email_drafts SET basis=basis-30`)
+	addr := e.s.cfg.Email.Accounts[0].IMAP
+	mailtest.Append(t, addr, "INBOX", msg("n2@x", "Nancy Smith <nancy@example.org>", "me@example.com", "Re: Undo a removed resident?",
+		"Never mind, don't do it.", "In-Reply-To: <n1@x>", "References: <n1@x>", dated(at(5*time.Hour))), time.Now())
+	f.answer(`{"structured_output":{"threads":[]}}`)
+	e.s.readAccount(e.ctx, e.s.cfg.Email.Accounts[0])
+	if _, err := e.s.QueueSend(th.ID, 1, "reply"); err == nil || !strings.Contains(err.Error(), "wrote again") {
+		t.Fatalf("a stale draft must not send: %v", err)
+	}
+	e.s.staleDrafts()
+	if j, _ := e.s.st.Job(th.ID); j.Status != "queued" {
+		t.Fatalf("a new draft should be queued: %+v", j)
+	}
+	if len(smtp.Messages()) != 0 {
+		t.Fatal("sent")
+	}
+	// A copy of an already-seen message (another folder) doesn't count.
+	e.s.st.DB.Exec(`UPDATE email_jobs SET status='done'`)
+	e.s.st.DB.Exec(`UPDATE email_drafts SET basis=?`, time.Now().Unix()+5)
+	e.s.staleDrafts()
+	if j, _ := e.s.st.Job(th.ID); j.Status != "done" {
+		t.Fatalf("nothing new: no redraft: %+v", j)
+	}
+}

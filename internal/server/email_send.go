@@ -23,6 +23,7 @@ func (s *Server) emailOutTick(ctx context.Context) {
 	}
 	s.startEmailBuilds()
 	s.followIdeas()
+	s.staleDrafts()
 	s.startDrafts(ctx)
 	s.sendDue(ctx)
 }
@@ -62,6 +63,9 @@ func (s *Server) QueueSend(threadID string, version int, kind string) (store.Out
 	}
 	if len(d.To) == 0 {
 		return store.Outgoing{}, errors.New("the draft has no one to send it to")
+	}
+	if s.st.WroteSince(t.Account, t.Thread, d.Basis+1, s.inbound(t.Account)) {
+		return store.Outgoing{}, fmt.Errorf("%s wrote again after this draft was written; a new version is on its way", t.From.Display())
 	}
 	o := store.Outgoing{ID: ulid.New(time.Now()), ThreadID: t.ID, ItemID: t.ItemID, Version: d.Version, Kind: kind, Answers: t.LastInbound,
 		HoldUntil: time.Now().Add(s.cfg.Email.SendHold.Duration).UnixMilli()}
@@ -167,7 +171,11 @@ func (s *Server) sendOne(ctx context.Context, o store.Outgoing) (string, error) 
 	if j, ok := s.st.Job(t.ID); ok && (j.Status == "queued" || j.Status == "running") {
 		return "", errors.New("not sent: a new version was being written; look at it first")
 	}
-	if (o.Answers != "" && t.LastInbound != o.Answers) || s.st.WroteSince(t.Account, t.Thread, o.CreatedAt) {
+	latestBasis := int64(0)
+	if d, ok := s.st.DraftVersion(t.ID, o.Version); ok {
+		latestBasis = d.Basis
+	}
+	if (o.Answers != "" && t.LastInbound != o.Answers) || s.st.WroteSince(t.Account, t.Thread, latestBasis+1, s.inbound(t.Account)) {
 		return "", fmt.Errorf("not sent: %s wrote again during the Undo window; read the new message first", t.From.Display())
 	}
 	d, ok := s.st.DraftVersion(t.ID, o.Version)
