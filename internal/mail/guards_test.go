@@ -294,3 +294,19 @@ func TestParseDropsMessageIDsThatCouldBreakAHeader(t *testing.T) {
 		t.Fatalf("kept %q", m.MessageID)
 	}
 }
+
+// Ordinary drafts get no "removed" note: a stray trailing break, a cell
+// that held a div, one empty row in a real table.
+func TestNoFalseRemovalNotes(t *testing.T) {
+	for _, in := range []string{
+		"<p>a<br></p><p>b<br></p><p>c<br></p>",
+		strings.Repeat("<table><tr><td><div>x</div></td></tr></table>", 3),
+		"<ul>" + strings.Repeat("<li><div>a</div></li>", 3) + "</ul>",
+		"<table><tr><th>a</th></tr><tr><td></td></tr><tr><td>b</td></tr></table>",
+		"<p>Hi Nancy,</p><p>Yes.</p><p>Thanks,<br>Cole</p>",
+	} {
+		if _, notes := Clean(in); len(notes) != 0 {
+			t.Errorf("%s: unexpected notes %v", in, notes)
+		}
+	}
+}

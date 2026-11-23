@@ -65,7 +65,7 @@ func squeeze(s string) (string, bool) {
 			serialize(&b, n)
 		}
 		out := b.String()
-		if sq.big || sq.breaks > 2 {
+		if sq.big || sq.breaks > 2 || sq.tables > 1 {
 			changed = true
 		}
 		if out == s {
@@ -78,7 +78,8 @@ func squeeze(s string) (string, bool) {
 
 type squeezer struct {
 	big    bool
-	breaks int // line breaks removed, across the whole tree
+	breaks int // line breaks removed from runs, across the whole tree
+	tables int // text-less tables and rows removed
 }
 
 func blankText(t string) bool {
@@ -130,7 +131,7 @@ func (sq *squeezer) tidy(n *html.Node) {
 				// A table (or row) with no text renders nothing but its
 				// margin, so a stack of them pads text out of view.
 				if blankText(textOf(c)) {
-					sq.big = true
+					sq.tables++
 					n.RemoveChild(c)
 					c = next
 					continue
@@ -168,11 +169,17 @@ func (sq *squeezer) tidy(n *html.Node) {
 		c = next
 	}
 	for _, edge := range []func() *html.Node{func() *html.Node { return n.FirstChild }, func() *html.Node { return n.LastChild }} {
+		edgeBreaks := 0
 		for c := edge(); c != nil && (c.Type == html.ElementNode && c.DataAtom == atom.Br || c.Type == html.TextNode && blankText(c.Data)); c = edge() {
 			if c.Type == html.ElementNode {
-				sq.breaks++
+				edgeBreaks++
 			}
 			n.RemoveChild(c)
+		}
+		// One stray break at the end of a block is ordinary; two or more
+		// are blank lines.
+		if edgeBreaks >= 2 {
+			sq.breaks += edgeBreaks
 		}
 	}
 }

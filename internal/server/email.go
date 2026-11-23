@@ -22,7 +22,9 @@ type emailRead struct {
 	Dropped int                  // over max_per_pass; the oldest were left
 }
 
-// readAccount reads an account's triage folders and its Sent folder. The
+// readAccount reads an account's triage folders and its Sent folder. A
+// folder that fails is skipped (and reported in the error): the messages it
+// returns are stored either way, so callers must use them even on error. The
 // first read of Sent learns who you write to (a year of envelopes), which is
 // how docket tells known senders from first-time ones.
 func (s *Server) readAccount(ctx context.Context, a mail.Account) (emailRead, error) {
@@ -174,9 +176,11 @@ func (s *Server) EmailCheck(ctx context.Context, w io.Writer) error {
 func (s *Server) EmailReadNow(ctx context.Context, w io.Writer) error {
 	for _, a := range s.cfg.Email.Accounts {
 		t0 := time.Now()
+		// On an error, what was read from the other folders is still stored
+		// and reported.
 		r, err := s.readAccount(ctx, a)
 		if err != nil {
-			return err
+			fmt.Fprintf(w, "%s: %v\n", a.Name, err)
 		}
 		in, sent := 0, 0
 		for _, m := range r.New {
