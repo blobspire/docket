@@ -487,25 +487,6 @@ func (s *Store) AllEvidence(q string, limit int) ([]EvidenceRow, error) {
 	return out, rows.Err()
 }
 
-// HumanTasks lists open things only the human can do: due dates first.
-func (s *Store) HumanTasks() ([]Item, error) {
-	rows, err := s.DB.Query(`SELECT ` + itemCols + ` FROM items WHERE kind='human_task' AND status IN ('open','snoozed','answered')
-		ORDER BY CASE WHEN due='' THEN 1 ELSE 0 END, due, blocking DESC, created_at`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Item
-	for rows.Next() {
-		it, err := scanItem(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, it)
-	}
-	return out, rows.Err()
-}
-
 func (s *Store) Close() error { return s.DB.Close() }
 
 func now() int64 { return time.Now().Unix() }

@@ -176,17 +176,6 @@ func TestSearch(t *testing.T) {
 	}
 }
 
-func TestHumanTasksDueFirst(t *testing.T) {
-	s := open(t)
-	s.UpsertItem(Item{ID: "late", Kind: "human_task", Title: "no date"})
-	s.UpsertItem(Item{ID: "soon", Kind: "human_task", Title: "due", Due: "2026-11-10"})
-	s.UpsertItem(Item{ID: "x", Kind: "ask", Title: "not a task"})
-	got, _ := s.HumanTasks()
-	if len(got) != 2 || got[0].ID != "soon" {
-		t.Fatalf("got %+v", got)
-	}
-}
-
 func TestMigrateAddsColumnsToOldDatabases(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "old.db")
 	old, err := sql.Open("sqlite", "file:"+path)

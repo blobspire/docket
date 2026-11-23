@@ -108,7 +108,7 @@
         const r = new URL(document.referrer);
         if (r.origin === location.origin && !r.pathname.startsWith("/item/")) {
           back.href = r.pathname + r.search;
-          const names = { "/stash": "Stash", "/done": "Done", "/ideas": "Ideas", "/search": "Search", "/checklist": "Only you", "/brain": "Brain", "/leads": "Leads", "/evidence": "Evidence", "/health": "Health" };
+          const names = { "/stash": "Stash", "/done": "Done", "/ideas": "Ideas", "/search": "Search", "/brain": "Brain", "/leads": "Leads", "/evidence": "Evidence", "/health": "Health" };
           const q = r.searchParams;
           $("span", back).textContent = r.pathname === "/" ? (q.get("p") || q.get("place") || (q.get("view") === "now" ? "Act now" : "All")) : names[r.pathname] || "Back";
         }
@@ -634,7 +634,7 @@
     if ((k === "Enter" || k === " ") && a && a !== document.body && a.matches("a, button, summary")) return;
     if (g) {
       g = false;
-      const to = { d: "/", q: "/", t: "/stash", i: "/ideas", c: "/checklist", l: "/leads", e: "/evidence", b: "/brain", h: "/health", s: "/search" }[k];
+      const to = { d: "/", q: "/", t: "/stash", i: "/ideas", l: "/leads", e: "/evidence", b: "/brain", h: "/health", s: "/search" }[k];
       if (to) location.href = to;
       return;
     }

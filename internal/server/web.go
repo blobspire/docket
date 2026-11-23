@@ -257,7 +257,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /stash", s.pageStash)
 	mux.HandleFunc("GET /search", s.pageSearch)
 	mux.HandleFunc("GET /evidence", s.pageEvidence)
-	mux.HandleFunc("GET /checklist", s.pageChecklist)
+	// The old "Only you" page is gone; old links land on the queue.
+	mux.Handle("GET /checklist", http.RedirectHandler("/", http.StatusMovedPermanently))
 	mux.HandleFunc("GET /leads", s.pageLeads)
 	mux.HandleFunc("GET /brain", s.pageBrain)
 	mux.HandleFunc("POST /brain/propose", s.proposeNow)
@@ -624,11 +625,6 @@ func (s *Server) pageEvidence(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	rows, _ := s.st.AllEvidence(q, 300)
 	s.render(w, "evidence.html", page{Title: "Evidence", Nav: "evidence", Query: q, Gallery: rows})
-}
-
-func (s *Server) pageChecklist(w http.ResponseWriter, r *http.Request) {
-	tasks, _ := s.st.HumanTasks()
-	s.render(w, "checklist.html", page{Title: "Only you", Nav: "checklist", Rows: s.rows(ranked(tasks), "list", true, nil)})
 }
 
 func (s *Server) pageLeads(w http.ResponseWriter, r *http.Request) {

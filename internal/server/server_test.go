@@ -217,12 +217,23 @@ func TestWebQueueAndCrossSiteGuard(t *testing.T) {
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Disk is 95% full") {
 		t.Fatalf("GET /item = %d", rec.Code)
 	}
-	for _, p := range []string{"/health", "/done", "/static/app.js", "/api/version", "/search?q=disk", "/evidence", "/checklist"} {
+	for _, p := range []string{"/health", "/done", "/static/app.js", "/api/version", "/search?q=disk", "/evidence"} {
 		rec = httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest("GET", p, nil))
 		if rec.Code != 200 {
 			t.Fatalf("GET %s = %d", p, rec.Code)
 		}
+	}
+	// The retired "Only you" page sends old links to the queue, and no tab links to it.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/checklist", nil))
+	if rec.Code != http.StatusMovedPermanently || rec.Header().Get("Location") != "/" {
+		t.Fatalf("GET /checklist = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+	if b := rec.Body.String(); strings.Contains(b, "/checklist") || strings.Contains(b, "Only you") {
+		t.Fatal("the queue still links to the Only you page")
 	}
 
 	form := url.Values{"action": {"done"}}.Encode()

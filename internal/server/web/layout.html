@@ -16,7 +16,6 @@
     <a href="/stash"{{if eq .Nav "stash"}} class="on"{{end}}>Stash{{if .StashCount}} <b class="tc">{{.StashCount}}</b>{{end}}</a>
     <a href="/done"{{if eq .Nav "done"}} class="on"{{end}}>Done</a>
     <a class="x{{if eq .Nav "ideas"}} on{{end}}" href="/ideas">Ideas{{if .IdeaCount}} <b class="pill pill-i">{{.IdeaCount}}</b>{{end}}</a>
-    <a class="x{{if eq .Nav "checklist"}} on{{end}}" href="/checklist">Only you</a>
     <a class="x{{if eq .Nav "brain"}} on{{end}}" href="/brain">Brain{{if .RuleCount}} <b class="pill">{{.RuleCount}}</b>{{end}}</a>
     <a class="x{{if eq .Nav "leads"}} on{{end}}" href="/leads">Leads</a>
     <a class="x{{if eq .Nav "evidence"}} on{{end}}" href="/evidence">Evidence</a>
@@ -28,7 +27,6 @@
     <div class="morew"><button class="ib more-b" type="button" aria-label="More pages" aria-haspopup="menu" aria-expanded="false">{{template "i" "more"}}</button>
       <div class="menu more-m" role="menu" hidden>
         <a role="menuitem" href="/ideas"{{if eq .Nav "ideas"}} class="on"{{end}}>Ideas{{if .IdeaCount}} <b class="pill pill-i">{{.IdeaCount}}</b>{{end}}</a>
-        <a role="menuitem" href="/checklist"{{if eq .Nav "checklist"}} class="on"{{end}}>Only you</a>
         <a role="menuitem" href="/brain"{{if eq .Nav "brain"}} class="on"{{end}}>Brain{{if .RuleCount}} <b class="pill">{{.RuleCount}}</b>{{end}}</a>
         <a role="menuitem" href="/leads"{{if eq .Nav "leads"}} class="on"{{end}}>Leads</a>
         <a role="menuitem" href="/evidence"{{if eq .Nav "evidence"}} class="on"{{end}}>Evidence</a>
@@ -76,7 +74,7 @@
       <dt>[ / ]</dt><dd>previous / next project</dd>
       <dt>/</dt><dd>search</dd>
       <dt>n</dt><dd>new idea: dictate or type it</dd>
-      <dt>g d · g t · g i · g c · g h</dt><dd>docket · stash · ideas · only you · health</dd>
+      <dt>g d · g t · g i · g h</dt><dd>docket · stash · ideas · health</dd>
     </dl>
     <p class="muted">Press ? or Esc, or click outside, to close.</p>
   </div>
