@@ -215,7 +215,11 @@ func (sp spot) describe() string {
 func (s *Server) researchPrompt(i store.Idea, d store.Dictation, sp spot) string {
 	p := s.cfg.Person
 	var b strings.Builder
-	fmt.Fprintf(&b, "[docket %s] %s dictated an idea for the %s project, and docket started you to work on it.", i.ID, p, firstNonEmptyStr(i.Project, "unsorted"))
+	if strings.HasPrefix(i.Reason, emailIdeaMark) {
+		fmt.Fprintf(&b, "[docket %s] Someone emailed %s asking for this change to the %s project. docket's drafting agent read the email and the code and wrote the plan below, and %s approved building it. The plan is all you get: build exactly that.", i.ID, p, firstNonEmptyStr(i.Project, "unsorted"), p)
+	} else {
+		fmt.Fprintf(&b, "[docket %s] %s dictated an idea for the %s project, and docket started you to work on it.", i.ID, p, firstNonEmptyStr(i.Project, "unsorted"))
+	}
 	if d.Source == "voice" {
 		b.WriteString(" It came from speech-to-text, so a few words may be wrong; the full dictation is at the end.")
 		for _, name := range sortedKeys(s.cfg.Transcribe.SaidAs) {
@@ -233,7 +237,9 @@ func (s *Server) researchPrompt(i store.Idea, d store.Dictation, sp spot) string
 
 	build := fmt.Sprintf(`build it completely: on a new branch in a new git worktree (never on this checkout's current branch), with tests; then open a pull request, wait for its CI, merge it, and release or deploy it the way this repository does. Don't ask for approval again: agents here handle git, pull requests, merges and releases themselves. Bring %[1]s only what docket is for (credentials, money, irreversible data loss, hardware, anything physical), filed with docket as usual. When it has shipped, run `+"`docket idea done %[2]s --why \"<what shipped, with the pull request link>\"`"+`.`, p, i.ID)
 
-	if i.Route == "build" {
+	if i.Route == "build" && strings.HasPrefix(i.Reason, emailIdeaMark) {
+		fmt.Fprintf(&b, "## Your job: build it\n%s approved this plan. Read what you need first (this repository's CLAUDE.md, docs and the code involved), then %s Your summary in --why goes into the reply, so say plainly what changed and where to find it.\n", p, build)
+	} else if i.Route == "build" {
 		fmt.Fprintf(&b, "## Your job: build it\n%s asked for this to be built straight away, without a proposal. Read what you need first (this repository's CLAUDE.md, docs and the code involved), then %s\n", p, build)
 	} else {
 		fmt.Fprintf(&b, `## Your job: research it and propose how to do it

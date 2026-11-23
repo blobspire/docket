@@ -196,6 +196,21 @@ func (s *Server) decide(id string, a Action) error {
 		return s.decideRule(it, a)
 	}
 
+	// A work proposal docket filed from an email has no session behind it:
+	// Build it (or Save for later) is recorded here, and ideaDecided queues
+	// the build session.
+	if it.SessionID == "" && it.Source == SrcEmail && it.Kind == "ask" {
+		switch a.Kind {
+		case "choose":
+			if a.Option < 0 || a.Option >= len(it.Options) {
+				return errors.New("no such option")
+			}
+			return s.st.SetAnswer(id, "Chose: "+it.Options[a.Option]+"."+comment(a.Text), "choose")
+		case "approve":
+			return s.st.SetAnswer(id, "Approved."+comment(a.Text), "approve")
+		}
+		return errors.New("choose Build it or Save for later")
+	}
 	// Answers that go back to the agent.
 	if it.SessionID == "" {
 		return errors.New("this item has no session to answer")

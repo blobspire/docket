@@ -82,6 +82,8 @@ CREATE TABLE IF NOT EXISTS email_threads (
   seen_at INTEGER NOT NULL DEFAULT 0,
   read_at INTEGER NOT NULL DEFAULT 0,
   until_at INTEGER NOT NULL DEFAULT 0,
+  idea_id TEXT NOT NULL DEFAULT '',
+  idea_status TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   UNIQUE (account, thread)
@@ -830,4 +832,36 @@ func mergeThreads(tx *sql.Tx, account string, keys []string, into string) error 
 		}
 	}
 	return nil
+}
+
+// SetThreadIdea links a thread to the work idea its email asked for, and
+// records the idea's status the draft last reflected.
+func (s *Store) SetThreadIdea(id, ideaID, status string) error {
+	_, err := s.DB.Exec(`UPDATE email_threads SET idea_id=?, idea_status=?, updated_at=? WHERE id=?`, ideaID, status, time.Now().Unix(), id)
+	return err
+}
+
+// ThreadIdea is a thread's work idea and the status its draft reflects.
+func (s *Store) ThreadIdea(id string) (ideaID, status string) {
+	s.DB.QueryRow(`SELECT idea_id, idea_status FROM email_threads WHERE id=?`, id).Scan(&ideaID, &status)
+	return
+}
+
+// ThreadsWithIdeas lists threads waiting on work, with the status their
+// draft last reflected.
+func (s *Store) ThreadsWithIdeas() (map[string][2]string, error) {
+	rows, err := s.DB.Query(`SELECT id, idea_id, idea_status FROM email_threads WHERE idea_id<>''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][2]string{}
+	for rows.Next() {
+		var id, idea, st string
+		if err := rows.Scan(&id, &idea, &st); err != nil {
+			return nil, err
+		}
+		out[id] = [2]string{idea, st}
+	}
+	return out, rows.Err()
 }

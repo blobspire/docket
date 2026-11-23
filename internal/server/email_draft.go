@@ -14,6 +14,7 @@ import (
 
 	"github.com/blobspire/docket/internal/mail"
 	"github.com/blobspire/docket/internal/store"
+	"github.com/blobspire/docket/internal/ulid"
 )
 
 // Drafting. Each reply is written by its own Claude Code session that can
@@ -406,5 +407,81 @@ func (s *Server) revisePrompt(prev store.Draft, instruction string) string {
 	return b.String()
 }
 
-// afterDraft hooks a new draft into the rest of docket (work proposals).
-func (s *Server) afterDraft(t store.EmailThread, d store.Draft) {}
+// emailIdeaMark is the Reason of an idea docket filed from an email: its
+// build session is told the plan came from an email and was approved.
+const emailIdeaMark = "email:"
+
+// afterDraft files the work a draft says the email needs as an ordinary
+// idea proposal in its project (Build it / Save for later), linked to the
+// reply both ways. Only for senders you've written to before: a stranger's
+// email never puts work in front of you.
+func (s *Server) afterDraft(t store.EmailThread, d store.Draft) {
+	if !d.Work.Needed || t.Project == "" || t.FirstTime {
+		return
+	}
+	if id, _ := s.st.ThreadIdea(t.ID); id != "" {
+		return // one proposal per thread; the draft keeps it current
+	}
+	who := t.From.Display()
+	body := fmt.Sprintf("From **%s**'s email \"%s\" ([the reply](/item/%s)). %s will send the reply once this is built, or a holding reply now.\n\n**Plan**\n\n%s\n\n**Why**\n\n%s\n",
+		who, oneLine(t.Subject, 120), t.ItemID, s.cfg.Person, strings.TrimSpace(d.Work.Plan), d.Work.Why)
+	i := store.Idea{ID: ulid.ShortID("idea"), Project: t.Project, Title: d.Work.Title, Body: body, Route: "build", Status: store.IdeaProposed,
+		Reason: emailIdeaMark + t.ID}
+	it := store.Item{ID: ulid.ItemID(), Kind: "ask", Source: SrcEmail, Title: d.Work.Title, Body: body, Project: t.Project, Urgency: "normal",
+		Options: []string{ProposeBuild, ProposeSave}, Recommend: ProposeBuild, DedupeKey: "key:" + t.Project + ":" + i.ID}
+	itemID, _, err := s.st.UpsertItem(it)
+	if err != nil {
+		s.log.Printf("email work %s: %v", t.ID, err)
+		return
+	}
+	i.ItemID = itemID
+	if err := s.st.AddIdea(i); err != nil {
+		s.log.Printf("email work %s: %v", t.ID, err)
+		return
+	}
+	s.st.SetThreadIdea(t.ID, i.ID, store.IdeaProposed)
+	s.st.AppendToItem(t.ItemID, fmt.Sprintf("**Needs work first:** [%s](/item/%s) in %s. The draft says it's done; send it once that's built, or send the holding reply now.", d.Work.Title, itemID, t.Project))
+	s.bumpEmail()
+}
+
+// followIdeas revises a reply when the work it waits on is built, saved
+// for later or dismissed, so the draft always says what's true. The reply
+// item comes back to the top of Email with the new version.
+func (s *Server) followIdeas() {
+	threads, err := s.st.ThreadsWithIdeas()
+	if err != nil {
+		return
+	}
+	for tid, v := range threads {
+		i, ok, _ := s.st.GetIdea(v[0])
+		if !ok || i.Status == v[1] {
+			continue
+		}
+		var instruction string
+		switch i.Status {
+		case store.IdeaBuilt:
+			instruction = "The work this email asked for is done and shipped: " + firstNonEmptyStr(i.Note, i.Title) + ". Rewrite the reply to say it's live, briefly and concretely (what changed and where to find it). No holding reply is needed now."
+		case store.IdeaSaved:
+			instruction = s.cfg.Person + " saved the requested work for later instead of building it now. Rewrite the reply so it doesn't say it's done: thank them, say it's on the list, and promise no date."
+		case store.IdeaDismissed:
+			instruction = s.cfg.Person + " decided not to do the requested work. Rewrite the reply so it doesn't promise it: answer politely and briefly."
+		default:
+			s.st.SetThreadIdea(tid, i.ID, i.Status)
+			continue
+		}
+		t, ok := s.st.Thread(tid)
+		if !ok {
+			continue
+		}
+		if it, ok, _ := s.st.GetItem(t.ItemID); !ok || closedStatus(it.Status) {
+			s.st.SetThreadIdea(tid, i.ID, i.Status)
+			continue
+		}
+		if err := s.st.QueueDraft(tid, "revise", instruction); err != nil {
+			continue // a draft is being written; try again next tick
+		}
+		s.st.SetThreadIdea(tid, i.ID, i.Status)
+		s.st.TouchItem(t.ItemID)
+		kick(s.emailOutKick)
+	}
+}

@@ -21,6 +21,7 @@ func (s *Server) emailOutTick(ctx context.Context) {
 	if !s.cfg.Email.On() {
 		return
 	}
+	s.followIdeas()
 	s.startDrafts(ctx)
 	s.sendDue(ctx)
 }

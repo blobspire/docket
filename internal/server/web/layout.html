@@ -340,7 +340,7 @@
   {{template "emaildock" .}}
 {{else}}
   {{$rule := eq .Kind "rule"}}
-  {{if and .SessionID (not $rule)}}
+  {{if and (or .SessionID .Idea) (not $rule)}}
     {{if or .Options (eq .Kind "approval")}}
       {{template "reply" (reply .ID "Answer in your own words" true)}}
       <div class="dk-a">

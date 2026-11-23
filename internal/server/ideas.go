@@ -640,13 +640,25 @@ func (s *Server) ideaDecided(before store.Item, a Action) {
 	if next == "" || next == i.Status || i.Status == store.IdeaBuilt {
 		return
 	}
+	// No session wrote it (docket filed it from an email): building means
+	// starting a session, given the approved plan and nothing else.
+	fromEmail := i.SessionID == "" && strings.HasPrefix(i.Reason, emailIdeaMark)
+	if next == store.IdeaBuilding && fromEmail {
+		next = store.IdeaQueued
+	}
 	s.st.EditIdea(i.ID, func(x *store.Idea) error {
 		x.Status = next
-		if next == store.IdeaBuilding {
+		if next == store.IdeaBuilding || next == store.IdeaQueued {
 			x.Error = ""
+		}
+		if fromEmail && next == store.IdeaQueued {
+			x.Route = "build"
 		}
 		return nil
 	})
+	if next == store.IdeaQueued {
+		s.kickIdeas()
+	}
 }
 
 // ---- the Ideas page's buttons ---------------------------------------------------
