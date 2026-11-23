@@ -607,3 +607,91 @@ func TestAMessageWhileYouEditBlocksTheSend(t *testing.T) {
 		}
 	}
 }
+
+func draftAnswer(body string) string {
+	return `{"session_id":"sess-x","structured_output":{"subject":"Re: Undo a removed resident?","reply_all":false,"body_html":"<p>` + body +
+		`</p>","holding_html":"","notes":"","questions":[],"work":{"needed":false,"title":"","plan":"","why":""}}}`
+}
+
+func nancyWrites(t *testing.T, e *env, f *fakeModel, id, text string) {
+	t.Helper()
+	mailtest.Append(t, e.s.cfg.Email.Accounts[0].IMAP, "INBOX", msg(id, "Nancy Smith <nancy@example.org>", "me@example.com", "Re: Undo a removed resident?",
+		text, "In-Reply-To: <n1@x>", "References: <n1@x>"), time.Now())
+	f.answer(`{"structured_output":{"threads":[]}}`)
+	e.s.readAccount(e.ctx, e.s.cfg.Email.Accounts[0])
+}
+
+// When they write again after your own edit, the new draft is written from
+// your edit (the drafting agent is shown it and told to keep it), and the
+// one after that keeps building on it.
+func TestARedraftKeepsYourEdit(t *testing.T) {
+	e, f, _, th := replyEnv(t)
+	f.answer(draftAnswer("AGENT-V1"))
+	e.runDrafts()
+	if rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {"1"}, "seen": {sheetSeen(t, e, th)}, "html": {"<p>MY-OWN-WORDS</p>"}, "to": {"nancy@example.org"}}); rec.Code != 200 {
+		t.Fatalf("edit: %d %s", rec.Code, rec.Body.String())
+	}
+	nancyWrites(t, e, f, "n2@x", "Also, which form do I use?")
+	e.s.staleDrafts()
+	f.answer(draftAnswer("MY-OWN-WORDS and the form is B"))
+	e.runDrafts()
+	if p := f.prompt(); !strings.Contains(p, "MY-OWN-WORDS") || !strings.Contains(p, "edited it by hand") || !strings.Contains(p, "which form do I use") {
+		t.Fatalf("the redraft must be shown your edit and the new message:\n%s", p)
+	}
+	d3, _ := e.s.st.LatestDraft(th.ID)
+	if d3.Version != 3 || d3.Source != "revision" {
+		t.Fatalf("v3 should be a revision of your edit: v%d %s", d3.Version, d3.Source)
+	}
+	nancyWrites(t, e, f, "n3@x", "And by when?")
+	e.s.staleDrafts()
+	f.answer(draftAnswer("v4"))
+	e.runDrafts()
+	if p := f.prompt(); !strings.Contains(p, "MY-OWN-WORDS and the form is B") || !strings.Contains(p, "keep them") {
+		t.Fatalf("the next redraft must build on the version that kept your edit:\n%s", p)
+	}
+}
+
+// Changes you asked for survive a redraft too.
+func TestARedraftKeepsTheChangesYouAskedFor(t *testing.T) {
+	e, f, _, th := replyEnv(t)
+	f.answer(draftAnswer("AGENT-V1"))
+	e.runDrafts()
+	if rec := postForm(e, "/email/"+th.ID+"/revise", url.Values{"text": {"mention FRIDAY-PICKUP"}}); rec.Code != 200 {
+		t.Fatalf("revise: %d %s", rec.Code, rec.Body.String())
+	}
+	f.answer(draftAnswer("REVISED-V2 with Friday pickup"))
+	e.runDrafts()
+	nancyWrites(t, e, f, "n2@x", "Also, which form do I use?")
+	e.s.staleDrafts()
+	f.answer(draftAnswer("v3"))
+	e.runDrafts()
+	if p := f.prompt(); !strings.Contains(p, "REVISED-V2 with Friday pickup") || !strings.Contains(p, "mention FRIDAY-PICKUP") {
+		t.Fatalf("the redraft must be shown the revised version and what you asked for:\n%s", p)
+	}
+	// And the one after that still knows what you asked for.
+	nancyWrites(t, e, f, "n3@x", "And by when?")
+	e.s.staleDrafts()
+	f.answer(draftAnswer("v4"))
+	e.runDrafts()
+	if p := f.prompt(); !strings.Contains(p, "mention FRIDAY-PICKUP") {
+		t.Fatalf("a later redraft must still be told what you asked for:\n%s", p)
+	}
+}
+
+// An agent's own draft is still written again from scratch when they write
+// again: its assumptions may be stale, and there's nothing of yours in it.
+func TestARedraftOfTheAgentsOwnDraftStartsOver(t *testing.T) {
+	e, f, _, th := replyEnv(t)
+	f.answer(draftAnswer("AGENT-V1"))
+	e.runDrafts()
+	nancyWrites(t, e, f, "n2@x", "Also, which form do I use?")
+	e.s.staleDrafts()
+	f.answer(draftAnswer("v2"))
+	e.runDrafts()
+	if p := f.prompt(); strings.Contains(p, "AGENT-V1") || strings.Contains(p, "Your previous draft") {
+		t.Fatalf("an agent draft is redrafted from scratch:\n%s", p)
+	}
+	if d, _ := e.s.st.LatestDraft(th.ID); d.Source != "agent" {
+		t.Fatalf("source: %s", d.Source)
+	}
+}

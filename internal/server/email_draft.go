@@ -93,12 +93,13 @@ func (s *Server) runDraft(ctx context.Context, j store.EmailJob) {
 	// saw then; if anything arrived since, write it fresh from the whole
 	// thread instead, so the new version can't hide a newer message.
 	basis := s.st.LastMessageRow() // read before the thread is, so it never overstates what was seen
+	builtOn := prevFor(j, prev, hasPrev)
 	if j.Kind == "revise" && j.Session != "" && hasPrev && !s.st.WroteSince(t.Account, t.Thread, prev.Basis, s.inbound(t.Account)) {
 		call.Resume = j.Session
 		call.Prompt = s.revisePrompt(prev, j.Instruction)
 		basis = prev.Basis
 	} else {
-		call.Prompt = s.draftPrompt(t, a, code, prevFor(j, prev, hasPrev), j.Instruction)
+		call.Prompt = s.draftPrompt(t, a, code, builtOn, j.Instruction)
 	}
 	res, err := s.runModel(ctx, call)
 	if err != nil && call.Resume != "" {
@@ -121,6 +122,14 @@ func (s *Server) runDraft(ctx context.Context, j store.EmailJob) {
 	}
 	d := s.draftFrom(t, a, out, j)
 	d.Basis = basis // the mail it saw: stored before this
+	if builtOn != nil && builtOn.Source != "agent" {
+		// Built on your edit or the changes you asked for: still yours, so
+		// the next redraft keeps them too.
+		d.Source = "revision"
+		if d.Instruction == "" {
+			d.Instruction = builtOn.Instruction
+		}
+	}
 	if _, err := s.st.AddDraft(d); err != nil {
 		s.st.EndJob(t.ID, "failed", res.Session, err.Error())
 		return
@@ -130,8 +139,12 @@ func (s *Server) runDraft(ctx context.Context, j store.EmailJob) {
 	s.afterDraft(t, d)
 }
 
+// prevFor is the version a new draft builds on: the latest one for a
+// revision, and whenever the latest has your input in it (your edit, or
+// changes you asked for), so a redraft (after a new message, say) never
+// drops it. An agent's own draft is otherwise written again from scratch.
 func prevFor(j store.EmailJob, prev store.Draft, ok bool) *store.Draft {
-	if j.Kind == "revise" && ok {
+	if ok && (j.Kind == "revise" || prev.Source == "edit" || prev.Source == "revision") {
 		return &prev
 	}
 	return nil
@@ -401,8 +414,13 @@ Follow this guide to %[1]s's writing voice and formatting exactly. Ignore its pa
 	}
 	if prev != nil {
 		fmt.Fprintf(&b, "## Your previous draft\n\nBEGIN DRAFT %s\n%s\nEND DRAFT %s\n\n", nonce, strings.ReplaceAll(prev.HTML, nonce, ""), nonce)
-		if prev.Source == "edit" {
-			fmt.Fprintf(&b, "(%s edited it by hand; keep their edits.)\n\n", person)
+		switch {
+		case prev.Source == "edit":
+			fmt.Fprintf(&b, "(%s edited it by hand; keep their edits, and update it for anything new in the conversation.)\n\n", person)
+		case prev.Source == "revision" && strings.TrimSpace(prev.Instruction) != "":
+			fmt.Fprintf(&b, "(It has changes %s asked for: \"%s\". Keep them, and update it for anything new in the conversation.)\n\n", person, oneLine(prev.Instruction, 500))
+		case prev.Source == "revision":
+			fmt.Fprintf(&b, "(It has changes %s made or asked for; keep them, and update it for anything new in the conversation.)\n\n", person)
 		}
 	}
 	if strings.TrimSpace(instruction) != "" {
