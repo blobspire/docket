@@ -24,6 +24,9 @@ type Server struct {
 	deliverKick    chan struct{}
 	transcribeKick chan struct{}
 	ideasKick      chan struct{}
+	emailKick      chan struct{}
+	emailOutKick   chan struct{}
+	drafting       sync.WaitGroup // drafting sessions running
 	pullKick       map[string]chan struct{}
 
 	finishMu sync.Mutex // one dictation finishes at a time
@@ -45,7 +48,7 @@ func Open(cfg *Config) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{cfg: cfg, st: st, log: log.New(os.Stderr, "docket: ", log.LstdFlags),
-		processKick: make(chan struct{}, 1), deliverKick: make(chan struct{}, 1), transcribeKick: make(chan struct{}, 1), ideasKick: make(chan struct{}, 1),
+		processKick: make(chan struct{}, 1), deliverKick: make(chan struct{}, 1), transcribeKick: make(chan struct{}, 1), ideasKick: make(chan struct{}, 1), emailKick: make(chan struct{}, 1), emailOutKick: make(chan struct{}, 1),
 		pullKick: map[string]chan struct{}{}, hold: undoHold}
 	for _, m := range cfg.Machines {
 		s.pullKick[m.Name] = make(chan struct{}, 1)
@@ -147,6 +150,10 @@ func (s *Server) Run(ctx context.Context) error {
 	loop("leads", 30*time.Second, nil, s.leadTick)
 	loop("transcribe", 20*time.Second, s.transcribeKick, s.transcribeTick)
 	loop("ideas", 30*time.Second, s.ideasKick, s.ideasTick)
+	s.st.RequeueStale(time.Now().Unix()) // drafts that were running when docket stopped
+	s.st.EndStalePasses()                // and a check it was in the middle of
+	loop("email", 30*time.Second, s.emailKick, s.emailTick)
+	loop("email-out", 5*time.Second, s.emailOutKick, s.emailOutTick)
 
 	srv := &http.Server{Addr: s.cfg.Listen, Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)

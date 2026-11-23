@@ -1,7 +1,9 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -133,5 +135,147 @@ func TestAHugeReferencesListNeverBlocksStoring(t *testing.T) {
 	}, me)
 	if err != nil || len(got) != 2 {
 		t.Fatalf("stored %d: %v", len(got), err)
+	}
+}
+
+// The cross-pass case: their reply was triaged (with a reply item and a
+// draft) before your message linking it to the conversation was read. A
+// thread holding state never moves: the reply item, its draft and anything
+// on its way out stay exactly where they are.
+func TestATriagedEarlyReplyStaysItsOwnThread(t *testing.T) {
+	s := open(t)
+	now := time.Now()
+	inbound := func(f string) bool { return f == "INBOX" }
+	a := &mail.Message{Folder: "INBOX", UID: 1, UIDValidity: 1, MessageID: "A@x", From: mail.Addr{Email: "nancy@x.org"}, Subject: "Undo?", Date: now.Add(-3 * time.Hour)}
+	added, _ := s.AddEmail("gmail", []*mail.Message{a}, me)
+	s.NoteMessages("gmail", added, inbound)
+	c := &mail.Message{Folder: "INBOX", UID: 2, UIDValidity: 1, MessageID: "C@x", InReplyTo: []string{"B@x"}, From: mail.Addr{Email: "nancy@x.org"},
+		Subject: "Re: Undo?", Date: now.Add(-time.Hour)}
+	added, _ = s.AddEmail("gmail", []*mail.Message{c}, me)
+	s.NoteMessages("gmail", added, inbound)
+	early := ThreadID("gmail", "B@x")
+	s.SetVerdict(early, "p2", Verdict{Verdict: "reply", Line: "Reply to Nancy"})
+	s.SetThreadItem(early, "dk-item")
+	s.AddDraft(Draft{ThreadID: early, HTML: "<p>draft</p>"})
+
+	b := &mail.Message{Folder: "Sent", UID: 1, UIDValidity: 1, MessageID: "B@x", InReplyTo: []string{"A@x"}, References: []string{"A@x"},
+		From: mail.Addr{Email: "me@example.com"}, Subject: "Re: Undo?", Date: now.Add(-2 * time.Hour)}
+	added, _ = s.AddEmail("gmail", []*mail.Message{b}, me)
+	s.NoteMessages("gmail", added, inbound)
+
+	th, ok := s.Thread(early)
+	if !ok || th.ItemID != "dk-item" {
+		t.Fatalf("the triaged early thread must stay: %+v", th)
+	}
+	if d, ok := s.LatestDraft(early); !ok || d.HTML != "<p>draft</p>" {
+		t.Fatal("its draft must stay with it")
+	}
+	if msgs, _ := s.ThreadMessages("gmail", "B@x"); len(msgs) != 1 || msgs[0].MessageID != "C@x" {
+		t.Fatalf("its message must stay with it: %+v", msgs)
+	}
+}
+
+// An early reply nobody has triaged yet does join its conversation, and
+// its pending triage goes with it.
+func TestAnUntriagedEarlyReplyJoinsItsConversation(t *testing.T) {
+	s := open(t)
+	now := time.Now()
+	inbound := func(f string) bool { return f == "INBOX" }
+	a := &mail.Message{Folder: "INBOX", UID: 1, UIDValidity: 1, MessageID: "A@x", From: mail.Addr{Email: "nancy@x.org"}, Subject: "Undo?", Date: now.Add(-3 * time.Hour)}
+	added, _ := s.AddEmail("gmail", []*mail.Message{a}, me)
+	s.NoteMessages("gmail", added, inbound)
+	s.SetVerdict(ThreadID("gmail", "A@x"), "p1", Verdict{Verdict: "digest", Line: "Nancy asked"})
+	c := &mail.Message{Folder: "INBOX", UID: 2, UIDValidity: 1, MessageID: "C@x", InReplyTo: []string{"B@x"}, From: mail.Addr{Email: "nancy@x.org"},
+		Subject: "Re: Undo?", Date: now.Add(-time.Hour)}
+	added, _ = s.AddEmail("gmail", []*mail.Message{c}, me)
+	s.NoteMessages("gmail", added, inbound)
+	b := &mail.Message{Folder: "Sent", UID: 1, UIDValidity: 1, MessageID: "B@x", InReplyTo: []string{"A@x"}, References: []string{"A@x"},
+		From: mail.Addr{Email: "me@example.com"}, Subject: "Re: Undo?", Date: now.Add(-2 * time.Hour)}
+	added, _ = s.AddEmail("gmail", []*mail.Message{b}, me)
+	s.NoteMessages("gmail", added, inbound)
+	if _, ok := s.Thread(ThreadID("gmail", "B@x")); ok {
+		t.Fatal("the untriaged early row should merge away")
+	}
+	th, _ := s.Thread(ThreadID("gmail", "A@x"))
+	if th.InboundAt != c.Date.Unix() || !th.NeedsTriage {
+		t.Fatalf("merged row: %+v", th)
+	}
+	if msgs, _ := s.ThreadMessages("gmail", "A@x"); len(msgs) != 3 {
+		t.Fatalf("messages: %d", len(msgs))
+	}
+}
+
+// A database from before a column existed gets it on open.
+func TestEmailColumnsAreMigrated(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	old, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old.Exec(`CREATE TABLE email_outbox (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, item_id TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL,
+		kind TEXT NOT NULL, hold_until INTEGER NOT NULL, status TEXT NOT NULL, message_id TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL, sent_at INTEGER NOT NULL DEFAULT 0)`)
+	old.Exec(`CREATE TABLE email_threads (id TEXT PRIMARY KEY, account TEXT NOT NULL, thread TEXT NOT NULL, subject TEXT NOT NULL DEFAULT '',
+		from_name TEXT NOT NULL DEFAULT '', from_addr TEXT NOT NULL DEFAULT '', last_inbound TEXT NOT NULL DEFAULT '', inbound_at INTEGER NOT NULL DEFAULT 0,
+		replied_at INTEGER NOT NULL DEFAULT 0, verdict TEXT NOT NULL DEFAULT '', line TEXT NOT NULL DEFAULT '', why TEXT NOT NULL DEFAULT '',
+		project TEXT NOT NULL DEFAULT '', work TEXT NOT NULL DEFAULT '', first_time INTEGER NOT NULL DEFAULT 0, needs_triage INTEGER NOT NULL DEFAULT 0,
+		triaged_at INTEGER NOT NULL DEFAULT 0, pass_id TEXT NOT NULL DEFAULT '', item_id TEXT NOT NULL DEFAULT '', seen_at INTEGER NOT NULL DEFAULT 0,
+		read_at INTEGER NOT NULL DEFAULT 0, until_at INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, UNIQUE (account, thread))`)
+	old.Close()
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.HoldSend(Outgoing{ID: "o1", ThreadID: "t", Version: 1, Kind: "reply", Answers: "m", HoldUntil: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ThreadsToTriage(10); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// "They wrote again" counts new messages in the inbound folders only, by
+// arrival: a copy of a message already seen doesn't count.
+func TestWroteSinceIgnoresCopiesAndOtherFolders(t *testing.T) {
+	s := open(t)
+	inbound := []string{"INBOX", "Important"}
+	s.AddEmail("gmail", []*mail.Message{{Folder: "INBOX", UID: 1, UIDValidity: 1, MessageID: "m1@x", From: mail.Addr{Email: "n@x.org"}, Date: time.Now()}}, me)
+	basis := s.LastMessageRow()
+	// The same message shows up in another watched folder: not new.
+	s.AddEmail("gmail", []*mail.Message{{Folder: "Important", UID: 9, UIDValidity: 1, MessageID: "m1@x", From: mail.Addr{Email: "n@x.org"}, Date: time.Now()}}, me)
+	if s.WroteSince("gmail", "m1@x", basis, inbound) {
+		t.Fatal("a copy of a seen message counted as new")
+	}
+	// A message from an address that isn't you, in Sent: not to you.
+	s.AddEmail("gmail", []*mail.Message{{Folder: "Sent", UID: 3, UIDValidity: 1, MessageID: "s1@x", InReplyTo: []string{"m1@x"}, From: mail.Addr{Email: "alias@x.org"}, Date: time.Now()}}, me)
+	if s.WroteSince("gmail", "m1@x", basis, inbound) {
+		t.Fatal("a Sent message counted as them writing again")
+	}
+	s.AddEmail("gmail", []*mail.Message{{Folder: "INBOX", UID: 2, UIDValidity: 1, MessageID: "m2@x", InReplyTo: []string{"m1@x"}, From: mail.Addr{Email: "n@x.org"}, Date: time.Now().Add(-48 * time.Hour)}}, me)
+	if !s.WroteSince("gmail", "m1@x", basis, inbound) {
+		t.Fatal("a new (backdated) message must count")
+	}
+	if s.WroteSince("gmail", "m1@x", s.LastMessageRow(), inbound) {
+		t.Fatal("nothing after the newest")
+	}
+}
+
+// A VACUUM (which may renumber rowids) doesn't change what a draft saw.
+func TestDraftBasisSurvivesVacuum(t *testing.T) {
+	s := open(t)
+	inbound := []string{"INBOX"}
+	for i := 0; i < 5; i++ {
+		s.AddEmail("gmail", []*mail.Message{{Folder: "INBOX", UID: uint32(i + 1), UIDValidity: 1, MessageID: fmt.Sprintf("m%d@x", i), From: mail.Addr{Email: "n@x.org"}, Date: time.Now()}}, me)
+	}
+	basis := s.LastMessageRow()
+	s.AddEmail("gmail", []*mail.Message{{Folder: "INBOX", UID: 9, UIDValidity: 1, MessageID: "late@x", InReplyTo: []string{"m4@x"}, From: mail.Addr{Email: "n@x.org"}, Date: time.Now()}}, me)
+	before := s.WroteSince("gmail", "m4@x", basis, inbound)
+	s.DB.Exec(`DELETE FROM email_messages WHERE message_id='m0@x'`) // give VACUUM something to renumber
+	if _, err := s.DB.Exec(`VACUUM`); err != nil {
+		t.Fatal(err)
+	}
+	if !before || s.WroteSince("gmail", "m4@x", basis, inbound) != before || s.LastMessageRow() != basis+1 {
+		t.Fatalf("before %v, after %v, last %d (basis %d)", before, s.WroteSince("gmail", "m4@x", basis, inbound), s.LastMessageRow(), basis)
 	}
 }

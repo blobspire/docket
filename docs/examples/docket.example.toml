@@ -54,3 +54,37 @@ mode = "push"
 # model = "claude-opus-5-5"                # research sessions and the router
 # max_running = 4                          # sessions researching or building at once
 # clone_dir = "~/code/git"                 # where repositories are cloned on this server when their laptop sleeps
+
+# Email triage: docket sorts your mail three times a day, drafts replies,
+# and digests what's worth reading. See docs/email.md. Passwords live in
+# files only you can read (chmod 600), never in this file.
+# [email]
+# schedule = ["daily@08:00", "daily@12:30", "daily@17:30"]
+# triage_model = "claude-sonnet-5-5"
+# draft_model = "claude-opus-5-5"
+# max_running = 4                   # drafts written at once; the rest wait
+# digest_days = 3
+# keep_days = 30                    # message bodies kept this long
+# voice = "~/.claude/skills/draft-email/SKILL.md"   # your writing guide
+#
+# [[email.account]]                 # Gmail, with an app password
+# name = "gmail"
+# label = "Gmail"
+# address = "you@gmail.com"
+# display_name = "Your Name"
+# imap = "imap.gmail.com:993"
+# smtp = "smtp.gmail.com:587"
+# password_file = "~/.config/docket/secrets/gmail-app-password"
+#
+# [[email.account]]                 # Microsoft 365 through DavMail on this machine
+# name = "work"
+# label = "Work"
+# address = "you@example.edu"
+# imap = "127.0.0.1:1143"
+# smtp = "127.0.0.1:1025"
+# security = "plain"                # only allowed for a gateway on loopback
+# password_file = "~/.config/docket/secrets/davmail-password"
+# signature_html = "~/.config/docket/signatures/work/signature.html"
+# signature_text = "~/.config/docket/signatures/work/signature.txt"
+# signin_log = "~/.local/state/davmail/davmail.out.log"   # shows DavMail's sign-in code on docket
+# web = "outlook"

@@ -57,11 +57,11 @@
 
   // ---- toast ----------------------------------------------------------------------------
   const toastEl = $("#toast");
-  let toastTimer, undoId = null, undoDecision = "", keepId = null;
-  const toast = (msg, { undo = null, keep = null, err = false, decision = "", ms = 0 } = {}) => {
+  let toastTimer, undoId = null, undoDecision = "", keepId = null, undoFn = null;
+  const toast = (msg, { undo = null, keep = null, err = false, decision = "", ms = 0, onUndo = null } = {}) => {
     $("#toast-t").textContent = msg;
-    undoId = undo; keepId = keep; undoDecision = undo ? decision : "";
-    $("#toast-u").hidden = !undo;
+    undoId = undo; keepId = keep; undoDecision = undo ? decision : ""; undoFn = onUndo;
+    $("#toast-u").hidden = !(undo || onUndo);
     $("#toast-k").hidden = !keep;
     toastEl.classList.toggle("err", err);
     placeToast();
@@ -70,7 +70,7 @@
     clearTimeout(toastTimer);
     toastTimer = setTimeout(hideToast, ms || (undo || keep || err ? 6500 : 3500));
   };
-  const hideToast = () => { toastEl.hidden = true; undoId = keepId = null; };
+  const hideToast = () => { toastEl.hidden = true; undoId = keepId = null; undoFn = null; };
   // Above the dock while an item is open, and above the "list changed"
   // pill, so it never covers a button.
   const placeToast = () => {
@@ -333,6 +333,7 @@
     return true;
   }
   const undoLast = () => {
+    if (undoFn) { const f = undoFn; hideToast(); return f(); }
     // Undo exactly the decision it reported (another tab may have acted since).
     const [id, decision] = undoId ? [undoId, undoDecision] : (ss.get("docket.last") || "").split(" ");
     hideToast();
@@ -605,7 +606,7 @@
     pointer = false;
     if (window.docketDictate && window.docketDictate.isOpen()) return; // the capture sheet has the keys
     const k = e.key, a = document.activeElement;
-    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName);
+    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) || a.isContentEditable;
     if (e.metaKey || e.ctrlKey || e.altKey) {
       // Cmd/Ctrl+Enter sends what you're writing.
       if (k === "Enter" && a.tagName === "TEXTAREA") { e.preventDefault(); a.form?.requestSubmit(); }
@@ -733,6 +734,7 @@
         v0 = document.body.dataset.version = doc.body.dataset.version;
         if ($(".side") && sideAt) [$(".side").scrollLeft, $(".side").scrollTop] = sideAt;
         applyFolds();
+        observeDigest();
         const q1 = q0 && $("#q");
         if (q1) {
           q1.focus({ preventScroll: true });
@@ -773,7 +775,183 @@
   window.docketToast = toast;
   window.docketRefresh = () => refresh(true);
 
+  // ---- email ------------------------------------------------------------------------------------
+  // The digest: a line counts as seen once it has been on screen for a
+  // moment, and seen lines fold into "Earlier" when the next check brings
+  // new ones. Its buttons, Check now and Mark all read act in place.
+  const seenQ = new Set(), seenTimers = new Map();
+  let seenFlush = null;
+  const flushSeen = () => {
+    seenFlush = null;
+    if (!seenQ.size) return;
+    const body = new URLSearchParams();
+    seenQ.forEach((id) => body.append("id", id));
+    seenQ.clear();
+    fetch("/email/seen", { method: "POST", body, headers: { "X-Requested-With": "fetch" } }).catch(() => {});
+  };
+  const seenObs = "IntersectionObserver" in window ? new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      const id = e.target.dataset.thread;
+      if (e.isIntersecting && !document.hidden) {
+        if (!seenTimers.has(id)) seenTimers.set(id, setTimeout(() => {
+          seenTimers.delete(id);
+          seenObs.unobserve(e.target);
+          seenQ.add(id);
+          if (!seenFlush) seenFlush = setTimeout(flushSeen, 1500);
+        }, 1200));
+      } else if (seenTimers.has(id)) { clearTimeout(seenTimers.get(id)); seenTimers.delete(id); }
+    }
+  }, { threshold: 0.6 }) : null;
+  const observeDigest = () => { if (seenObs && docket) $$(".esec .dg[data-thread]").forEach((li) => seenObs.observe(li)); };
+  addEventListener("pagehide", flushSeen);
+  document.addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-email-act], [data-email-check], [data-email-readall]");
+    if (!b) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (b.disabled) return;
+    b.disabled = true;
+    let url, msg;
+    const li = b.closest("[data-thread]");
+    if (b.hasAttribute("data-email-check")) { url = "/email/check"; msg = "Checking your mail. New email appears here in a minute or two."; }
+    else if (b.hasAttribute("data-email-readall")) {
+      url = "/email/read-all?" + new URLSearchParams($$(".esec.dig .dg[data-thread]").map((x) => ["id", x.dataset.thread])).toString();
+      msg = "Marked all read";
+    }
+    else {
+      const a = b.dataset.emailAct;
+      url = `/email/${encodeURIComponent(li.dataset.thread)}/${a}`;
+      msg = { read: "Read", reply: "Moved to Email · needs you", noise: "Off the digest. Triage learns from it.", digest: "On the digest" }[a] || "Done";
+      li.classList.add("leaving");
+    }
+    try {
+      const res = await fetch(url, { method: "POST", headers: { "X-Requested-With": "fetch" }, signal: timeout(15000) });
+      if (!res.ok) throw new Error(String(res.status));
+      toast(msg);
+    } catch (_) {
+      toast("That didn't work. Try again.", { err: true });
+      if (li) li.classList.remove("leaving");
+    }
+    b.disabled = false;
+    refresh(true);
+  }, true);
+
+  // An email reply's dock and draft. Every button posts to /email/{thread}/…
+  // and then reloads the open item, so it shows what the server now holds.
+  const emailPost = async (thread, action, fields = {}) => {
+    const body = new URLSearchParams(fields);
+    const res = await fetch(`/email/${encodeURIComponent(thread)}/${action}`, { method: "POST", body, headers: { "X-Requested-With": "fetch" }, signal: timeout(150000) });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(j.error || `failed (${res.status})`);
+    return j;
+  };
+  const reloadSheet = async () => {
+    if (solo) {
+      // An item's own page: swap in a fresh sheet, so a toast (and its
+      // Undo) stays on screen.
+      try {
+        const res = await fetch(location.href, { signal: timeout(15000) });
+        const sh = res.ok && $(".sheet", new DOMParser().parseFromString(await res.text(), "text/html"));
+        const cur = $(".sheet");
+        if (sh && cur) { cur.replaceWith(sh); setupSheet(sh); return; }
+      } catch (_) {}
+      location.reload();
+      return;
+    }
+    if (openId) openSheet(openId, "none");
+    refresh(true);
+  };
+  const draftOf = (el) => { const sh = el.closest(".sheet") || document; return $("[data-email-draft]", sh); };
+  const threadOf = (el) => { const d = draftOf(el); if (d) return d.dataset.thread; const p = $("[data-thread]", el.closest(".sheet") || document); return p && p.dataset.thread; };
+  document.addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-email-do], [data-email-undo], [data-email-revise-open], [data-email-revise-x], [data-email-edit-open], [data-email-edit-cancel]");
+    if (!b) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const sh = b.closest(".sheet") || document;
+    const d = draftOf(b);
+    if (b.hasAttribute("data-email-revise-open")) { const f = $("[data-email-revise]", sh); if (f) { f.hidden = false; $("textarea", f).focus(); } return; }
+    if (b.hasAttribute("data-email-revise-x")) { const f = $("[data-email-revise]", sh); if (f) f.hidden = true; return; }
+    if (b.hasAttribute("data-email-edit-open") || b.hasAttribute("data-email-edit-cancel")) {
+      const f = d && $("[data-email-edit]", d), view = d && $(":scope > .dr-b", d);
+      if (!f) return;
+      const opening = b.hasAttribute("data-email-edit-open");
+      if (opening) { const ed = $(".dr-ed", f); ed.innerHTML = ed.dataset.html; }
+      f.hidden = !opening;
+      if (view) view.hidden = opening;
+      // While you edit, Send would send the saved version, not your text.
+      $$("[data-email-do], [data-email-edit-open], [data-email-revise-open]", sh).forEach((x) => { if (x.dataset.emailDo !== "redraft" && x.dataset.emailDo !== "retry") x.disabled = opening; });
+      if (opening) $(".dr-ed", f).focus();
+      return;
+    }
+    const thread = threadOf(b);
+    if (!thread || b.disabled) return;
+    b.disabled = true;
+    try {
+      if (b.hasAttribute("data-email-undo")) {
+        await emailPost(thread, "undo-send", { outbox: b.dataset.emailUndo });
+        toast("Not sent");
+      } else {
+        const a = b.dataset.emailDo;
+        const j = await emailPost(thread, a, { version: b.dataset.version || (d && d.dataset.version) || "" });
+        if (a === "send" || a === "holding") {
+          const secs = Math.round((j.hold_ms || 30000) / 1000);
+          toast(`${a === "holding" ? "Holding reply" : "Reply"} goes out in ${secs} s`, {
+            ms: j.hold_ms || 30000,
+            onUndo: async () => { try { await emailPost(thread, "undo-send", { outbox: j.outbox }); toast("Not sent"); } catch (err) { toast(err.message, { err: true }); } reloadSheet(); },
+          });
+        } else if (a === "save-draft") toast("Saved to your drafts");
+        else if (a === "redraft") toast("Writing a new draft");
+        else if (a === "retry") toast("Trying again");
+      }
+    } catch (err) { toast(err.message, { err: true }); }
+    b.disabled = false;
+    reloadSheet();
+  }, true);
+  document.addEventListener("submit", async (e) => {
+    const f = e.target.closest("[data-email-revise], [data-email-edit]");
+    if (!f) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const thread = threadOf(f), d = draftOf(f);
+    if (!thread) return;
+    const btn = $("button[type=submit]", f);
+    if (btn) btn.disabled = true;
+    try {
+      if (f.hasAttribute("data-email-revise")) {
+        const text = $("textarea", f).value.trim();
+        if (!text) { toast("Say what should change", { err: true }); return; }
+        await emailPost(thread, "revise", { text });
+        toast("Asked for the changes. The new version appears here.");
+      } else {
+        await emailPost(thread, "edit", { version: d.dataset.version, seen: d.dataset.seen, html: $(".dr-ed", f).innerHTML, to: f.to.value, cc: f.cc.value });
+        toast("Saved your edit");
+      }
+      reloadSheet();
+    } catch (err) { toast(err.message, { err: true }); }
+    finally { if (btn) btn.disabled = false; }
+  }, true);
+  // The Undo countdown, and a reload when a draft that was being written
+  // (or a send in its Undo window) finishes.
+  let emailV = null;
+  setInterval(async () => {
+    const sh = solo ? document : sheetEl();
+    if (!sh || document.hidden) return;
+    const p = $("[data-email-pending]", sh);
+    if (p) {
+      const left = $("[data-left]", p);
+      if (left) { const n = Math.max(0, +left.textContent - 1); left.textContent = n; if (n === 0) setTimeout(reloadSheet, 1500); }
+    }
+    if (!$("[data-email-writing]", sh) || $("[data-email-edit]:not([hidden])", sh) || $("[data-email-revise]:not([hidden])", sh)) return;
+    try {
+      const { v } = await (await fetch("/api/version", { signal: timeout(8000) })).json();
+      if (emailV !== null && v !== emailV) reloadSheet();
+      emailV = v;
+    } catch (_) {}
+  }, 1000);
+
   // ---- start --------------------------------------------------------------------------------------
+  observeDigest();
   applyFolds();
   if (solo) { const sh = $(".sheet"); if (sh) setupSheet(sh); }
   // The toast an action on the last page left for this one.

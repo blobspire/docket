@@ -113,7 +113,7 @@ func TestStripInvisibleUsesUnicodesOwnLists(t *testing.T) {
 func TestCleanEscapesTextAndLinks(t *testing.T) {
 	out, _ := Clean(`<p>&lt;img src=x onerror=alert(1)&gt;</p><p><a href='https://x.test/?q="onmouseover="alert(1)'>x</a></p><p><a href="https:///nohost">h</a></p>` +
 		`<p>&lt;a href="javascript:alert(1)"&gt;click&lt;/a&gt;</p>`)
-	for _, styled := range []string{out, Style(out), Document(out, "", "", nil)} {
+	for _, styled := range []string{out, Style(out), Preview(out), Document(out, "", "", nil)} {
 		nodes, err := html.ParseFragment(strings.NewReader(styled), &html.Node{Type: html.ElementNode, Data: "body", DataAtom: atom.Body})
 		if err != nil || len(nodes) == 0 || !strings.Contains(styled, "x.test") {
 			t.Fatalf("couldn't parse %q: %v", styled, err)

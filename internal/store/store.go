@@ -306,7 +306,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("store: schema: %w", err)
 	}
-	if _, err := db.Exec(emailSchema); err != nil {
+	if _, err := db.Exec(emailSchema + draftSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("store: email schema: %w", err)
 	}
@@ -314,6 +314,8 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("store: migrate: %w", err)
 	}
+	db.Exec(`UPDATE email_messages SET seq=rowid WHERE seq=0`)                                               // messages from before seq existed
+	db.Exec(`UPDATE email_drafts SET basis=(SELECT COALESCE(MAX(seq),0) FROM email_messages) WHERE basis=0`) // drafts from before basis existed
 	// Databases created before search existed: index their items once.
 	var indexed, items int
 	db.QueryRow(`SELECT COUNT(*) FROM items_fts`).Scan(&indexed)
@@ -371,6 +373,13 @@ var added = []struct{ table, column, ddl string }{
 	{"project_dirs", "clone", "INTEGER NOT NULL DEFAULT 0"},
 	{"sessions", "idea", "TEXT NOT NULL DEFAULT ''"},
 	{"ideas", "reset_at", "INTEGER NOT NULL DEFAULT 0"},
+	{"email_threads", "idea_id", "TEXT NOT NULL DEFAULT ''"},
+	{"email_threads", "idea_status", "TEXT NOT NULL DEFAULT ''"},
+	{"email_threads", "triage_fails", "INTEGER NOT NULL DEFAULT 0"},
+	{"email_outbox", "answers", "TEXT NOT NULL DEFAULT ''"},
+	{"email_drafts", "basis", "INTEGER NOT NULL DEFAULT 0"},
+	{"email_messages", "seq", "INTEGER NOT NULL DEFAULT 0"},
+	{"email_drafts", "hand_recipients", "INTEGER NOT NULL DEFAULT 0"},
 }
 
 func migrate(db *sql.DB) error {
@@ -1558,6 +1567,7 @@ type Decision struct {
 func (s *Store) DecisionsSince(ts int64, limit int) ([]Decision, error) {
 	rows, err := s.DB.Query(`SELECT d.item_id, d.action, d.answer, d.context, COALESCE(i.title,''), d.ts FROM decisions d
 		LEFT JOIN items i ON i.id = d.item_id WHERE d.ts >= ? AND d.action IN ('answer','approve','decline','choose','correction','dismiss','noise')
+		AND COALESCE(i.source,'') <> 'email' -- email corrections teach triage, not the coding agents' rules
 		ORDER BY d.ts LIMIT ?`, ts, limit)
 	if err != nil {
 		return nil, err

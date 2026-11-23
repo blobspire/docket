@@ -38,9 +38,18 @@ password_file = "`+pw+`"
 }
 
 func msg(id, from, to, subject, body string, extra ...string) string {
-	return "From: " + from + "\nTo: " + to + "\nSubject: " + subject + "\nDate: " + time.Now().Format(time.RFC1123Z) +
+	date := "\nDate: " + time.Now().Format(time.RFC1123Z)
+	for _, x := range extra {
+		if strings.HasPrefix(x, "Date:") {
+			date = ""
+		}
+	}
+	return "From: " + from + "\nTo: " + to + "\nSubject: " + subject + date +
 		"\nMessage-ID: <" + id + ">\n" + strings.Join(extra, "\n") + "\nContent-Type: text/plain; charset=utf-8\n\n" + body + "\n"
 }
+
+// dated is a Date header for msg.
+func dated(t time.Time) string { return "Date: " + t.Format(time.RFC1123Z) }
 
 func TestReadAccountStoresMailAndLearnsWhoYouWriteTo(t *testing.T) {
 	e, addr, _ := emailEnv(t, "")
