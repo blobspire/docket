@@ -51,14 +51,14 @@
   </section>
   {{end}}
 
-  {{with $q.Email}}{{template "emailsecs" .}}{{end}}
-
   {{if $q.Empty}}
   <div class="blank">
     <b>Nothing needs you{{if ne $q.Mode "all"}} here{{end}}.</b>
     {{if $q.Waiting}}Your answers are with the agents.{{else if eq $q.Mode "all"}}New items appear here on their own.{{end}}
   </div>
   {{end}}
+
+  {{with $q.Email}}{{template "emailsecs" .}}{{end}}
 
   {{if $q.Snoozed}}
   <details class="wt snz" data-wt="snoozed">

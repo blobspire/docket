@@ -616,7 +616,9 @@ body.ds-open { overflow: hidden; }
 @media (hover: none), (max-width: 700px) {
   .dg { flex-wrap: wrap; padding: 0 10px 10px 0; }
   .dg-q { opacity: 1; width: 100%; padding-left: 14px; }
-  .dg-q .qb span { font-size: 12.5px; }
+  .dg-q .qb { width: auto; height: 34px; padding: 0 10px; background: var(--btn); color: var(--fg-2); }
+  .dg-q .qb span { display: inline; font-size: 12.5px; }
+  .dg-q .qb .ic { width: 16px; height: 16px; }
 }
 .em-box { padding: 13px 15px; border-radius: 13px; background: var(--surface-2); border: 1px solid var(--line); margin-bottom: 18px; }
 .em-h { font-size: 14px; overflow-wrap: anywhere; }
