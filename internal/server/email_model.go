@@ -27,8 +27,6 @@ type modelCall struct {
 	Tools      string // "" for none, or "Read,Grep,Glob"
 	Dir        string // working directory ("" = an empty temp dir)
 	Restricted bool
-	Resume     string // continue this session
-	Keep       bool   // keep the session, so it can be resumed
 	Budget     float64
 	Timeout    time.Duration
 }
@@ -55,12 +53,9 @@ func (c modelCall) args() ([]string, error) {
 	if c.Restricted {
 		args = append(args, "--restricted")
 	}
-	if !c.Keep {
-		args = append(args, "--no-session-persistence")
-	}
-	if c.Resume != "" {
-		args = append(args, "--resume", c.Resume)
-	}
+	// No run keeps a session (a transcript would hold the mail it read):
+	// every draft is written from a full prompt.
+	args = append(args, "--no-session-persistence")
 	return args, nil
 }
 

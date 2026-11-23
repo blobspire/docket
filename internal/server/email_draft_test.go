@@ -53,12 +53,12 @@ func TestADraftIsWrittenInTheSandboxAndCleaned(t *testing.T) {
 
 	// The drafting session can only read, inside its own folder.
 	args := strings.Join(f.args(), " ") + " "
-	for _, want := range []string{"--safe-mode", "--strict-mcp-config", "--restricted", "--tools Read,Grep,Glob ", "--model claude-opus-5-5", "--json-schema"} {
+	for _, want := range []string{"--safe-mode", "--strict-mcp-config", "--restricted", "--tools Read,Grep,Glob ", "--model claude-opus-5-5", "--json-schema", "--no-session-persistence"} {
 		if !strings.Contains(args, want) {
 			t.Errorf("draft args missing %q: %s", want, args)
 		}
 	}
-	if strings.Contains(args, "--no-session-persistence") || strings.Contains(args, "Bash") || strings.Contains(args, "WebFetch") {
+	if strings.Contains(args, "--resume") || strings.Contains(args, "Bash") || strings.Contains(args, "WebFetch") {
 		t.Errorf("draft args: %s", args)
 	}
 	cwd, _ := os.ReadFile(filepath.Join(f.dir, "cwd"))
@@ -234,7 +234,8 @@ func TestEditingAndRevising(t *testing.T) {
 	if rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {"1"}, "html": {"<p>x</p>"}, "to": {"nancy@example.org"}}); rec.Code != 409 {
 		t.Fatalf("stale edit: %d", rec.Code)
 	}
-	// Asking for changes resumes the drafting session with your words.
+	// Asking for changes writes a new version from the whole thread, your
+	// edit and your words (no session is resumed).
 	if rec := postForm(e, "/email/"+th.ID+"/revise", url.Values{"text": {"Shorter, and mention Friday"}}); rec.Code != 200 {
 		t.Fatalf("revise: %d %s", rec.Code, rec.Body.String())
 	}
@@ -242,7 +243,7 @@ func TestEditingAndRevising(t *testing.T) {
 		"holding_html":"","notes":"","questions":[],"work":{"needed":false,"title":"","plan":"","why":""}}}`)
 	e.runDrafts()
 	args := strings.Join(f.args(), " ")
-	if !strings.Contains(args, "--resume sess-1") || !strings.Contains(f.prompt(), "Shorter, and mention Friday") || !strings.Contains(f.prompt(), "edited the draft by hand") {
+	if p := f.prompt(); strings.Contains(args, "--resume") || !strings.Contains(p, "Shorter, and mention Friday") || !strings.Contains(p, "edited it by hand") || !strings.Contains(p, "can we undo removing someone") {
 		t.Fatalf("revision: %s\n%s", args, f.prompt())
 	}
 	d, _ = e.s.st.LatestDraft(th.ID)
@@ -889,4 +890,190 @@ func TestTryAgainKeepsWhatYouAskedFor(t *testing.T) {
 	if d, _ := e.s.st.LatestDraft(th.ID); d.Source != "revision" || d.Instruction != "mention FRIDAY-PICKUP" {
 		t.Fatalf("v2: %s %q", d.Source, d.Instruction)
 	}
+}
+
+// A copy of a reply you'd sent before (a Gmail label put on the
+// conversation) isn't a new reply: your edit and the recipients you set
+// still carry into the next redraft.
+func TestACopyOfAnOldReplyIsntANewReply(t *testing.T) {
+	e, f, _, th := replyEnv(t)
+	e.s.cfg.Email.Accounts[0].Folders = []string{"INBOX", "Lab"}
+	f.answer(draftAnswer("AGENT-V1"))
+	e.runDrafts()
+	addr := e.s.cfg.Email.Accounts[0].IMAP
+	mine := msg("mine@x", "Cole <me@example.com>", "Nancy Smith <nancy@example.org>", "Re: Undo a removed resident?",
+		"Yes, done.", "In-Reply-To: <n1@x>", "References: <n1@x>", dated(time.Now().Add(time.Hour)))
+	mailtest.Append(t, addr, "Sent", mine, time.Now().Add(time.Hour))
+	mailtest.Append(t, addr, "INBOX", msg("n9@x", "Nancy Smith <nancy@example.org>", "me@example.com", "Re: Undo a removed resident?",
+		"Thanks! New question: can I add a second resident?", "In-Reply-To: <mine@x>", "References: <n1@x> <mine@x>", "Cc: Pat <pat@example.org>, Sam <sam@example.org>", dated(time.Now().Add(2*time.Hour))), time.Now().Add(2*time.Hour))
+	f.answer(`{"structured_output":{"threads":[{"key":"T1","verdict":"reply","line":"Reply to Nancy: second resident?","why":"asked","project":"","work":""}]}}`)
+	e.s.emailPass(e.ctx, "test")
+	f.answer(replyAll("NEW"))
+	e.runDrafts()
+	d, _ := e.s.st.LatestDraft(th.ID)
+	if rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {fmt.Sprint(d.Version)}, "seen": {sheetSeen(t, e, th)}, "html": {"<p>SECOND-EDIT</p>"},
+		"to": {"nancy@example.org"}, "cc": {"sam@example.org"}}); rec.Code != 200 {
+		t.Fatalf("edit: %d %s", rec.Code, rec.Body.String())
+	}
+	// You label the conversation in Gmail: its messages (your reply too) appear in Lab.
+	mailtest.Append(t, addr, "Lab", mine, time.Now().Add(time.Hour))
+	mailtest.Append(t, addr, "INBOX", msg("n10@x", "Nancy Smith <nancy@example.org>", "me@example.com", "Re: Undo a removed resident?",
+		"Oh, and by when?", "In-Reply-To: <n9@x>", "References: <n1@x> <mine@x> <n9@x>", "Cc: Pat <pat@example.org>, Sam <sam@example.org>", dated(time.Now().Add(3*time.Hour))), time.Now().Add(3*time.Hour))
+	f.answer(`{"structured_output":{"threads":[]}}`)
+	e.s.readAccount(e.ctx, e.s.cfg.Email.Accounts[0])
+	e.s.staleDrafts()
+	f.answer(replyAll("v-next"))
+	e.runDrafts()
+	d2, _ := e.s.st.LatestDraft(th.ID)
+	if p := f.prompt(); !strings.Contains(p, "SECOND-EDIT") || strings.Contains(emails(d2.Cc), "pat@") {
+		t.Fatalf("your edit / recipients were dropped because a copy of an old reply was stored: prompt has edit=%v cc=%s",
+			strings.Contains(p, "SECOND-EDIT"), emails(d2.Cc))
+	}
+}
+
+// The Sent copy of docket's own earlier reply, read late (the Sent folder
+// failed in the check that read their answer), isn't a new reply either.
+func TestALateSentCopyOfDocketsReplyIsntANewReply(t *testing.T) {
+	e, f, smtp, th := replyEnv(t)
+	f.answer(replyAll("AGENT-V1"))
+	e.runDrafts()
+	e.s.cfg.Email.SendHold.Duration = 0
+	if _, err := e.s.QueueSend(th.ID, 1, "reply"); err != nil {
+		t.Fatal(err)
+	}
+	e.s.sendDue(e.ctx)
+	addr := e.s.cfg.Email.Accounts[0].IMAP
+	sentRaw := strings.ReplaceAll(smtp.Messages()[0].Data, "\r\n", "\n")
+	mailtest.Append(t, addr, "INBOX", msg("n9@x", "Nancy Smith <nancy@example.org>", "me@example.com", "Re: Undo a removed resident?",
+		"Thanks! New question: can I add a second resident?", "In-Reply-To: <n1@x>", "References: <n1@x>", "Cc: Pat <pat@example.org>, Sam <sam@example.org>", dated(time.Now().Add(2*time.Hour))), time.Now().Add(2*time.Hour))
+	f.answer(`{"structured_output":{"threads":[{"key":"T1","verdict":"reply","line":"Reply to Nancy: second resident?","why":"asked","project":"","work":""}]}}`)
+	e.s.emailPass(e.ctx, "test")
+	f.answer(replyAll("NEW"))
+	e.runDrafts()
+	d, _ := e.s.st.LatestDraft(th.ID)
+	th, _ = e.s.st.Thread(th.ID)
+	if rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {fmt.Sprint(d.Version)}, "seen": {sheetSeen(t, e, th)}, "html": {"<p>SECOND-EDIT</p>"},
+		"to": {"nancy@example.org"}, "cc": {"sam@example.org"}}); rec.Code != 200 {
+		t.Fatalf("edit: %d %s", rec.Code, rec.Body.String())
+	}
+	mailtest.Append(t, addr, "Sent", sentRaw, time.Now())
+	mailtest.Append(t, addr, "INBOX", msg("n10@x", "Nancy Smith <nancy@example.org>", "me@example.com", "Re: Undo a removed resident?",
+		"Oh, and by when?", "In-Reply-To: <n9@x>", "References: <n1@x> <n9@x>", "Cc: Pat <pat@example.org>, Sam <sam@example.org>", dated(time.Now().Add(3*time.Hour))), time.Now().Add(3*time.Hour))
+	f.answer(`{"structured_output":{"threads":[]}}`)
+	e.s.readAccount(e.ctx, e.s.cfg.Email.Accounts[0])
+	e.s.staleDrafts()
+	f.answer(replyAll("v-next"))
+	e.runDrafts()
+	d2, _ := e.s.st.LatestDraft(th.ID)
+	if p := f.prompt(); !strings.Contains(p, "SECOND-EDIT") || strings.Contains(emails(d2.Cc), "pat@") {
+		t.Fatalf("edit dropped by a late Sent copy of the previous reply: edit=%v cc=%s", strings.Contains(p, "SECOND-EDIT"), emails(d2.Cc))
+	}
+}
+
+// A version written after you'd replied (Try again on an old failure)
+// is the agent's, not yours: it doesn't seed the next reply.
+func TestAChangeAfterYouRepliedDoesntSeedTheNextReply(t *testing.T) {
+	e, f, smtp, th := replyEnv(t)
+	f.answer(draftAnswer("AGENT-V1"))
+	e.runDrafts()
+	postForm(e, "/email/"+th.ID+"/revise", url.Values{"text": {"mention OLD-ASK"}})
+	f.answer(`{"is_error":true,"result":"overloaded"}`)
+	e.runDrafts()
+	e.s.cfg.Email.SendHold.Duration = 0
+	if _, err := e.s.QueueSend(th.ID, 1, "reply"); err != nil {
+		t.Fatal(err)
+	}
+	e.s.sendDue(e.ctx)
+	mailtest.Append(t, e.s.cfg.Email.Accounts[0].IMAP, "Sent", strings.ReplaceAll(smtp.Messages()[0].Data, "\r\n", "\n"), time.Now())
+	f.answer(`{"structured_output":{"threads":[]}}`)
+	e.s.readAccount(e.ctx, e.s.cfg.Email.Accounts[0])
+	if rec := postForm(e, "/email/"+th.ID+"/retry", url.Values{}); rec.Code != 200 {
+		t.Fatalf("retry: %d %s", rec.Code, rec.Body.String())
+	}
+	f.answer(draftAnswer("REWRITE-OF-ANSWERED"))
+	e.runDrafts()
+	d, _ := e.s.st.LatestDraft(th.ID)
+	mailtest.Append(t, e.s.cfg.Email.Accounts[0].IMAP, "INBOX", msg("n9@x", "Nancy Smith <nancy@example.org>", "me@example.com", "Re: Undo a removed resident?",
+		"Thanks! New question: can I add a second resident?", "In-Reply-To: <n1@x>", "References: <n1@x>", dated(time.Now().Add(2*time.Hour))), time.Now().Add(2*time.Hour))
+	f.answer(`{"structured_output":{"threads":[{"key":"T1","verdict":"reply","line":"Reply to Nancy: second resident?","why":"asked","project":"","work":""}]}}`)
+	e.s.emailPass(e.ctx, "test")
+	f.answer(draftAnswer("NEW"))
+	e.runDrafts()
+	if p := f.prompt(); strings.Contains(p, "REWRITE-OF-ANSWERED") {
+		t.Fatalf("the next reply was seeded from a rewrite of the already-answered message (prev src=%s)", d.Source)
+	}
+}
+
+// A revision sees the whole thread as stored now, not just what an
+// earlier drafting run saw: no session is resumed.
+func TestARevisionSeesTheWholeThread(t *testing.T) {
+	e, f, _, th := replyEnv(t)
+	f.answer(draftAnswer("AGENT-V1"))
+	e.runDrafts()
+	nancyWrites(t, e, f, "n2@x", "NEVER-MIND-DONT-DO-IT")
+	e.s.staleDrafts()
+	f.answer(`{"is_error":true,"result":"overloaded"}`)
+	e.runDrafts()
+	if rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {"1"}, "seen": {sheetSeen(t, e, th)}, "html": {"<p>OK, leaving them.</p>"}, "to": {"nancy@example.org"}}); rec.Code != 200 {
+		t.Fatalf("edit: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := postForm(e, "/email/"+th.ID+"/revise", url.Values{"text": {"friendlier"}}); rec.Code != 200 {
+		t.Fatalf("revise: %d", rec.Code)
+	}
+	f.answer(draftAnswer("REVISED"))
+	e.runDrafts()
+	if p, args := f.prompt(), strings.Join(f.args(), " "); strings.Contains(args, "--resume") || !strings.Contains(p, "NEVER-MIND-DONT-DO-IT") ||
+		!strings.Contains(p, "OK, leaving them.") || !strings.Contains(p, "friendlier") {
+		t.Fatalf("the revision must see the whole thread, your edit and your words (resume: %v):\n%s", strings.Contains(args, "--resume"), p)
+	}
+}
+
+// A request made while another waits in the queue (all drafts busy) is
+// added to it, not swapped for it.
+func TestAWaitingRequestIsntLost(t *testing.T) {
+	busy := func(e *env) {
+		e.s.cfg.Email.MaxRunning = 1
+		e.s.st.DB.Exec(`INSERT INTO email_jobs(thread_id, status, kind, instruction, queued_at, started_at) VALUES ('busy','running','draft','',1,?)`, time.Now().Unix())
+	}
+	free := func(e *env) { e.s.st.DB.Exec(`DELETE FROM email_jobs WHERE thread_id='busy'`) }
+	t.Run("docket's rewrite after the work was dismissed, then your ask", func(t *testing.T) {
+		e, f, th := workEnv(t, true)
+		busy(e)
+		ideaID, _ := e.s.st.ThreadIdea(th.ID)
+		e.s.st.EditIdea(ideaID, func(x *store.Idea) error { x.Status = store.IdeaDismissed; return nil })
+		e.s.followIdeas()
+		for i := 0; i < 2; i++ { // asked twice: said once
+			if rec := postForm(e, "/email/"+th.ID+"/revise", url.Values{"text": {"mention FRIDAY"}}); rec.Code != 200 {
+				t.Fatalf("revise: %d %s", rec.Code, rec.Body.String())
+			}
+		}
+		free(e)
+		f.answer(workDraft)
+		e.runDrafts()
+		if p := f.prompt(); !strings.Contains(p, "decided not to do") || strings.Count(p, "mention FRIDAY") != 1 {
+			t.Fatalf("both asks, once each:\n%s", p)
+		}
+	})
+	t.Run("your ask, then a new message", func(t *testing.T) {
+		e, f, _, th := replyEnv(t)
+		f.answer(draftAnswer("AGENT-V1"))
+		e.runDrafts()
+		busy(e)
+		if rec := postForm(e, "/email/"+th.ID+"/revise", url.Values{"text": {"mention FRIDAY-PICKUP"}}); rec.Code != 200 {
+			t.Fatalf("revise: %d", rec.Code)
+		}
+		mailtest.Append(t, e.s.cfg.Email.Accounts[0].IMAP, "INBOX", msg("n2@x", "Nancy Smith <nancy@example.org>", "me@example.com", "Re: Undo a removed resident?",
+			"Also, which form?", "In-Reply-To: <n1@x>", "References: <n1@x>"), time.Now())
+		f.answer(`{"structured_output":{"threads":[{"key":"T1","verdict":"reply","line":"Reply to Nancy","why":"asked","project":"","work":""}]}}`)
+		e.s.emailPass(e.ctx, "test")
+		if j, _ := e.s.st.Job(th.ID); j.Kind != "revise" || j.Status != "queued" {
+			t.Fatalf("your ask should still be waiting: %+v", j)
+		}
+		free(e)
+		f.answer(draftAnswer("V2"))
+		e.runDrafts()
+		if p := f.prompt(); !strings.Contains(p, "FRIDAY-PICKUP") || !strings.Contains(p, "which form") {
+			t.Fatalf("your ask and the new message:\n%s", p)
+		}
+	})
 }

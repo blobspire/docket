@@ -32,6 +32,7 @@ Email triage ([docs/email.md](docs/email.md)) reads mail written by anyone, so i
 - Only the docket server reads and sends mail, with each account's password (or app password) in a file it refuses to use unless only its owner can read it (`chmod 600`). Plain-text IMAP/SMTP is refused unless the server is on the same machine's loopback (DavMail); everything else needs TLS with a verified certificate (implicit on 993/465, STARTTLS otherwise; a server without STARTTLS is refused).
 - Reading opens folders read-only and peeks at messages: nothing is marked read, moved, flagged or deleted. The only writes are a reply you sent and a draft you asked docket to save.
 - Messages are stored in docket's database (mode 0700). Their bodies are dropped after `keep_days` (30 by default); headers stay, for threading.
+- Model runs keep no session: each is started with `--no-session-persistence`, so no Claude transcript holding your mail is left on disk.
 
 **What the models can do.**
 - Sorting is one Claude Code call per batch with no tools (`--tools ""`), in safe mode (no CLAUDE.md, skills, plugins, hooks or MCP servers). It returns a verdict per thread and nothing else.

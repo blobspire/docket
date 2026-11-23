@@ -187,6 +187,20 @@ func (s *Store) QueueDraft(threadID, kind, instruction string) error {
 		return err
 	case j.Status == "running":
 		return errors.New("a draft is being written; try again when it's ready")
+	case j.Status == "queued":
+		// Still waiting: add the new request to it, so neither is lost. A
+		// revision stays one (it builds on the latest version and sees the
+		// whole thread), and the asks are combined.
+		if kind == "revise" {
+			j.Kind = "revise"
+		}
+		if in := strings.TrimSpace(instruction); in != "" && !strings.Contains(j.Instruction, in) {
+			if j.Instruction != "" {
+				j.Instruction += "\n\nAlso: "
+			}
+			j.Instruction += in
+		}
+		_, err = tx.Exec(`UPDATE email_jobs SET kind=?, instruction=? WHERE thread_id=?`, j.Kind, j.Instruction, threadID)
 	default:
 		_, err = tx.Exec(`UPDATE email_jobs SET status='queued', kind=?, instruction=?, attempts=0, error='', queued_at=?, started_at=0, ended_at=0 WHERE thread_id=?`,
 			kind, instruction, now, threadID)
@@ -456,14 +470,17 @@ func (s *Store) WroteSince(account, thread string, sinceRow int64, inbound []str
 	return n > 0
 }
 
-// RepliedSince reports a message from you in the thread (any folder; a
-// holding reply docket sent doesn't count, like for closing the item)
-// stored after the given one: you've replied since.
+// RepliedSince reports a message you wrote outside docket (your own mail
+// app; any folder) in the thread, first stored after the given one: you've
+// replied since. A copy of a message stored before (another folder, a
+// label) isn't new, and docket's own sends never count here: the outbox
+// says which version went out, and a holding reply isn't an answer.
 func (s *Store) RepliedSince(account, thread string, sinceSeq int64) bool {
 	var n int
 	s.DB.QueryRow(`SELECT COUNT(*) FROM email_messages m WHERE m.account=? AND m.thread=? AND m.from_me=1 AND m.seq>?
-		AND (m.message_id='' OR NOT EXISTS (SELECT 1 FROM email_outbox o WHERE o.kind='holding' AND o.status='sent' AND o.message_id=m.message_id))`,
-		account, thread, sinceSeq).Scan(&n)
+		AND (m.message_id='' OR (NOT EXISTS (SELECT 1 FROM email_outbox o WHERE o.status='sent' AND o.message_id=m.message_id)
+			AND NOT EXISTS (SELECT 1 FROM email_messages c WHERE c.account=m.account AND c.message_id=m.message_id AND c.seq<=?)))`,
+		account, thread, sinceSeq, sinceSeq).Scan(&n)
 	return n > 0
 }
 

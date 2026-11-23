@@ -87,29 +87,14 @@ func (s *Server) runDraft(ctx context.Context, j store.EmailJob) {
 	}
 	dir, code := s.draftDir(ctx, t)
 	prev, hasPrev := s.st.LatestDraft(t.ID)
-	call := modelCall{Model: s.cfg.Email.DraftModel, Schema: draftSchema, Tools: "Read,Grep,Glob", Restricted: true, Dir: dir,
-		Keep: true, Budget: 5, Timeout: 20 * time.Minute}
-	// A revision resumes its drafting session, which knows only the mail it
-	// saw then; if anything arrived since, write it fresh from the whole
-	// thread instead, so the new version can't hide a newer message.
+	// Every version is written from everything as stored now: the whole
+	// thread, the version it builds on, and your words. (No session is
+	// resumed: one would know only the mail it saw back then.)
 	basis := s.st.LastMessageRow() // read before the thread is, so it never overstates what was seen
 	builtOn := s.buildsOn(t, j, prev, hasPrev)
-	if j.Kind == "revise" && j.Session != "" && builtOn != nil && !s.st.WroteSince(t.Account, t.Thread, prev.Basis, s.inbound(t.Account)) {
-		call.Resume = j.Session
-		call.Prompt = s.revisePrompt(prev, j.Instruction)
-		basis = prev.Basis
-	} else {
-		call.Prompt = s.draftPrompt(t, a, code, builtOn, j.Instruction)
-	}
+	call := modelCall{Model: s.cfg.Email.DraftModel, Schema: draftSchema, Tools: "Read,Grep,Glob", Restricted: true, Dir: dir,
+		Budget: 5, Timeout: 20 * time.Minute, Prompt: s.draftPrompt(t, a, code, builtOn, j.Instruction)}
 	res, err := s.runModel(ctx, call)
-	if err != nil && call.Resume != "" {
-		// The session couldn't be resumed (cleaned up, another machine):
-		// start over with everything in the prompt.
-		call.Resume = ""
-		basis = s.st.LastMessageRow()
-		call.Prompt = s.draftPrompt(t, a, code, builtOn, j.Instruction)
-		res, err = s.runModel(ctx, call)
-	}
 	if err != nil {
 		s.st.EndJob(t.ID, "failed", res.Session, clipErr(err.Error()))
 		s.log.Printf("email draft %s: %v", t.ID, err)
@@ -122,9 +107,11 @@ func (s *Server) runDraft(ctx context.Context, j store.EmailJob) {
 	}
 	d := s.draftFrom(t, a, out, j)
 	d.Basis = basis // the mail it saw: stored before this
-	if builtOn != nil && builtOn.Source != "agent" {
-		// Built on your edit or the changes you asked for: still yours, so
-		// the next redraft keeps them too.
+	if builtOn != nil {
+		// Your words on this reply, or built on your edit or the changes you
+		// asked for: still yours, so the next redraft keeps them too. (A
+		// change asked for after you'd replied is written fresh and stays the
+		// agent's, so it doesn't seed the next reply.)
 		d.Source = "revision"
 		if d.Instruction == "" {
 			d.Instruction = builtOn.Instruction
@@ -190,9 +177,6 @@ func (s *Server) draftFrom(t store.EmailThread, a mail.Account, out draftOut, j 
 	}
 	d := store.Draft{ThreadID: t.ID, Subject: subject, To: to, Cc: cc, HTML: body, Holding: holding, Notes: clipRunes(strings.TrimSpace(out.Notes), 2000),
 		Questions: qs, Removed: removed, Source: "agent", Instruction: j.Instruction}
-	if j.Kind == "revise" {
-		d.Source = "revision"
-	}
 	if out.Work.Needed && strings.TrimSpace(out.Work.Title) != "" {
 		d.Work = store.Work{Needed: true, Title: oneLine(out.Work.Title, 120), Plan: clipRunes(strings.TrimSpace(out.Work.Plan), 6000), Why: oneLine(out.Work.Why, 500), Project: t.Project}
 	}
@@ -446,17 +430,6 @@ Follow this guide to %[1]s's writing voice and formatting exactly. Ignore its pa
 		fmt.Fprintf(&b, "## What %s asked for\n\n%s\n\n", person, clipRunes(strings.TrimSpace(instruction), 4000))
 	}
 	b.WriteString("Return the JSON now.\n")
-	return b.String()
-}
-
-// revisePrompt continues a drafting session with the human's words.
-func (s *Server) revisePrompt(prev store.Draft, instruction string) string {
-	var b strings.Builder
-	if prev.Source == "edit" {
-		fmt.Fprintf(&b, "%s edited the draft by hand. The current draft is:\n\n%s\n\nKeep their edits.\n\n", s.cfg.Person, prev.HTML)
-	}
-	fmt.Fprintf(&b, "%s asked for changes to the draft:\n\n%s\n\nRewrite it following the same rules and return the full JSON again (every field).\n",
-		s.cfg.Person, clipRunes(strings.TrimSpace(instruction), 4000))
 	return b.String()
 }
 

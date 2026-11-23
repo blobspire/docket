@@ -89,8 +89,8 @@ func TestWorkAnEmailAsksForBecomesALinkedProposal(t *testing.T) {
 	}
 	f.answer(`{"session_id":"sess-w","structured_output":{"subject":"Re: Undo a removed resident?","reply_all":false,"body_html":"<p>It's live: Restore is on the residents page.</p>","holding_html":"","notes":"","questions":[],"work":{"needed":false,"title":"","plan":"","why":""}}}`)
 	e.runDrafts()
-	if !strings.Contains(strings.Join(f.args(), " "), "--resume sess-w") {
-		t.Fatal("the revision should resume the drafting session")
+	if strings.Contains(strings.Join(f.args(), " "), "--resume") || !strings.Contains(f.prompt(), "Restore button") || !strings.Contains(f.prompt(), "Your previous draft") {
+		t.Fatalf("the revision is written from the whole thread, the last version and what changed:\n%s", f.prompt())
 	}
 	if d, _ := e.s.st.LatestDraft(th.ID); !strings.Contains(d.HTML, "Restore is on the residents page") {
 		t.Fatalf("draft: %+v", d)
