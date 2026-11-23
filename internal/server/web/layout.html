@@ -244,6 +244,7 @@
     {{with .Failed}}<div class="banner stuck">{{template "i" "alert"}}<div><b>It didn't send.</b> {{.}}</div></div>{{end}}
     <div class="subh">{{template "i" "pen"}}Draft reply{{with .Draft}} · version {{.Version}}{{if eq .Source "edit"}}, your edit{{else if eq .Source "revision"}}, revised{{end}}{{end}}</div>
     {{if .Writing}}<p class="muted" data-email-writing>{{if .Draft}}Writing a new version…{{else}}Writing a draft. It appears here in a minute or two.{{end}}</p>{{end}}
+    {{if and (not .Draft) (not .Job)}}<p class="muted">No draft yet. <button type="button" class="lnk" data-email-do="redraft">Write one</button></p>{{end}}
     {{if and .Job (eq .Job.Status "failed") (not .Writing)}}<div class="banner stuck">{{template "i" "alert"}}<div><b>The draft couldn't be written.</b> {{.Job.Error}} <button type="button" class="lnk" data-email-do="redraft">Try again</button></div></div>{{end}}
     {{with .Draft}}
     <div class="dr" data-email-draft data-thread="{{$e.Thread.ID}}" data-version="{{.Version}}">

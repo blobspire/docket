@@ -148,3 +148,32 @@ func TestBuildItWaitsOutTheUndoWindowAndCanBeStopped(t *testing.T) {
 		t.Fatalf("rebuild: %s", i.Status)
 	}
 }
+
+// A research session's own proposal for an email idea follows the ordinary
+// Ideas flow: Build it goes to that session, and docket starts nothing.
+func TestAResearchedEmailIdeaFollowsTheOrdinaryFlow(t *testing.T) {
+	e, _, th := workEnv(t, true)
+	ideaID, _ := e.s.st.ThreadIdea(th.ID)
+	i, _, _ := e.s.st.GetIdea(ideaID)
+	old := i.ItemID
+	// Build it, the build fails, the idea is saved and then researched; the
+	// research session proposes while the email item still says Build it.
+	e.s.Decide(old, Action{Kind: "choose", Option: 0})
+	e.s.st.EditIdea(ideaID, func(x *store.Idea) error { x.Status, x.SessionID = store.IdeaProposed, "research-1"; return nil })
+	prop := store.Item{ID: "dk-research", Kind: "ask", Source: "cli", Title: "Rewrite it", Project: "windward", SessionID: "research-1",
+		Options: []string{ProposeBuild, ProposeSave}, DedupeKey: "key:windward:" + ideaID}
+	id, _, _ := e.s.st.UpsertItem(prop)
+	if id == old {
+		t.Fatal("the research proposal must be a new item, not the email one")
+	}
+	e.s.st.EditIdea(ideaID, func(x *store.Idea) error { x.ItemID = id; return nil })
+	e.s.st.PatchSession("research-1", store.SessionPatch{Machine: store.Str("box"), State: store.Str("idle"), HasPlugin: store.Bool(true)})
+	if err := e.s.Decide(id, Action{Kind: "choose", Option: 0}); err != nil {
+		t.Fatal(err)
+	}
+	e.s.startEmailBuilds()
+	i, _, _ = e.s.st.GetIdea(ideaID)
+	if i.Status != store.IdeaBuilding || i.SessionID != "research-1" {
+		t.Fatalf("the research session builds it, docket starts nothing: %+v", i)
+	}
+}

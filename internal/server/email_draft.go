@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -434,13 +435,15 @@ func (s *Server) afterDraft(t store.EmailThread, d store.Draft) {
 	// The idea (what a build session is given) holds only what the drafting
 	// agent wrote: the plan and why. Who sent the email and its subject go
 	// on your item, never into a session with tools.
-	plan := fmt.Sprintf("**Plan**\n\n%s\n\n**Why**\n\n%s\n", strings.TrimSpace(d.Work.Plan), d.Work.Why)
+	plan := fmt.Sprintf("**Plan**\n\n%s\n\n**Why**\n\n%s\n", noLinks(strings.TrimSpace(d.Work.Plan)), noLinks(d.Work.Why))
 	shown := fmt.Sprintf("From **%s**'s email \"%s\" ([the reply](/item/%s)). %s will send the reply once this is built, or a holding reply now.\n\n%s",
 		mdText(t.From.Display()), mdText(oneLine(t.Subject, 120)), t.ItemID, s.cfg.Person, plan)
 	i := store.Idea{ID: ulid.ShortID("idea"), Project: t.Project, Title: d.Work.Title, Body: plan, Route: "build", Status: store.IdeaProposed,
 		Reason: emailIdeaMark + t.ID}
 	it := store.Item{ID: ulid.ItemID(), Kind: "ask", Source: SrcEmail, Title: d.Work.Title, Body: shown, Project: t.Project, Urgency: "normal",
-		Options: []string{ProposeBuild, ProposeSave}, Recommend: ProposeBuild, DedupeKey: "key:" + t.Project + ":" + i.ID}
+		// Its own key: a later research session's proposal (docket propose,
+		// keyed by the idea) is a new item that replaces this one.
+		Options: []string{ProposeBuild, ProposeSave}, Recommend: ProposeBuild, DedupeKey: "email-work:" + i.ID}
 	itemID, _, err := s.st.UpsertItem(it)
 	if err != nil {
 		s.log.Printf("email work %s: %v", t.ID, err)
@@ -452,7 +455,7 @@ func (s *Server) afterDraft(t store.EmailThread, d store.Draft) {
 		return
 	}
 	s.st.SetThreadIdea(t.ID, i.ID, store.IdeaProposed)
-	s.st.AppendToItem(t.ItemID, fmt.Sprintf("**Needs work first:** [%s](/item/%s) in %s. The draft says it's done; send it once that's built, or send the holding reply now.", d.Work.Title, itemID, t.Project))
+	s.st.AppendToItem(t.ItemID, fmt.Sprintf("**Needs work first:** [%s](/item/%s) in %s. The draft says it's done; send it once that's built, or send the holding reply now.", mdText(d.Work.Title), itemID, t.Project))
 	s.bumpEmail()
 }
 
@@ -460,6 +463,29 @@ func (s *Server) afterDraft(t store.EmailThread, d store.Draft) {
 // one: those always have a dictation).
 func isEmailIdea(i store.Idea) bool {
 	return i.DictationID == "" && strings.HasPrefix(i.Reason, emailIdeaMark)
+}
+
+// emailProposal reports the one thing about email work that's special: the
+// proposal item docket itself filed for an email idea, which no session
+// wrote. Everything else about the idea (a research session, its own
+// proposal, the Ideas page) follows the ordinary Ideas flow.
+func emailProposal(it store.Item, i store.Idea) bool {
+	return isEmailIdea(i) && it.Source == SrcEmail && it.SessionID == "" && it.ID == i.ItemID
+}
+
+var (
+	mdLinkRE  = regexp.MustCompile(`!?\[([^\]]*)\]\(([^)]*)\)`)
+	mdAuto    = regexp.MustCompile(`<((?:https?|mailto):[^>]*)>`)
+	mdRefDefs = regexp.MustCompile(`(?m)^\s*\[[^\]]+\]:\s*\S+.*$`)
+)
+
+// noLinks keeps a model's markdown (lists, emphasis, code) but turns every
+// link into plain "text (address)", so text written from an email can't
+// put a clickable link in docket.
+func noLinks(md string) string {
+	md = mdRefDefs.ReplaceAllString(md, "")
+	md = mdLinkRE.ReplaceAllString(md, "$1 (`$2`)")
+	return mdAuto.ReplaceAllString(md, "`$1`")
 }
 
 // startEmailBuilds starts the build for an email proposal whose Build it is
@@ -475,7 +501,8 @@ func (s *Server) startEmailBuilds() {
 			continue
 		}
 		it, ok, _ := s.st.GetItem(i.ItemID)
-		if !ok || it.Status != "answered" || !strings.HasPrefix(it.Answer, "Chose: "+ProposeBuild) && !strings.HasPrefix(it.Answer, "Approved.") {
+		if !ok || !emailProposal(it, i) || i.SessionID != "" || it.Status != "answered" ||
+			!strings.HasPrefix(it.Answer, "Chose: "+ProposeBuild) && !strings.HasPrefix(it.Answer, "Approved.") {
 			continue
 		}
 		if time.Since(time.Unix(it.AnsweredAt, 0)) < s.hold {

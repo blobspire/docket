@@ -25,6 +25,7 @@ func newFakeModel(t *testing.T) *fakeModel {
 	bin := filepath.Join(dir, "claude")
 	os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \""+dir+"/args\"\ncat > \""+dir+"/prompt\"\npwd > \""+dir+"/cwd\"\n"+
 		"if [ -s \""+dir+"/fail-on\" ] && grep -qF -f \""+dir+"/fail-on\" \""+dir+"/prompt\"; then echo '{\"is_error\":true,\"result\":\"refused\"}'; exit 0; fi\n"+
+		"if [ -s \""+dir+"/prose-on\" ] && grep -qF -f \""+dir+"/prose-on\" \""+dir+"/prompt\"; then echo '{\"is_error\":false,\"result\":\"I would rather not sort these.\"}'; exit 0; fi\n"+
 		"cat \""+dir+"/answer.json\"\n"), 0o755)
 	return &fakeModel{dir: dir, bin: bin}
 }
@@ -345,11 +346,17 @@ func TestAnUnsortableEmailDoesntBlockTriage(t *testing.T) {
 	if p.Reply != 1 {
 		t.Fatalf("Ann's email should still be sorted: %+v", p)
 	}
-	e.s.st.DB.Exec(`UPDATE email_threads SET needs_triage=1 WHERE thread='p1@x'`)
+	if th, _ := e.s.st.Thread(store.ThreadID("test", "p1@x")); th.Verdict != "" {
+		t.Fatalf("one failure must not decide it, even within the pass: %+v", th)
+	}
 	e.s.emailPass(e.ctx, "test")
-	lines, _ := e.s.st.DigestLines(time.Now())
-	if len(lines) != 1 || !strings.HasPrefix(lines[0].Line, "Couldn't sort") {
-		t.Fatalf("the unsortable email should reach the digest: %+v", lines)
+	th, _ := e.s.st.Thread(store.ThreadID("test", "p1@x"))
+	it, _, _ := e.s.st.GetItem(th.ItemID)
+	if th.Verdict != "reply" || !strings.HasPrefix(it.Title, "Couldn't sort") || it.Status != "open" {
+		t.Fatalf("the unsortable email should reach Email · needs you: %+v %+v", th, it)
+	}
+	if _, ok := e.s.st.LatestDraft(th.ID); ok {
+		t.Fatal("no draft for mail docket couldn't sort")
 	}
 	// Everything failing, twice: one item for the human.
 	os.WriteFile(filepath.Join(f.dir, "fail-on"), []byte("BEGIN EMAIL"), 0o644)
@@ -422,5 +429,27 @@ func TestAnOutageDoesntDemoteMail(t *testing.T) {
 	f.answer(`{"structured_output":{"threads":[{"key":"T1","verdict":"skip","line":"x","why":"x","project":"","work":""},{"key":"T2","verdict":"skip","line":"x","why":"x","project":"","work":""},{"key":"T3","verdict":"skip","line":"x","why":"x","project":"","work":""},{"key":"T4","verdict":"skip","line":"x","why":"x","project":"","work":""},{"key":"T5","verdict":"skip","line":"x","why":"x","project":"","work":""},{"key":"T6","verdict":"skip","line":"x","why":"x","project":"","work":""}]}}`)
 	if p := e.s.emailPass(e.ctx, "test"); p.Skip != 6 {
 		t.Fatalf("after the outage: %+v", p)
+	}
+}
+
+// An answer that isn't the JSON asked for is a failed call: it can't
+// block the rest.
+func TestAnUnreadableAnswerDoesntBlockTriage(t *testing.T) {
+	e, addr, f := triageEnv(t)
+	mailtest.Append(t, addr, "INBOX", msg("p1@x", "Weird <w@x.org>", "me@example.com", "Weird", "PROSE-PILL", dated(at(2*time.Hour))), at(2*time.Hour))
+	mailtest.Append(t, addr, "INBOX", msg("a1@x", "Ann <ann@x.org>", "me@example.com", "Question", "Can you send it?", dated(at(time.Hour))), at(time.Hour))
+	// The fake answers prose (no JSON) for any prompt holding the pill.
+	os.WriteFile(filepath.Join(f.dir, "prose-on"), []byte("PROSE-PILL"), 0o644)
+	f.answer(`{"structured_output":{"threads":[{"key":"T1","verdict":"reply","line":"Reply to Ann","why":"asked","project":"","work":""}]}}`)
+	p := e.s.emailPass(e.ctx, "test")
+	if p.Reply != 1 || p.Triaged != 1 {
+		t.Fatalf("Ann should be sorted: %+v", p)
+	}
+}
+
+func TestWorkTextCantBecomeALink(t *testing.T) {
+	got := noLinks("1. Add a [Restore](https://evil.example/x) button\n2. See <https://evil.example/y>\n[r]: https://evil.example/z")
+	if strings.Contains(got, "](") || strings.Contains(got, "<https") || strings.Contains(got, "[r]:") || !strings.Contains(got, "Restore (`https://evil.example/x`)") {
+		t.Fatalf("got %q", got)
 	}
 }

@@ -640,7 +640,7 @@ func (s *Server) ideaDecided(before store.Item, a Action) {
 	if next == "" || next == i.Status || i.Status == store.IdeaBuilt {
 		return
 	}
-	if isEmailIdea(i) {
+	if emailProposal(before, i) {
 		s.emailIdeaDecided(i, next)
 		return
 	}

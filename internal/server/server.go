@@ -27,6 +27,7 @@ type Server struct {
 	emailKick      chan struct{}
 	emailOutKick   chan struct{}
 	drafting       sync.WaitGroup // drafting sessions running
+	noDraft        string         // a thread fileReply files without drafting (the email loop only)
 	pullKick       map[string]chan struct{}
 
 	finishMu sync.Mutex // one dictation finishes at a time
@@ -150,9 +151,9 @@ func (s *Server) Run(ctx context.Context) error {
 	loop("leads", 30*time.Second, nil, s.leadTick)
 	loop("transcribe", 20*time.Second, s.transcribeKick, s.transcribeTick)
 	loop("ideas", 30*time.Second, s.ideasKick, s.ideasTick)
-	loop("email", 30*time.Second, s.emailKick, s.emailTick)
 	s.st.RequeueStale(time.Now().Unix()) // drafts that were running when docket stopped
 	s.st.EndStalePasses()                // and a check it was in the middle of
+	loop("email", 30*time.Second, s.emailKick, s.emailTick)
 	loop("email-out", 5*time.Second, s.emailOutKick, s.emailOutTick)
 
 	srv := &http.Server{Addr: s.cfg.Listen, Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}

@@ -199,7 +199,7 @@ func (s *Server) decide(id string, a Action) error {
 	// A work proposal docket filed from an email has no session behind it:
 	// Build it (or Save for later) is recorded here, and ideaDecided queues
 	// the build session.
-	if it.SessionID == "" && it.Source == SrcEmail && it.Kind == "ask" {
+	if i, ok := s.st.IdeaByItem(it.ID); ok && emailProposal(it, i) && it.Kind == "ask" {
 		switch a.Kind {
 		case "choose":
 			if a.Option < 0 || a.Option >= len(it.Options) {

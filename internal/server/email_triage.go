@@ -114,12 +114,22 @@ func (s *Server) emailPass(ctx context.Context, trigger string) store.EmailPass 
 			}
 		}
 	}
+	failedNow := map[string]bool{} // never retried, or counted twice, in one pass
 	for {
-		todo, err := s.st.ThreadsToTriage(200)
-		if err != nil || len(todo) == 0 {
+		all, err := s.st.ThreadsToTriage(200)
+		if err != nil {
 			break
 		}
-		n, cost, err := s.triage(ctx, todo, &p)
+		var todo []store.EmailThread
+		for _, t := range all {
+			if !failedNow[t.ID] {
+				todo = append(todo, t)
+			}
+		}
+		if len(todo) == 0 {
+			break
+		}
+		n, cost, err := s.triage(ctx, todo, &p, failedNow)
 		p.Cost += cost
 		if err != nil {
 			errs = append(errs, "triage: "+err.Error())
@@ -176,7 +186,13 @@ const (
 )
 
 // triage sorts threads in batches. It returns how many it decided.
-func (s *Server) triage(ctx context.Context, todo []store.EmailThread, p *store.EmailPass) (int, float64, error) {
+func (s *Server) triage(ctx context.Context, todo []store.EmailThread, p *store.EmailPass, failedNow map[string]bool) (int, float64, error) {
+	fail := func(tt triageThread) {
+		if !failedNow[tt.thread.ID] {
+			failedNow[tt.thread.ID] = true
+			s.triageFailed(tt, p)
+		}
+	}
 	decided := 0
 	var cost float64
 	for len(todo) > 0 {
@@ -194,6 +210,12 @@ func (s *Server) triage(ctx context.Context, todo []store.EmailThread, p *store.
 		res, err := s.runModel(ctx, modelCall{Model: s.cfg.Email.TriageModel, Prompt: s.triagePrompt(batch), Schema: triageSchema,
 			Budget: 3, Timeout: 10 * time.Minute})
 		cost += res.Cost
+		var out triageOut
+		if err == nil {
+			if jerr := json.Unmarshal(res.Out, &out); jerr != nil {
+				err = fmt.Errorf("triage answer: %w", jerr) // handled like any failed call
+			}
+		}
 		if err != nil && len(batch) > 1 {
 			// Maybe one email breaks it: sort them one at a time, so the
 			// rest still get through. If the first two fail too, the model
@@ -216,14 +238,14 @@ func (s *Server) triage(ctx context.Context, todo []store.EmailThread, p *store.
 				s.applyVerdict(tt, o.Threads[0], p)
 				decided++
 				ok++
+				p.Triaged++
 			}
-			p.Triaged = decided
 			if ok == 0 {
 				return decided, cost, err
 			}
 			// Others sorted fine, so these emails are the problem.
 			for _, tt := range failed {
-				s.triageFailed(tt, p)
+				fail(tt)
 			}
 			continue
 		}
@@ -231,27 +253,34 @@ func (s *Server) triage(ctx context.Context, todo []store.EmailThread, p *store.
 			// Alone and failing again, after failing once while other
 			// emails sorted fine: this email is the problem.
 			if len(batch) == 1 && s.st.TriageFails(batch[0].thread.ID) > 0 {
-				s.triageFailed(batch[0], p)
+				fail(batch[0])
 			}
 			return decided, cost, err
-		}
-		var out triageOut
-		if err := json.Unmarshal(res.Out, &out); err != nil {
-			return decided, cost, fmt.Errorf("triage answer: %w", err)
 		}
 		byKey := map[string]triageVerdict{}
 		for _, v := range out.Threads {
 			byKey[strings.TrimSpace(v.Key)] = v
 		}
+		answered := 0
+		for _, tt := range batch {
+			if _, ok := byKey[tt.key]; ok {
+				answered++
+			}
+		}
 		for _, tt := range batch {
 			v, ok := byKey[tt.key]
 			if !ok {
-				continue // left for the next pass
+				// Left out while others were answered: counted, so it can't
+				// be re-sent forever without ever reaching you.
+				if answered > 0 {
+					fail(tt)
+				}
+				continue
 			}
 			s.applyVerdict(tt, v, p)
 			decided++
+			p.Triaged++
 		}
-		p.Triaged = decided
 	}
 	return decided, cost, nil
 }
@@ -325,10 +354,12 @@ func (s *Server) triageFailed(tt triageThread, p *store.EmailPass) {
 	if s.st.TriageFailed(tt.thread.ID) < 2 {
 		return
 	}
-	s.st.SetVerdict(tt.thread.ID, p.ID, store.Verdict{Verdict: "digest", Line: oneLine("Couldn't sort: "+tt.thread.Subject, 120),
-		Why: "docket's sorting failed on this email twice; open it to see if it needs you.", FirstTime: !tt.known,
-		UntilAt: time.Now().AddDate(0, 0, s.cfg.Email.DigestDays).Unix()})
-	p.Digest++
+	// Failed in two checks while the model was working: put it in front of
+	// the human (an item, no draft) rather than guess or let it fade.
+	s.st.SetVerdict(tt.thread.ID, p.ID, store.Verdict{Verdict: "reply", Line: oneLine("Couldn't sort: "+firstName(tt.thread.From.Display())+": "+tt.thread.Subject, 120),
+		Why: "docket couldn't sort this email (twice); open it to see whether it needs you.", FirstTime: !tt.known})
+	p.Reply++
+	s.fileReplyNoDraft(tt.thread.ID)
 }
 
 // mdText escapes text from an email (a display name, a model's summary of
@@ -342,6 +373,14 @@ func mdText(s string) string {
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+// fileReplyNoDraft files the reply item without writing a draft (for mail
+// docket couldn't sort; Redraft on the item writes one).
+func (s *Server) fileReplyNoDraft(threadID string) {
+	s.noDraft = threadID
+	s.fileReply(threadID)
+	s.noDraft = ""
 }
 
 // fileReply files (or refreshes) the thread's reply item. Email items are
@@ -376,7 +415,7 @@ func (s *Server) fileReply(threadID string) (string, error) {
 	}
 	// A new reply, or a new message in the thread since the last draft:
 	// write a draft (a thread being drafted right now keeps its job).
-	if d, ok := s.st.LatestDraft(t.ID); !ok || s.st.WroteSince(t.Account, t.Thread, d.CreatedAt-1) {
+	if d, ok := s.st.LatestDraft(t.ID); s.noDraft != t.ID && (!ok || s.st.WroteSince(t.Account, t.Thread, d.CreatedAt-1)) {
 		if err := s.st.QueueDraft(t.ID, "draft", ""); err == nil {
 			kick(s.emailOutKick)
 		}

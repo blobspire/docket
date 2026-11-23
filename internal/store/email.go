@@ -761,7 +761,7 @@ func (s *Store) EndPass(p EmailPass) error {
 func (s *Store) LastPass() (EmailPass, bool) {
 	var p EmailPass
 	err := s.DB.QueryRow(`SELECT id, trigger, started_at, ended_at, read, triaged, reply, digest, skip, answered, cost, error FROM email_passes
-		WHERE ended_at>0 ORDER BY started_at DESC LIMIT 1`).Scan(&p.ID, &p.Trigger, &p.StartedAt, &p.EndedAt, &p.Read, &p.Triaged, &p.Reply,
+		WHERE ended_at>0 ORDER BY started_at DESC, id DESC LIMIT 1`).Scan(&p.ID, &p.Trigger, &p.StartedAt, &p.EndedAt, &p.Read, &p.Triaged, &p.Reply,
 		&p.Digest, &p.Skip, &p.Answered, &p.Cost, &p.Error)
 	return p, err == nil
 }
