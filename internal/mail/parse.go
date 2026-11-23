@@ -93,6 +93,11 @@ func Parse(raw []byte) (*Message, error) {
 	}
 	m.InReplyTo, _ = h.MsgIDList("In-Reply-To")
 	m.References, _ = h.MsgIDList("References")
+	// An id that couldn't go back into a header safely is dropped.
+	if !msgIDOK(m.MessageID) {
+		m.MessageID = ""
+	}
+	m.InReplyTo, m.References = validIDs(m.InReplyTo), validIDs(m.References)
 	m.ListID = strings.TrimSpace(h.Get("List-Id"))
 	prec := strings.ToLower(h.Get("Precedence"))
 	auto := strings.ToLower(h.Get("Auto-Submitted"))
@@ -333,4 +338,14 @@ func cssLength(v string) (float64, string, bool) {
 		return 0, "", false
 	}
 	return n, strings.TrimSpace(v[i:]), true
+}
+
+func validIDs(ids []string) []string {
+	var out []string
+	for _, id := range ids {
+		if msgIDOK(id) {
+			out = append(out, id)
+		}
+	}
+	return out
 }

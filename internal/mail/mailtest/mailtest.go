@@ -6,6 +6,13 @@ package mailtest
 import (
 	"bufio"
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"math/big"
 	"net"
 	"strings"
 	"sync"
@@ -77,6 +84,25 @@ type SMTP struct {
 	Addr string
 	mu   sync.Mutex
 	sent []Sent
+	tls  *tls.Config // offers STARTTLS with this (a self-signed certificate)
+}
+
+// NewSMTPStartTLS is a fake SMTP server that offers STARTTLS with a
+// self-signed certificate, which a client verifying certificates refuses.
+func NewSMTPStartTLS(t testing.TB) *SMTP {
+	t.Helper()
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "127.0.0.1"},
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := NewSMTP(t)
+	f.mu.Lock()
+	f.tls = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
+	f.mu.Unlock()
+	return f
 }
 
 // Sent is one message the fake server accepted.
@@ -116,9 +142,12 @@ func (f *SMTP) Messages() []Sent {
 }
 
 func (f *SMTP) serve(conn net.Conn) {
-	defer conn.Close()
+	defer func() { conn.Close() }()
 	r := bufio.NewReader(conn)
 	w := func(s string) { conn.Write([]byte(s + "\r\n")) }
+	f.mu.Lock()
+	tcfg := f.tls
+	f.mu.Unlock()
 	w("220 fake")
 	var cur Sent
 	for {
@@ -131,7 +160,18 @@ func (f *SMTP) serve(conn net.Conn) {
 		switch {
 		case strings.HasPrefix(up, "EHLO"), strings.HasPrefix(up, "HELO"):
 			w("250-fake")
+			if tcfg != nil {
+				w("250-STARTTLS")
+			}
 			w("250 AUTH PLAIN")
+		case up == "STARTTLS" && tcfg != nil:
+			w("220 go ahead")
+			tc := tls.Server(conn, tcfg)
+			if err := tc.Handshake(); err != nil {
+				return
+			}
+			conn = tc
+			r = bufio.NewReader(conn)
 		case strings.HasPrefix(up, "AUTH"):
 			cur.Auth = cmd
 			w("235 ok")

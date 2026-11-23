@@ -13,6 +13,7 @@ import (
 	"mime/multipart"
 	"mime/quotedprintable"
 	"net"
+	netmail "net/mail"
 	"net/smtp"
 	"net/textproto"
 	"os"
@@ -120,11 +121,31 @@ func (a Account) Build(o Outgoing, sig Signature, now time.Time) (Built, error) 
 	if len(o.To) == 0 {
 		return Built{}, errors.New("no recipients")
 	}
-	clean, _ := Clean(o.HTML) // already clean; cleaning again is a no-op safety net
+	to, err := checkAddrs(o.To)
+	if err != nil {
+		return Built{}, err
+	}
+	cc, err := checkAddrs(o.Cc)
+	if err != nil {
+		return Built{}, err
+	}
+	clean, _ := Clean(o.HTML) // already clean; cleaning again is a safety net
 	subject, _ := StripInvisible(strings.TrimSpace(o.Subject))
 	subject = strings.Join(strings.Fields(subject), " ")
+	// Literal "=?…?=" in a subject would be decoded by the recipient's mail
+	// app, smuggling in characters the check above removed.
+	subject = strings.ReplaceAll(subject, "=?", "= ?")
 	if subject == "" {
 		return Built{}, errors.New("no subject")
+	}
+	if !msgIDOK(o.InReplyTo) {
+		o.InReplyTo = ""
+	}
+	var refs []string
+	for _, r := range o.References {
+		if msgIDOK(r) {
+			refs = append(refs, r)
+		}
 	}
 	htmlDoc := Document(clean, sig.HTML, sig.Text, o.Quote)
 	text := PlainDocument(clean, sig.Text, o.Quote)
@@ -133,20 +154,22 @@ func (a Account) Build(o Outgoing, sig Signature, now time.Time) (Built, error) 
 	var buf bytes.Buffer
 	h := func(k, v string) { fmt.Fprintf(&buf, "%s: %s\r\n", k, v) }
 	h("From", a.From().String())
-	h("To", joinAddrs(o.To))
-	if len(o.Cc) > 0 {
-		h("Cc", joinAddrs(o.Cc))
+	h("To", joinAddrs(to))
+	if len(cc) > 0 {
+		h("Cc", joinAddrs(cc))
 	}
 	h("Subject", mime.QEncoding.Encode("utf-8", subject))
 	h("Date", now.Format(time.RFC1123Z))
 	h("Message-ID", "<"+id+">")
 	if o.InReplyTo != "" {
 		h("In-Reply-To", "<"+o.InReplyTo+">")
-		refs := append([]string{}, o.References...)
 		if len(refs) == 0 || refs[len(refs)-1] != o.InReplyTo {
 			refs = append(refs, o.InReplyTo)
 		}
-		h("References", "<"+strings.Join(refs, "> <")+">")
+		if len(refs) > 10 { // the root and the latest: enough to thread, under the line limit
+			refs = append(refs[:1], refs[len(refs)-9:]...)
+		}
+		h("References", "<"+strings.Join(refs, ">\r\n <")+">")
 	}
 	h("MIME-Version", "1.0")
 	alt := multipart.NewWriter(&buf)
@@ -190,7 +213,7 @@ func (a Account) Build(o Outgoing, sig Signature, now time.Time) (Built, error) 
 
 	var rcpt []string
 	seen := map[string]bool{}
-	for _, x := range append(append([]Addr{}, o.To...), o.Cc...) {
+	for _, x := range append(append([]Addr{}, to...), cc...) {
 		e := strings.ToLower(x.Email)
 		if e != "" && !seen[e] {
 			seen[e] = true
@@ -355,3 +378,29 @@ func ReplySubject(s string) string {
 	}
 	return "Re: " + t
 }
+
+// checkAddrs accepts only addresses that parse cleanly and round-trip, so
+// nothing in one can add a header or a second recipient.
+func checkAddrs(list []Addr) ([]Addr, error) {
+	out := make([]Addr, 0, len(list))
+	for _, x := range list {
+		e := strings.TrimSpace(x.Email)
+		a, err := netmail.ParseAddress(e)
+		if err != nil || !strings.EqualFold(a.Address, e) || a.Name != "" || strings.ContainsAny(e, " \t\r\n<>,;\"") || !strings.Contains(e, "@") {
+			return nil, fmt.Errorf("%q isn't a valid email address", x.Email)
+		}
+		name := strings.Map(func(r rune) rune {
+			if r == '\r' || r == '\n' || invisible(r) {
+				return -1
+			}
+			return r
+		}, x.Name)
+		out = append(out, Addr{Name: strings.TrimSpace(name), Email: strings.ToLower(e)})
+	}
+	return out, nil
+}
+
+var msgIDRE = regexp.MustCompile(`^[^\s<>()\[\]"\\,;:@]+@[^\s<>()\[\]"\\,;:@]+$`)
+
+// msgIDOK accepts a Message-ID (without brackets) that can't break a header.
+func msgIDOK(id string) bool { return len(id) <= 250 && msgIDRE.MatchString(id) }

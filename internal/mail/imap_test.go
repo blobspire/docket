@@ -167,7 +167,7 @@ func TestSendThreadsTheReplyAndSendsOnlyCleanHTML(t *testing.T) {
 		t.Errorf("envelope: %+v", sent)
 	}
 	for _, want := range []string{"Subject: Re: Undo a removed resident?", "In-Reply-To: <n1@example.org>",
-		"References: <n0@example.org> <n1@example.org>", "multipart/related", "Content-ID: <sig-", "From: \"Cole Wendrowski\" <me@example.com>"} {
+		"References: <n0@example.org>\r\n <n1@example.org>", "multipart/related", "Content-ID: <sig-", "From: \"Cole Wendrowski\" <me@example.com>"} {
 		if !strings.Contains(sent.Data, want) {
 			t.Errorf("missing %q in\n%s", want, sent.Data)
 		}

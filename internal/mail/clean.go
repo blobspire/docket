@@ -35,21 +35,175 @@ func Clean(fragment string) (string, []string) {
 	if c.hidden > 0 {
 		c.note(fmt.Sprintf("removed %d invisible character%s", c.hidden, plural(c.hidden)))
 	}
-	out := c.b.String()
-	// Text pushed far down with blank lines is text the reader won't see.
-	if squeezed := emptyParas.ReplaceAllString(manyBreaks.ReplaceAllString(out, "<br><br>"), ""); squeezed != out {
-		if strings.Count(out, "<br>")-strings.Count(squeezed, "<br>") > 2 || len(emptyParas.FindAllString(out, -1)) > 2 {
-			c.note("removed runs of blank lines")
-		}
-		out = squeezed
+	out, squeezed := squeeze(c.b.String())
+	if squeezed {
+		c.note("removed runs of blank lines")
 	}
 	return strings.TrimSpace(out), c.notes
 }
 
-var (
-	manyBreaks = regexp.MustCompile(`(?:<br>\s*){3,}`)
-	emptyParas = regexp.MustCompile(`<p>(?:\s|<br>)*</p>`)
-)
+// squeeze removes blank space a reader scrolls past without seeing text
+// under it: blank paragraphs and list items, empty bold or link tags, runs
+// of more than two line breaks, and runs of spaces (non-breaking and other
+// Unicode spaces included). It works on the parsed tree, so no mix of
+// tags and spaces gets past it, and repeats until nothing changes.
+func squeeze(s string) (string, bool) {
+	changed := false
+	for i := 0; i < 8; i++ {
+		body := &html.Node{Type: html.ElementNode, Data: "body", DataAtom: atom.Body}
+		nodes, err := html.ParseFragment(strings.NewReader(s), body)
+		if err != nil {
+			return s, changed
+		}
+		for _, n := range nodes {
+			body.AppendChild(n)
+		}
+		sq := &squeezer{}
+		sq.tidy(body)
+		var b strings.Builder
+		for n := body.FirstChild; n != nil; n = n.NextSibling {
+			serialize(&b, n)
+		}
+		out := b.String()
+		if sq.big {
+			changed = true
+		}
+		if out == s {
+			return out, changed
+		}
+		s = out
+	}
+	return s, changed
+}
+
+type squeezer struct{ big bool }
+
+func blankText(t string) bool {
+	for _, r := range t {
+		if !unicode.IsSpace(r) && !invisible(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// blank reports an element with no text and nothing in it but line breaks
+// or other blank elements.
+func blank(n *html.Node) bool {
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		switch c.Type {
+		case html.TextNode:
+			if !blankText(c.Data) {
+				return false
+			}
+		case html.ElementNode:
+			if c.DataAtom == atom.Br {
+				continue
+			}
+			if c.DataAtom == atom.Table || c.DataAtom == atom.Tr || c.DataAtom == atom.Td || c.DataAtom == atom.Th || !blank(c) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+var spaceRun = regexp.MustCompile(`[\s\p{Zs}]{2,}`)
+
+func (sq *squeezer) tidy(n *html.Node) {
+	for c := n.FirstChild; c != nil; {
+		next := c.NextSibling
+		switch c.Type {
+		case html.TextNode:
+			if t := spaceRun.ReplaceAllString(c.Data, " "); t != c.Data {
+				if len(c.Data)-len(t) > 2 {
+					sq.big = true
+				}
+				c.Data = t
+			}
+		case html.ElementNode:
+			switch c.DataAtom {
+			case atom.P, atom.Li, atom.Strong, atom.A, atom.Ul, atom.Ol:
+				if blank(c) {
+					if c.DataAtom != atom.Strong && c.DataAtom != atom.A {
+						sq.big = true
+					}
+					n.RemoveChild(c)
+					c = next
+					continue
+				}
+			}
+			sq.tidy(c)
+		}
+		c = next
+	}
+	// At most two line breaks in a row (spaces between them don't count),
+	// and none at the start or end of a block.
+	run := 0
+	for c := n.FirstChild; c != nil; {
+		next := c.NextSibling
+		switch {
+		case c.Type == html.ElementNode && c.DataAtom == atom.Br:
+			run++
+			if run > 2 {
+				n.RemoveChild(c)
+				sq.big = sq.big || run > 3
+			}
+		case c.Type == html.TextNode && blankText(c.Data):
+		default:
+			run = 0
+		}
+		c = next
+	}
+	for _, edge := range []func() *html.Node{func() *html.Node { return n.FirstChild }, func() *html.Node { return n.LastChild }} {
+		for c := edge(); c != nil && (c.Type == html.ElementNode && c.DataAtom == atom.Br || c.Type == html.TextNode && blankText(c.Data)); c = edge() {
+			n.RemoveChild(c)
+		}
+	}
+}
+
+// serialize writes a cleaned tree back: allowed tags only, links with
+// their address, text escaped.
+func serialize(b *strings.Builder, n *html.Node) {
+	switch n.Type {
+	case html.TextNode:
+		b.WriteString(html.EscapeString(n.Data))
+		return
+	case html.ElementNode:
+	default:
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			serialize(b, c)
+		}
+		return
+	}
+	if !allowed[n.DataAtom] {
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			serialize(b, c)
+		}
+		return
+	}
+	name := n.DataAtom.String()
+	if n.DataAtom == atom.Br {
+		b.WriteString("<br>")
+		return
+	}
+	if n.DataAtom == atom.A {
+		href, ok := safeHref(attr(n, "href"))
+		if !ok {
+			for c := n.FirstChild; c != nil; c = c.NextSibling {
+				serialize(b, c)
+			}
+			return
+		}
+		b.WriteString(`<a href="` + html.EscapeString(href) + `">`)
+	} else {
+		b.WriteString("<" + name + ">")
+	}
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		serialize(b, c)
+	}
+	b.WriteString("</" + name + ">")
+}
 
 // allowed tags, written back without attributes (links keep href).
 var allowed = map[atom.Atom]bool{
@@ -327,8 +481,12 @@ func invisible(r rune) bool {
 	switch {
 	case r == '\t' || r == '\n' || r == '\r':
 		return false
-	case unicode.Is(unicode.Cc, r), unicode.Is(unicode.Cf, r), unicode.Is(unicode.Co, r):
+	case unicode.Is(unicode.Cc, r), unicode.Is(unicode.Cf, r), unicode.Is(unicode.Co, r), unicode.Is(unicode.Cs, r):
 		return true
+	case unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r), unicode.Is(unicode.Variation_Selector, r):
+		return true
+	case !unicode.IsGraphic(r) && !unicode.Is(unicode.Zl, r) && !unicode.Is(unicode.Zp, r):
+		return true // unassigned: renders as nothing (or a box) and can carry bits
 	case r >= 0xFE00 && r <= 0xFE0F, r >= 0xE0100 && r <= 0xE01EF: // variation selectors
 		return true
 	case r >= 0xE0000 && r <= 0xE007F: // tag characters
