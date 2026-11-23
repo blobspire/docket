@@ -229,7 +229,7 @@ func (s *Server) emailAct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	action := r.PathValue("action")
-	note := strings.TrimSpace(r.FormValue("note"))
+	note := clipRunes(strings.TrimSpace(r.FormValue("note")), maxFeedbackNote)
 	var itemID string
 	var err error
 	if extra, rerr := s.replyAct(w, r, t, action); rerr != errUnknownAction {
@@ -396,7 +396,7 @@ func (s *Server) emailDecided(it store.Item, a Action) {
 		return
 	}
 	if a.Kind == "noise" {
-		s.st.AddEmailFeedback(store.EmailFeedback{ThreadID: t.ID, Was: "reply", Should: "skip", Line: t.Line, From: t.From.Email, Note: a.Text})
+		s.st.AddEmailFeedback(store.EmailFeedback{ThreadID: t.ID, Was: "reply", Should: "skip", Line: t.Line, From: t.From.Email, Note: clipRunes(strings.TrimSpace(a.Text), maxFeedbackNote)})
 	}
 	// Closing the reply ("Don't reply", Dismiss, Not worth it, Stash)
 	// cancels a send still in its Undo window.

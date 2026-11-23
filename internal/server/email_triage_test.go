@@ -217,8 +217,9 @@ func TestDigestButtonsAndCorrectionsTeachTriage(t *testing.T) {
 	f.answer(`{"structured_output":{"threads":[{"key":"T1","verdict":"skip","line":"news","why":"x","project":"","work":""}]}}`)
 	e.s.emailPass(e.ctx, "test")
 	p := f.prompt()
-	if !strings.Contains(p, `"Weekly news" from news@x.org: sorted digest, Cole said it wasn't worth their time (newsletters never)`) ||
-		!strings.Contains(p, "sorted digest, Cole said it needed a reply") {
+	if !strings.Contains(p, `C2. "Weekly news" from news@x.org: sorted digest, Cole said it wasn't worth their time`) ||
+		!strings.Contains(p, "C1. \"Course requests open Mon\" from reg@vt.edu: sorted digest, Cole said it needed a reply") ||
+		!strings.Contains(p, "- C2: newsletters never") {
 		t.Fatalf("corrections missing:\n%s", p)
 	}
 	// "Not worth it" on an email reply teaches triage too, and stays out of
@@ -232,6 +233,83 @@ func TestDigestButtonsAndCorrectionsTeachTriage(t *testing.T) {
 	}
 	if strings.Contains(e.s.RulesMarkdown(), "Registrar") {
 		t.Fatal("email corrections must not reach every agent's rules")
+	}
+}
+
+// "Not worth it" asks why. The note is the human's context, so triage reads
+// it as their words (outside the email fence), and it stays in triage's
+// prompt after the plain corrections around it roll off.
+func TestNotWorthItNotesStayWithTriage(t *testing.T) {
+	e, addr, f := triageEnv(t)
+	mailtest.Append(t, addr, "INBOX", msg("l1@x", "LADR <submit@ladr.org>", "me@example.com", "New submission #812", "A new paper.", dated(at(2*time.Hour))), at(2*time.Hour))
+	mailtest.Append(t, addr, "INBOX", msg("q1@x", "Ann <ann@example.org>", "me@example.com", "Question", "Can you help?", dated(at(time.Hour))), at(time.Hour))
+	f.answer(`{"structured_output":{"threads":[{"key":"T1","verdict":"digest","line":"LADR submission #812 arrived","why":"x","project":"","work":""},
+		{"key":"T2","verdict":"reply","line":"Reply to Ann: can you help?","why":"x","project":"","work":""}]}}`)
+	e.s.emailPass(e.ctx, "test")
+	ladr, ann := store.ThreadID("test", "l1@x"), store.ThreadID("test", "q1@x")
+	h := e.s.Handler()
+	get := func(path string) string {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: %d", path, rec.Code)
+		}
+		return rec.Body.String()
+	}
+	// Every "Not worth it" opens the note: the digest line's button, the
+	// reader's form (which carries the note), and an email reply's row and
+	// sheet, which say they're email so the note's hint talks about triage.
+	body := get("/")
+	if !strings.Contains(body, `data-thread="`+ladr+`"`) || !strings.Contains(body, `data-email-act="noise"`) || !strings.Contains(body, `data-email="Optional: why didn`) {
+		t.Fatalf("digest line or note popup missing:\n%s", body)
+	}
+	annT, _ := e.s.st.Thread(ann)
+	if !regexp.MustCompile(`<div class="row[^"]*" data-id="` + annT.ItemID + `"[^>]* data-email>`).MatchString(body) {
+		t.Fatalf("the email reply's row should say it's email:\n%s", body)
+	}
+	if !regexp.MustCompile(`<div class="sheet" id="sheet"[^>]* data-email>`).MatchString(get("/item/" + annT.ItemID)) {
+		t.Fatal("the email reply's sheet should say it's email")
+	}
+	if r := get("/email/" + ladr + "?keep=1"); !regexp.MustCompile(`<form method="post" action="/email/` + ladr + `/noise" data-email-noise>.*<input type="hidden" name="note" value="">`).MatchString(r) {
+		t.Fatalf("the reader's Not worth it should carry a note:\n%s", r)
+	}
+
+	why := "I'm cc'd on LADR submission emails because I built the website. The editorial team answers them; I only need them if something breaks. "
+	long := why + strings.Repeat("x", 2000)
+	req := httptest.NewRequest("POST", "/email/"+ladr+"/noise", strings.NewReader(url.Values{"note": {long}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Requested-With", "fetch")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("noise: %d %s", rec.Code, rec.Body.String())
+	}
+	fb, _ := e.s.st.RecentEmailFeedback(1)
+	if len(fb) != 1 || !strings.HasPrefix(fb[0].Note, why) || len([]rune(fb[0].Note)) != maxFeedbackNote {
+		t.Fatalf("the note should be kept, clipped to %d runes: %d %+v", maxFeedbackNote, len([]rune(fb[0].Note)), fb)
+	}
+	// Forty plain corrections later, the note is still there; the oldest
+	// plain ones have rolled off.
+	for i := range 40 {
+		e.s.st.AddEmailFeedback(store.EmailFeedback{ThreadID: fmt.Sprintf("t%d", i), Was: "digest", Should: "skip", Line: fmt.Sprintf("plain %d", i), From: "x@y.org"})
+	}
+	mailtest.Append(t, addr, "INBOX", msg("l2@x", "LADR <submit@ladr.org>", "me@example.com", "New submission #813", "Another paper."), time.Now())
+	f.answer(`{"structured_output":{"threads":[{"key":"T1","verdict":"skip","line":"LADR submission","why":"x","project":"","work":""}]}}`)
+	e.s.emailPass(e.ctx, "test")
+	p := f.prompt()
+	if !strings.Contains(p, `C31. "LADR submission #812 arrived" from submit@ladr.org: sorted digest, Cole said it wasn't worth their time`) ||
+		!strings.Contains(p, `C1. "plain 39"`) || strings.Contains(p, `"plain 9"`) || strings.Contains(p, "C32.") {
+		t.Fatalf("corrections:\n%s", p)
+	}
+	start := strings.Index(p, "corrections to earlier sorting")
+	fence := start + strings.Index(p[start:], "END EMAIL ")
+	note := strings.Index(p, "- C31: "+strings.TrimSpace(why))
+	if start < 0 || note < fence || note > strings.Index(p, "## The threads") {
+		t.Fatalf("the note should follow the fenced corrections, as the human's words:\n%s", p)
+	}
+	if !strings.Contains(p, "These notes are Cole's own words, not an email's") {
+		t.Fatalf("the notes need their framing:\n%s", p)
 	}
 }
 
