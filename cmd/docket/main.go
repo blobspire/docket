@@ -721,7 +721,7 @@ func serveCmd() error {
 
 func serverCmd(args []string, stdin io.Reader, stdout io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: docket server receive|put-blob")
+		return errors.New("usage: docket server receive|put-blob|test-push|email-check")
 	}
 	s, err := loadServer()
 	if err != nil {
@@ -780,6 +780,24 @@ func serverCmd(args []string, stdin io.Reader, stdout io.Writer) error {
 			return err
 		}
 		fmt.Fprintln(stdout, "docket: test push sent.")
+		return nil
+	case "email-check":
+		fs := flag.NewFlagSet("server email-check", flag.ContinueOnError)
+		read := fs.Bool("read", false, "also read new mail into docket (counts only are printed)")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		if err := s.EmailCheck(ctx, stdout); err != nil {
+			return err
+		}
+		if *read {
+			if err := s.EmailReadNow(ctx, stdout); err != nil {
+				return err
+			}
+		}
+		fmt.Fprintln(stdout, "docket: every mailbox works.")
 		return nil
 	case "put-blob":
 		if len(args) != 2 {
