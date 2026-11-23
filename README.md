@@ -46,7 +46,7 @@ docket gives your agents one place to bring you what really needs you: results y
   - **Email · worth reading**: one line per email that matters but needs no reply ("Lab meeting moved Thu → Fri 2pm"), so you rarely open them. Lines fade after three days.
   - **Work an email asks for** (a feature, a fix) becomes a proposal in that project's section. Build it, and the reply updates itself to say it shipped.
 
-  Corrections ("needs a reply", "not worth my time") teach the triage. See [docs/email.md](docs/email.md).
+  Corrections ("needs a reply", "not worth my time") teach the triage, and "not worth my time" asks why in an optional note that triage keeps reading. See [docs/email.md](docs/email.md).
 - **Leads:** one long-running agent per area, woken by your answers, job events or schedules that survive reboots.
 - **Job liveness:** a job that stops sending heartbeats becomes an alert, and its lead is woken.
 - **Watchdog:** unreachable machines, expired logins, usage limits per account, which lead is spending. It never answers anything for you.

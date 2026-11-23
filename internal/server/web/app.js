@@ -24,7 +24,7 @@
   let sheetSeq = 0;
   let listURL = solo ? "/" : location.pathname + location.search;
   const pending = new Set(); // items with an action on its way: one at a time
-  let noteFor = null;
+  let noteDone = null; // what the open note does with its text
 
   // ---- rows -----------------------------------------------------------------------------
   // Rows you can see: a folded "Waiting on agents" hides its rows.
@@ -241,7 +241,11 @@
       case "decline": return "Declined";
       case "done": return "Marked done";
       case "dismiss": return "Dismissed";
-      case "noise": return extra.text ? "Closed. Your note goes to the agent." : "Marked not worth your time";
+      case "noise": {
+        if (!extra.text) return "Marked not worth your time";
+        const el = (openId === id && sheetEl()) || rowOf(id);
+        return el && el.hasAttribute("data-email") ? "Closed. Triage reads your note from now on." : "Closed. Your note goes to the agent.";
+      }
       case "snooze": return extra.until === "hour" ? "Snoozed for an hour" : "Snoozed until tomorrow, 9:00";
       case "stash": return "Stashed";
       case "unstash": return "Moved to Done";
@@ -343,16 +347,26 @@
   };
 
   // ---- "not worth my time" ------------------------------------------------------------------
-  const openNote = (id) => {
-    const r = rowOf(id), sh = openId === id ? sheetEl() : null;
-    noteFor = id;
-    $("#note-t").textContent = (sh && $(".sh-t", sh)?.textContent) || (r && $(".t", r)?.textContent) || "";
-    $("#note-ta").value = "";
+  // Every "Not worth it" asks why first, in an optional note: an item's goes
+  // to the agent that filed it, an email's to triage, which reads it on
+  // every later check. done closes the thing, with the note or without one.
+  const openNote = (title, email, done) => {
+    noteDone = done;
+    const ta = $("#note-ta");
+    $("#note-t").textContent = (title || "").trim();
+    ta.value = "";
+    ta.placeholder = email ? ta.dataset.email : ta.dataset.agent;
     nscrim.hidden = false;
-    if (finePointer.matches) $("#note-ta").focus();
+    if (finePointer.matches) ta.focus();
+  };
+  const noteItem = (id) => {
+    const r = rowOf(id), sh = openId === id ? sheetEl() : null;
+    const title = (sh && $(".sh-t", sh)?.textContent) || (r && $(".t", r)?.textContent) || "";
+    openNote(title, !!(sh || r)?.hasAttribute("data-email"), (text) => act(id, "noise", { text }));
   };
   const refocus = () => { const b = !solo && sheetEl() && $(".sh-b", sheetEl()); if (b && b.tabIndex === -1) b.focus({ preventScroll: true }); };
-  const closeNote = () => { nscrim.hidden = true; noteFor = null; refocus(); };
+  const closeNote = () => { nscrim.hidden = true; noteDone = null; refocus(); };
+  const sendNote = (text) => { const done = noteDone; closeNote(); if (done) done(text); };
 
   // ---- attachment viewer ----------------------------------------------------------------------
   let lbImgs = [], lbAt = 0;
@@ -449,7 +463,7 @@
       return;
     }
     if (!nscrim.hidden) {
-      if (t.closest("[data-note-skip]")) { const id = noteFor; closeNote(); act(id, "noise", { text: "" }); }
+      if (t.closest("[data-note-skip]")) sendNote("");
       else if (t === nscrim && downOn === nscrim) closeNote();
       return;
     }
@@ -488,7 +502,7 @@
       const host = el.closest(".sheet");
       if (el.disabled || (host && !solo && host !== liveSheet())) return;
       const id = el.closest("[data-id]")?.dataset.id;
-      if (el.hasAttribute("data-noise")) return openNote(id);
+      if (el.hasAttribute("data-noise")) return noteItem(id);
       const extra = {};
       if (el.dataset.option !== undefined) extra.option = el.dataset.option;
       if (el.dataset.act === "snooze") extra.until = e.shiftKey ? "hour" : "tomorrow";
@@ -516,9 +530,12 @@
     const f = e.target;
     if (f.id === "note") {
       e.preventDefault();
-      const id = noteFor, text = $("#note-ta").value.trim();
-      closeNote();
-      return act(id, "noise", { text });
+      return sendNote($("#note-ta").value.trim());
+    }
+    // The email reader's "Not worth it" asks why, then posts as it would.
+    if (f.matches("[data-email-noise]")) {
+      e.preventDefault();
+      return openNote($(".rd-s")?.textContent, true, (note) => { f.elements.note.value = note; f.submit(); });
     }
     if (f.matches("[data-reply]")) {
       e.preventDefault();
@@ -690,7 +707,7 @@
     if (k === "Enter") { e.preventDefault(); return openSheet(sel); }
     if (k === "o" && r.dataset.session) return window.open(r.dataset.session, "_blank", "noopener");
     const qa = (s) => $(`.qa ${s}`, r);
-    if (k === "w" && qa("[data-noise]")) { e.preventDefault(); return openNote(sel); }
+    if (k === "w" && qa("[data-noise]")) { e.preventDefault(); return noteItem(sel); }
     const map = { d: "done", x: "dismiss", h: "handoff" };
     if (map[k] && qa(`[data-act="${map[k]}"]`)) { e.preventDefault(); return act(sel, map[k]); }
     if (k === "t" && !r.hasAttribute("data-nostash") && (qa('[data-act="stash"]') || actionable(sel) || r.classList.contains("is-wait"))) { e.preventDefault(); return act(sel, "stash"); }
@@ -804,11 +821,7 @@
   }, { threshold: 0.6 }) : null;
   const observeDigest = () => { if (seenObs && docket) $$(".esec .dg[data-thread]").forEach((li) => seenObs.observe(li)); };
   addEventListener("pagehide", flushSeen);
-  document.addEventListener("click", async (e) => {
-    const b = e.target.closest("[data-email-act], [data-email-check], [data-email-readall]");
-    if (!b) return;
-    e.preventDefault();
-    e.stopPropagation();
+  const digestAct = async (b, note = "") => {
     if (b.disabled) return;
     b.disabled = true;
     let url, msg;
@@ -821,11 +834,11 @@
     else {
       const a = b.dataset.emailAct;
       url = `/email/${encodeURIComponent(li.dataset.thread)}/${a}`;
-      msg = { read: "Read", reply: "Moved to Email · needs you", noise: "Off the digest. Triage learns from it.", digest: "On the digest" }[a] || "Done";
+      msg = { read: "Read", reply: "Moved to Email · needs you", noise: note ? "Off the digest. Triage reads your note from now on." : "Off the digest. Triage learns from it.", digest: "On the digest" }[a] || "Done";
       li.classList.add("leaving");
     }
     try {
-      const res = await fetch(url, { method: "POST", headers: { "X-Requested-With": "fetch" }, signal: timeout(15000) });
+      const res = await fetch(url, { method: "POST", body: new URLSearchParams(note ? { note } : {}), headers: { "X-Requested-With": "fetch" }, signal: timeout(15000) });
       if (!res.ok) throw new Error(String(res.status));
       toast(msg);
     } catch (_) {
@@ -834,6 +847,16 @@
     }
     b.disabled = false;
     refresh(true);
+  };
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-email-act], [data-email-check], [data-email-readall]");
+    if (!b) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (b.disabled) return;
+    // "Not worth it" asks why first.
+    if (b.dataset.emailAct === "noise") return openNote($(".dg-t", b.closest("[data-thread]"))?.textContent, true, (note) => digestAct(b, note));
+    digestAct(b);
   }, true);
 
   // An email reply's dock and draft. Every button posts to /email/{thread}/…
