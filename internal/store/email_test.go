@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -277,5 +278,70 @@ func TestDraftBasisSurvivesVacuum(t *testing.T) {
 	}
 	if !before || s.WroteSince("gmail", "m4@x", basis, inbound) != before || s.LastMessageRow() != basis+1 {
 		t.Fatalf("before %v, after %v, last %d (basis %d)", before, s.WroteSince("gmail", "m4@x", basis, inbound), s.LastMessageRow(), basis)
+	}
+}
+
+// Asks made while a job waits are combined whole: a shorter ask that
+// appears inside an earlier one is still its own ask, and only an exact
+// repeat is dropped.
+func TestWaitingAsksCombineWhole(t *testing.T) {
+	s := open(t)
+	for _, ask := range []string{"Don't mention the price", "mention the price", "mention the price", "  Don't mention the price ", "price"} {
+		if err := s.QueueDraft("t1", "revise", ask); err != nil {
+			t.Fatal(err)
+		}
+	}
+	j, ok := s.Job("t1")
+	if want := "Don't mention the price\n\nAlso: mention the price\n\nAlso: price"; !ok || j.Instruction != want {
+		t.Fatalf("instruction %q, want %q", j.Instruction, want)
+	}
+}
+
+// Every stored message reads MAX(seq): the index that makes it cheap is
+// there on a new database and on one from before seq existed.
+func TestSeqIsIndexed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "d.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usesIndex := func(s *Store) bool {
+		t.Helper()
+		rows, err := s.DB.Query(`EXPLAIN QUERY PLAN SELECT COALESCE(MAX(seq),0) FROM email_messages`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id, parent, aux int
+			var detail string
+			rows.Scan(&id, &parent, &aux, &detail)
+			if strings.Contains(detail, "email_messages_seq") {
+				return true
+			}
+		}
+		return false
+	}
+	if !usesIndex(s) {
+		t.Fatal("a new database: MAX(seq) scans every message")
+	}
+	// Make it a database from before seq existed.
+	for _, q := range []string{`DROP INDEX email_messages_seq`, `ALTER TABLE email_messages DROP COLUMN seq`} {
+		if _, err := s.DB.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.DB.Exec(`INSERT INTO email_messages(account, folder, uid, uidvalidity, message_id, thread, fetched_at) VALUES ('gmail','INBOX',1,1,'m1@x','m1@x',1)`)
+	s.Close()
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if !usesIndex(s) {
+		t.Fatal("an upgraded database: MAX(seq) scans every message")
+	}
+	if n := s.LastMessageRow(); n != 1 {
+		t.Fatalf("the old message's seq: %d", n)
 	}
 }

@@ -314,6 +314,13 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("store: migrate: %w", err)
 	}
+	// Every stored message takes MAX(seq)+1, and every draft reads MAX(seq):
+	// without an index each is a scan of all mail. (Made here, not in the
+	// schema: an older database only has the column once migrate adds it.)
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS email_messages_seq ON email_messages(seq)`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store: seq index: %w", err)
+	}
 	db.Exec(`UPDATE email_messages SET seq=rowid WHERE seq=0`)                                               // messages from before seq existed
 	db.Exec(`UPDATE email_drafts SET basis=(SELECT COALESCE(MAX(seq),0) FROM email_messages) WHERE basis=0`) // drafts from before basis existed
 	// Databases created before search existed: index their items once.

@@ -194,9 +194,9 @@ func (s *Store) QueueDraft(threadID, kind, instruction string) error {
 		if kind == "revise" {
 			j.Kind = "revise"
 		}
-		if in := strings.TrimSpace(instruction); in != "" && !strings.Contains(j.Instruction, in) {
+		if in := strings.TrimSpace(instruction); in != "" && !hasAsk(j.Instruction, in) {
 			if j.Instruction != "" {
-				j.Instruction += "\n\nAlso: "
+				j.Instruction += askSep
 			}
 			j.Instruction += in
 		}
@@ -209,6 +209,22 @@ func (s *Store) QueueDraft(threadID, kind, instruction string) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// askSep joins asks combined into one waiting job.
+const askSep = "\n\nAlso: "
+
+// hasAsk reports whether this exact ask is already one of the combined
+// asks (asked twice: said once). It compares whole asks, so a shorter ask
+// inside a longer one ("mention the price" in "Don't mention the price")
+// is still added.
+func hasAsk(combined, ask string) bool {
+	for _, a := range strings.Split(combined, askSep) {
+		if strings.TrimSpace(a) == ask {
+			return true
+		}
+	}
+	return false
 }
 
 // Job loads a thread's job.
