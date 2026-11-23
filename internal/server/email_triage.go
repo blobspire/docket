@@ -196,29 +196,42 @@ func (s *Server) triage(ctx context.Context, todo []store.EmailThread, p *store.
 		cost += res.Cost
 		if err != nil && len(batch) > 1 {
 			// Maybe one email breaks it: sort them one at a time, so the
-			// rest still get through.
-			for _, tt := range batch {
+			// rest still get through. If the first two fail too, the model
+			// itself is down: stop, and count nothing against the emails.
+			var failed []triageThread
+			ok := 0
+			for n, tt := range batch {
+				if n >= 2 && ok == 0 {
+					return decided, cost, err
+				}
 				tt.key = "T1"
 				r1, err1 := s.runModel(ctx, modelCall{Model: s.cfg.Email.TriageModel, Prompt: s.triagePrompt([]triageThread{tt}), Schema: triageSchema,
 					Budget: 1, Timeout: 5 * time.Minute})
 				cost += r1.Cost
 				var o triageOut
 				if err1 != nil || json.Unmarshal(r1.Out, &o) != nil || len(o.Threads) == 0 {
-					s.triageFailed(tt, p)
+					failed = append(failed, tt)
 					continue
 				}
 				s.applyVerdict(tt, o.Threads[0], p)
 				decided++
+				ok++
 			}
 			p.Triaged = decided
-			if decided == 0 {
+			if ok == 0 {
 				return decided, cost, err
+			}
+			// Others sorted fine, so these emails are the problem.
+			for _, tt := range failed {
+				s.triageFailed(tt, p)
 			}
 			continue
 		}
 		if err != nil {
-			for _, tt := range batch {
-				s.triageFailed(tt, p)
+			// Alone and failing again, after failing once while other
+			// emails sorted fine: this email is the problem.
+			if len(batch) == 1 && s.st.TriageFails(batch[0].thread.ID) > 0 {
+				s.triageFailed(batch[0], p)
 			}
 			return decided, cost, err
 		}

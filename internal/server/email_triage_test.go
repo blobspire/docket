@@ -397,3 +397,30 @@ func TestEmailCorrectionsStayOutOfTheRuleProposer(t *testing.T) {
 		}
 	}
 }
+
+// A model outage isn't the emails' fault: nothing is demoted to "Couldn't
+// sort", and the outage stops after two tries instead of one per email.
+func TestAnOutageDoesntDemoteMail(t *testing.T) {
+	e, addr, f := triageEnv(t)
+	for i := 0; i < 6; i++ {
+		id := string(rune('a'+i)) + "@x"
+		mailtest.Append(t, addr, "INBOX", msg(id, "Ann <ann@x.org>", "me@example.com", "Q "+id, "question", dated(at(time.Duration(10-i)*time.Hour))), at(time.Hour))
+	}
+	os.WriteFile(filepath.Join(f.dir, "fail-on"), []byte("BEGIN EMAIL"), 0o644)
+	for i := 0; i < 3; i++ {
+		e.s.emailPass(e.ctx, "test")
+	}
+	if lines, _ := e.s.st.DigestLines(time.Now()); len(lines) != 0 {
+		t.Fatalf("an outage demoted mail: %+v", lines)
+	}
+	todo, _ := e.s.st.ThreadsToTriage(100)
+	if len(todo) != 6 {
+		t.Fatalf("all six should still wait for sorting, got %d", len(todo))
+	}
+	// The model comes back: everything is sorted.
+	os.Remove(filepath.Join(f.dir, "fail-on"))
+	f.answer(`{"structured_output":{"threads":[{"key":"T1","verdict":"skip","line":"x","why":"x","project":"","work":""},{"key":"T2","verdict":"skip","line":"x","why":"x","project":"","work":""},{"key":"T3","verdict":"skip","line":"x","why":"x","project":"","work":""},{"key":"T4","verdict":"skip","line":"x","why":"x","project":"","work":""},{"key":"T5","verdict":"skip","line":"x","why":"x","project":"","work":""},{"key":"T6","verdict":"skip","line":"x","why":"x","project":"","work":""}]}}`)
+	if p := e.s.emailPass(e.ctx, "test"); p.Skip != 6 {
+		t.Fatalf("after the outage: %+v", p)
+	}
+}

@@ -648,6 +648,13 @@ func (s *Store) ThreadsToTriage(limit int) ([]EmailThread, error) {
 	return s.threads(`needs_triage=1 AND inbound_at>replied_at AND triage_fails<2 ORDER BY inbound_at, id LIMIT ?`, limit)
 }
 
+// TriageFails is how many times the model failed on a thread alone.
+func (s *Store) TriageFails(id string) int {
+	var n int
+	s.DB.QueryRow(`SELECT triage_fails FROM email_threads WHERE id=?`, id).Scan(&n)
+	return n
+}
+
 // TriageFailed counts a thread the model couldn't sort on its own; after
 // two failures it's no longer retried (the pass files it for the human).
 func (s *Store) TriageFailed(id string) int {
