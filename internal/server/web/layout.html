@@ -239,7 +239,8 @@
     {{with $it.Blocks}}<p class="recline"><b>Blocks:</b> {{.}}</p>{{end}}
     {{with $it.Body}}<div class="prose">{{md .}}</div>{{end}}
     {{with $it.Email}}{{$e := .}}
-    {{if .Pending}}<div class="banner kept" data-email-pending="{{.Pending.ID}}" data-ms="{{.PendingMs}}">{{template "i" "send"}}<div><b>Sending{{if .PendingMs}} in <span data-left>{{secs .PendingMs}}</span> s{{end}}.</b> It goes to {{range $i, $r := .To}}{{if $i}}, {{end}}{{$r.Display}}{{end}}. <button type="button" class="lnk" data-email-undo="{{.Pending.ID}}">Undo</button></div></div>{{end}}
+    {{if .Pending}}<div class="banner kept" data-email-pending="{{.Pending.ID}}" data-ms="{{.PendingMs}}">{{template "i" "send"}}<div><b>Sending{{if .PendingMs}} in <span data-left>{{secs .PendingMs}}</span> s{{end}}.</b> To {{range $i, $r := .To}}{{if $i}}, {{end}}{{$r.Email}}{{end}}{{if .Cc}}, cc {{range $i, $r := .Cc}}{{if $i}}, {{end}}{{$r.Email}}{{end}}{{end}}. <button type="button" class="lnk" data-email-undo="{{.Pending.ID}}">Undo</button></div></div>
+    {{else if .Sent}}<div class="banner">{{template "i" "check"}}<div><b>Sent {{ago .SentAt}}.</b> This version already went out.</div></div>{{end}}
     {{with .Failed}}<div class="banner stuck">{{template "i" "alert"}}<div><b>It didn't send.</b> {{.}}</div></div>{{end}}
     <div class="subh">{{template "i" "pen"}}Draft reply{{with .Draft}} · version {{.Version}}{{if eq .Source "edit"}}, your edit{{else if eq .Source "revision"}}, revised{{end}}{{end}}</div>
     {{if .Writing}}<p class="muted" data-email-writing>{{if .Draft}}Writing a new version…{{else}}Writing a draft. It appears here in a minute or two.{{end}}</p>{{end}}
@@ -247,11 +248,11 @@
     {{with .Draft}}
     <div class="dr" data-email-draft data-thread="{{$e.Thread.ID}}" data-version="{{.Version}}">
       <div class="dr-h">
-        <div><span class="muted">To</span> {{range $i, $r := $e.To}}{{if $i}}, {{end}}<span class="addr{{if $r.Outside}} out{{end}}" title="{{$r.Email}}{{if $r.Outside}}: not anyone in this conversation{{end}}">{{$r.Display}}</span>{{end}}</div>
-        {{if $e.Cc}}<div><span class="muted">Cc</span> {{range $i, $r := $e.Cc}}{{if $i}}, {{end}}<span class="addr{{if $r.Outside}} out{{end}}" title="{{$r.Email}}{{if $r.Outside}}: not anyone in this conversation{{end}}">{{$r.Display}}</span>{{end}}</div>{{end}}
+        <div><span class="muted">To</span> {{range $i, $r := $e.To}}{{if $i}}, {{end}}<span class="addr{{if $r.Outside}} out{{end}}"{{if $r.Outside}} title="Not anyone who wrote in this conversation"{{end}}>{{with $r.Name}}{{.}} {{end}}&lt;{{$r.Email}}&gt;</span>{{end}}</div>
+        {{if $e.Cc}}<div><span class="muted">Cc</span> {{range $i, $r := $e.Cc}}{{if $i}}, {{end}}<span class="addr{{if $r.Outside}} out{{end}}"{{if $r.Outside}} title="Not anyone who wrote in this conversation"{{end}}>{{with $r.Name}}{{.}} {{end}}&lt;{{$r.Email}}&gt;</span>{{end}}</div>{{end}}
         <div><span class="muted">Subject</span> {{.Subject}}</div>
       </div>
-      {{if $e.Outsider}}<p class="banner stuck">{{template "i" "alert"}}<span>A recipient (in red) isn't anyone in this conversation. Check it before sending.</span></p>{{end}}
+      {{if $e.Outsider}}<p class="banner stuck">{{template "i" "alert"}}<span>A recipient (in red) isn't anyone who wrote in this conversation (a Reply-To can point elsewhere). Check it before sending.</span></p>{{end}}
       {{with .Removed}}<div class="banner stuck">{{template "i" "alert"}}<div><b>docket took something out of the agent's draft:</b> {{range $i, $n := .}}{{if $i}}; {{end}}{{$n}}{{end}}. What you see here is everything that will be sent.</div></div>{{end}}
       <div class="dr-b">{{$e.Preview}}{{with $e.Signature}}<div class="dr-sig">{{.}}</div>{{end}}</div>
       <form class="dr-edit" data-email-edit hidden>
@@ -340,14 +341,15 @@
   {{template "emaildock" .}}
 {{else}}
   {{$rule := eq .Kind "rule"}}
-  {{if and (or .SessionID .Idea) (not $rule)}}
+  {{$emailWork := and .Idea (not .SessionID) (eq .Source "email")}}
+  {{if and (or .SessionID $emailWork) (not $rule)}}
     {{if or .Options (eq .Kind "approval")}}
-      {{template "reply" (reply .ID "Answer in your own words" true)}}
+      {{if .SessionID}}{{template "reply" (reply .ID "Answer in your own words" true)}}{{end}}
       <div class="dk-a">
         {{if .Options}}{{$rec := .Recommend}}{{range $i, $o := .Options}}<button type="button" class="ob{{if recommended $o $rec}} rec{{end}}" data-act="choose" data-option="{{$i}}" data-key="{{add $i 1}}" title="Send “{{$o}}” to the agent">{{if lt $i 9}}<kbd>{{add $i 1}}</kbd>{{end}}<span>{{$o}}</span>{{if recommended $o $rec}}<span class="rt">Recommended</span>{{end}}</button>{{end}}
         {{else}}<button type="button" class="ob rec" data-act="approve" data-key="1" title="Approve it">{{template "i" "check"}}<span>Approve</span><kbd>1</kbd></button><button type="button" class="ob" data-act="decline" data-key="2" title="Decline it">{{template "i" "x"}}<span>Decline</span><kbd>2</kbd></button>{{end}}
         {{if .CanHandOff}}<button type="button" class="ob" data-act="handoff" title="Send it back to the agent with your go-ahead to do it itself (h)">{{template "i" "bolt"}}<span>Have the agent do it</span><kbd>h</kbd></button>{{end}}
-        <button type="button" class="ob ghost" data-reply-open title="Answer in your own words">{{template "i" "pen"}}<span>Reply</span><kbd>r</kbd></button>
+        {{if .SessionID}}<button type="button" class="ob ghost" data-reply-open title="Answer in your own words">{{template "i" "pen"}}<span>Reply</span><kbd>r</kbd></button>{{end}}
       </div>
     {{else if .CanHandOff}}
       {{/* A task or issue its agent could do itself, given the go-ahead. */}}
@@ -378,11 +380,11 @@
      holding reply, ask the agent for changes, edit it yourself, or save it
      to your mail's drafts. Send has no number key: it takes a click. */}}
 {{define "emaildock"}}{{$e := .Email}}
-  {{if and $e $e.Draft (not $e.Pending)}}
+  {{if and $e $e.Draft (not $e.Pending) (not $e.Sent)}}
   <form class="ans" data-email-revise hidden><textarea name="text" rows="1" placeholder="What should change? (shorter, mention Friday, …)" aria-label="What should change"></textarea><button type="button" class="ans-x" data-email-revise-x aria-label="Cancel">{{template "i" "x"}}</button><button type="submit" class="send" aria-label="Ask for the changes">{{template "i" "send"}}</button></form>
   <div class="dk-a">
     <button type="button" class="ob rec" data-email-do="send" data-version="{{$e.Draft.Version}}"{{if $e.Writing}} disabled{{end}} title="Send this version (you get {{$e.HoldSecs}} s to undo)">{{template "i" "send"}}<span>Send</span></button>
-    {{if $e.Holding}}<button type="button" class="ob" data-email-do="holding" data-version="{{$e.Draft.Version}}"{{if $e.Writing}} disabled{{end}} title="Send the holding reply now; the full reply comes later">{{template "i" "clock"}}<span>Send holding reply</span></button>{{end}}
+    {{if and $e.Holding (not $e.HoldingSent)}}<button type="button" class="ob" data-email-do="holding" data-version="{{$e.Draft.Version}}"{{if $e.Writing}} disabled{{end}} title="Send the holding reply now; the full reply comes later">{{template "i" "clock"}}<span>Send holding reply</span></button>{{end}}
     <button type="button" class="ob ghost" data-email-revise-open title="Tell the agent what to change">{{template "i" "pen"}}<span>Ask for changes</span></button>
     <button type="button" class="ob ghost" data-email-edit-open title="Edit the text yourself">{{template "i" "pen"}}<span>Edit</span></button>
     <button type="button" class="ob ghost" data-email-do="save-draft" data-version="{{$e.Draft.Version}}" title="Put it in your mail's Drafts folder instead">{{template "i" "file"}}<span>{{$e.SaveName}}</span></button>

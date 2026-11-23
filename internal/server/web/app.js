@@ -606,7 +606,7 @@
     pointer = false;
     if (window.docketDictate && window.docketDictate.isOpen()) return; // the capture sheet has the keys
     const k = e.key, a = document.activeElement;
-    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName);
+    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) || a.isContentEditable;
     if (e.metaKey || e.ctrlKey || e.altKey) {
       // Cmd/Ctrl+Enter sends what you're writing.
       if (k === "Enter" && a.tagName === "TEXTAREA") { e.preventDefault(); a.form?.requestSubmit(); }
@@ -814,7 +814,10 @@
     let url, msg;
     const li = b.closest("[data-thread]");
     if (b.hasAttribute("data-email-check")) { url = "/email/check"; msg = "Checking your mail. New email appears here in a minute or two."; }
-    else if (b.hasAttribute("data-email-readall")) { url = "/email/read-all"; msg = "Marked all read"; }
+    else if (b.hasAttribute("data-email-readall")) {
+      url = "/email/read-all?" + new URLSearchParams($$(".esec.dig .dg[data-thread]").map((x) => ["id", x.dataset.thread])).toString();
+      msg = "Marked all read";
+    }
     else {
       const a = b.dataset.emailAct;
       url = `/email/${encodeURIComponent(li.dataset.thread)}/${a}`;
@@ -876,6 +879,8 @@
       if (opening) { const ed = $(".dr-ed", f); ed.innerHTML = ed.dataset.html; }
       f.hidden = !opening;
       if (view) view.hidden = opening;
+      // While you edit, Send would send the saved version, not your text.
+      $$("[data-email-do]", sh).forEach((x) => { if (x.dataset.emailDo !== "redraft") x.disabled = opening; });
       if (opening) $(".dr-ed", f).focus();
       return;
     }

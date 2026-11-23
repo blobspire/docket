@@ -88,7 +88,7 @@
 </section>
 <section class="sec esec dig" aria-label="Email worth reading">
   <h2><span>Email · worth reading</span>{{if .Digest}} <span class="cnt">{{len .Digest}}</span>{{end}}{{if or .Digest .Earlier}} <button type="button" class="lnk" data-email-readall>Mark all read</button>{{end}}</h2>
-  {{if .Digest}}<ol class="dl">{{range .Digest}}{{template "digestline" .}}{{end}}</ol>{{else if not .Earlier}}<p class="muted small">Nothing to read. Lines stay for 3 days, or until you tick them off.</p>{{end}}
+  {{if .Digest}}<ol class="dl">{{range .Digest}}{{template "digestline" .}}{{end}}</ol>{{else if not .Earlier}}<p class="muted small">Nothing to read. Lines stay for {{.DigestDays}} days, or until you tick them off.</p>{{end}}
   {{if .Earlier}}
   <details class="wt" data-wt="email:earlier">
     <summary>{{template "i" "clock"}}<span>Earlier</span><span class="cnt">{{len .Earlier}}</span>{{template "i" "chev-d"}}</summary>

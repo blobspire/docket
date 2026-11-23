@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS email_threads (
   until_at INTEGER NOT NULL DEFAULT 0,
   idea_id TEXT NOT NULL DEFAULT '',
   idea_status TEXT NOT NULL DEFAULT '',
+  triage_fails INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   UNIQUE (account, thread)
@@ -204,7 +205,7 @@ func (s *Store) AddEmail(account string, msgs []*mail.Message, me func(string) b
 		// Replies that arrived before this message, and were filed under its
 		// id or one of its ancestors' (their client sent no full
 		// References), join its thread now.
-		if keys := ownKeys(m, thread); len(keys) > 0 {
+		if keys := mergeable(tx, account, ownKeys(m, thread)); len(keys) > 0 {
 			args := []any{thread, account}
 			for _, k := range keys {
 				args = append(args, k)
@@ -540,6 +541,12 @@ type ThreadActivity struct {
 // mark the thread answered when they're newer than the newest message to
 // you.
 func (s *Store) NoteMessages(account string, msgs []EmailMessage, inbound func(folder string) bool) ([]ThreadActivity, error) {
+	// A holding reply docket sent isn't an answer: the real reply is still
+	// to come, so it never closes the reply item.
+	var holding []bool
+	for i := range msgs {
+		holding = append(holding, msgs[i].FromMe && s.SentByDocketAsHolding(msgs[i].MessageID))
+	}
 	type agg struct {
 		in      *EmailMessage
 		repl    int64
@@ -556,6 +563,9 @@ func (s *Store) NoteMessages(account string, msgs []EmailMessage, inbound func(f
 			order = append(order, m.Thread)
 		}
 		if m.FromMe {
+			if holding[i] {
+				continue
+			}
 			if m.Date > a.repl {
 				a.repl = m.Date
 			}
@@ -601,11 +611,17 @@ func (s *Store) NoteMessages(account string, msgs []EmailMessage, inbound func(f
 			}
 		}
 		act := ThreadActivity{ID: id}
-		if a.in != nil && a.in.Date > inAt {
+		if a.in != nil {
+			// A message to you that docket hadn't seen: triage again,
+			// whatever its (sender-written) Date header says.
 			act.NewInbound = true
-			inAt = a.in.Date
-			if _, err := tx.Exec(`UPDATE email_threads SET subject=?, from_name=?, from_addr=?, last_inbound=?, inbound_at=?, needs_triage=1, updated_at=? WHERE id=?`,
-				a.in.Subject, a.in.From.Name, a.in.From.Email, a.in.ID, a.in.Date, now, id); err != nil {
+			if a.in.Date >= inAt {
+				inAt = a.in.Date
+				if _, err := tx.Exec(`UPDATE email_threads SET subject=?, from_name=?, from_addr=?, last_inbound=?, inbound_at=?, needs_triage=1, triage_fails=0, updated_at=? WHERE id=?`,
+					a.in.Subject, a.in.From.Name, a.in.From.Email, a.in.ID, a.in.Date, now, id); err != nil {
+					return nil, err
+				}
+			} else if _, err := tx.Exec(`UPDATE email_threads SET needs_triage=1, updated_at=? WHERE id=?`, now, id); err != nil {
 				return nil, err
 			}
 		}
@@ -629,7 +645,16 @@ func (s *Store) NoteMessages(account string, msgs []EmailMessage, inbound func(f
 // ThreadsToTriage lists threads with a message to you not yet triaged,
 // oldest first.
 func (s *Store) ThreadsToTriage(limit int) ([]EmailThread, error) {
-	return s.threads(`needs_triage=1 AND inbound_at>replied_at ORDER BY inbound_at, id LIMIT ?`, limit)
+	return s.threads(`needs_triage=1 AND inbound_at>replied_at AND triage_fails<2 ORDER BY inbound_at, id LIMIT ?`, limit)
+}
+
+// TriageFailed counts a thread the model couldn't sort on its own; after
+// two failures it's no longer retried (the pass files it for the human).
+func (s *Store) TriageFailed(id string) int {
+	s.DB.Exec(`UPDATE email_threads SET triage_fails=triage_fails+1 WHERE id=?`, id)
+	var n int
+	s.DB.QueryRow(`SELECT triage_fails FROM email_threads WHERE id=?`, id).Scan(&n)
+	return n
 }
 
 // Verdict is triage's call on one thread.
@@ -734,6 +759,26 @@ func (s *Store) LastPass() (EmailPass, bool) {
 	return p, err == nil
 }
 
+// EndStalePasses closes passes left unfinished when the server stopped.
+func (s *Store) EndStalePasses() {
+	s.DB.Exec(`UPDATE email_passes SET ended_at=started_at, error=CASE WHEN error='' THEN 'docket stopped during this check' ELSE error END WHERE ended_at=0`)
+}
+
+// LastDigestPass is when the latest pass that added digest lines started.
+func (s *Store) LastDigestPass() int64 {
+	var t int64
+	s.DB.QueryRow(`SELECT COALESCE(MAX(started_at),0) FROM email_passes WHERE ended_at>0 AND digest>0`).Scan(&t)
+	return t
+}
+
+// MarkReadIDs ticks off the digest lines given (the ones on your screen).
+func (s *Store) MarkReadIDs(ids []string) {
+	now := time.Now().Unix()
+	for _, id := range ids {
+		s.DB.Exec(`UPDATE email_threads SET read_at=?, seen_at=CASE WHEN seen_at=0 THEN ? ELSE seen_at END WHERE id=? AND verdict='digest' AND read_at=0`, now, now, id)
+	}
+}
+
 // RunningPass reports a pass that started and hasn't finished (in the
 // last hour; an older one died with the server).
 func (s *Store) RunningPass() bool {
@@ -786,10 +831,29 @@ func (s *Store) EmailVersion() string {
 	return fmt.Sprintf("%d.%d.%s.%d", n, mx, p, r)
 }
 
-// mergeThreads folds the triage rows of threads that turned out to be part
-// of thread `into` (their replies arrived before the message linking them)
-// into its row: the newest message to you wins, a pending triage stays
-// pending, and the reply item, drafts, jobs and sends move with it.
+// mergeable keeps the thread keys whose threads hold no state: never
+// triaged, no reply item, no draft, job or send. A thread that holds any of
+// that stays its own thread, so nothing approved, drafted or on its way out
+// ever moves under the human. (With Sent read before the inbox this only
+// happens when your reply reached Sent after theirs reached the inbox.)
+func mergeable(tx *sql.Tx, account string, keys []string) []string {
+	var out []string
+	for _, k := range keys {
+		id := ThreadID(account, k)
+		var state int
+		tx.QueryRow(`SELECT (SELECT COUNT(*) FROM email_threads WHERE id=? AND (verdict<>'' OR item_id<>'' OR idea_id<>''))
+			+ (SELECT COUNT(*) FROM email_drafts WHERE thread_id=?) + (SELECT COUNT(*) FROM email_jobs WHERE thread_id=?)
+			+ (SELECT COUNT(*) FROM email_outbox WHERE thread_id=?)`, id, id, id, id).Scan(&state)
+		if state == 0 {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// mergeThreads folds the rows of untriaged threads (see mergeable) that
+// turned out to be part of thread `into` into its row: the newest message to
+// you wins and a pending triage stays pending.
 func mergeThreads(tx *sql.Tx, account string, keys []string, into string) error {
 	to := ThreadID(account, into)
 	now := time.Now().Unix()
@@ -818,17 +882,11 @@ func mergeThreads(tx *sql.Tx, account string, keys []string, into string) error 
 				inbound_at = MAX(t.inbound_at, o.inbound_at),
 				replied_at = MAX(t.replied_at, o.replied_at),
 				needs_triage = MAX(t.needs_triage, o.needs_triage),
-				item_id = CASE WHEN t.item_id = '' THEN o.item_id ELSE t.item_id END,
-				verdict = CASE WHEN t.verdict = '' THEN o.verdict ELSE t.verdict END,
-				line = CASE WHEN t.line = '' THEN o.line ELSE t.line END,
 				updated_at = ?
 				FROM (SELECT * FROM email_threads WHERE id=?) AS o WHERE t.id=?`, now, from, to); err != nil {
 				return err
 			}
 			tx.Exec(`DELETE FROM email_threads WHERE id=?`, from)
-		}
-		for _, table := range []string{"email_drafts", "email_jobs", "email_outbox", "email_feedback"} {
-			tx.Exec(`UPDATE OR IGNORE `+table+` SET thread_id=? WHERE thread_id=?`, to, from)
 		}
 	}
 	return nil
@@ -864,4 +922,10 @@ func (s *Store) ThreadsWithIdeas() (map[string][2]string, error) {
 		out[id] = [2]string{idea, st}
 	}
 	return out, rows.Err()
+}
+
+// EmailIdeasProposed lists ideas filed from email that wait on their
+// proposal.
+func (s *Store) EmailIdeasProposed(mark string) ([]Idea, error) {
+	return s.ideaList(`WHERE status=? AND dictation_id='' AND reason LIKE ? ORDER BY created_at`, IdeaProposed, mark+"%")
 }

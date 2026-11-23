@@ -69,6 +69,12 @@ const draftSchema = `{"type":"object","properties":{` +
 func (s *Server) runDraft(ctx context.Context, j store.EmailJob) {
 	defer kick(s.emailOutKick)
 	defer s.bumpEmail()
+	defer func() {
+		if r := recover(); r != nil {
+			s.st.EndJob(j.ThreadID, "failed", "", fmt.Sprintf("docket failed while drafting: %v", r))
+			s.log.Printf("email draft %s: panic: %v", j.ThreadID, r)
+		}
+	}()
 	t, ok := s.st.Thread(j.ThreadID)
 	if !ok {
 		s.st.EndJob(j.ThreadID, "failed", "", "the thread is gone")
@@ -209,7 +215,9 @@ func (s *Server) threadPeople(t store.EmailThread) map[string]bool {
 	out := map[string]bool{}
 	msgs, _ := s.st.ThreadMessages(t.Account, t.Thread)
 	for _, m := range msgs {
-		for _, x := range append(append(append([]mail.Addr{m.From}, m.To...), m.Cc...), m.ReplyTo...) {
+		// Reply-To isn't counted: a sender can point replies anywhere, so a
+		// reply to an address nobody in the thread wrote from is flagged.
+		for _, x := range append(append([]mail.Addr{m.From}, m.To...), m.Cc...) {
 			out[strings.ToLower(x.Email)] = true
 		}
 	}
@@ -346,10 +354,11 @@ Follow this guide to %[1]s's writing voice and formatting exactly. Ignore its pa
 			b.WriteString("\n\n")
 		}
 	}
-	if t.Work != "" {
-		fmt.Fprintf(&b, "Triage noted it may ask for: %s\n\n", oneLine(t.Work, 400))
-	}
 	fmt.Fprintf(&b, "## The thread\n\nBEGIN EMAIL %s\n", nonce)
+	if t.Work != "" {
+		// Written by the sorting model from the email, so fenced with it.
+		fmt.Fprintf(&b, "(Sorting noted it may ask for: %s)\n", strings.ReplaceAll(oneLine(t.Work, 400), nonce, ""))
+	}
 	msgs, _ := s.st.ThreadMessages(t.Account, t.Thread)
 	if len(msgs) > 12 {
 		fmt.Fprintf(&b, "(%d earlier messages not shown)\n", len(msgs)-12)
@@ -384,7 +393,7 @@ Follow this guide to %[1]s's writing voice and formatting exactly. Ignore its pa
 		fmt.Fprintf(&b, "END EMAIL %s\n\n", nonce)
 	}
 	if prev != nil {
-		fmt.Fprintf(&b, "## Your previous draft\n\n%s\n\n", prev.HTML)
+		fmt.Fprintf(&b, "## Your previous draft\n\nBEGIN DRAFT %s\n%s\nEND DRAFT %s\n\n", nonce, strings.ReplaceAll(prev.HTML, nonce, ""), nonce)
 		if prev.Source == "edit" {
 			fmt.Fprintf(&b, "(%s edited it by hand; keep their edits.)\n\n", person)
 		}
@@ -422,12 +431,15 @@ func (s *Server) afterDraft(t store.EmailThread, d store.Draft) {
 	if id, _ := s.st.ThreadIdea(t.ID); id != "" {
 		return // one proposal per thread; the draft keeps it current
 	}
-	who := t.From.Display()
-	body := fmt.Sprintf("From **%s**'s email \"%s\" ([the reply](/item/%s)). %s will send the reply once this is built, or a holding reply now.\n\n**Plan**\n\n%s\n\n**Why**\n\n%s\n",
-		who, oneLine(t.Subject, 120), t.ItemID, s.cfg.Person, strings.TrimSpace(d.Work.Plan), d.Work.Why)
-	i := store.Idea{ID: ulid.ShortID("idea"), Project: t.Project, Title: d.Work.Title, Body: body, Route: "build", Status: store.IdeaProposed,
+	// The idea (what a build session is given) holds only what the drafting
+	// agent wrote: the plan and why. Who sent the email and its subject go
+	// on your item, never into a session with tools.
+	plan := fmt.Sprintf("**Plan**\n\n%s\n\n**Why**\n\n%s\n", strings.TrimSpace(d.Work.Plan), d.Work.Why)
+	shown := fmt.Sprintf("From **%s**'s email \"%s\" ([the reply](/item/%s)). %s will send the reply once this is built, or a holding reply now.\n\n%s",
+		mdText(t.From.Display()), mdText(oneLine(t.Subject, 120)), t.ItemID, s.cfg.Person, plan)
+	i := store.Idea{ID: ulid.ShortID("idea"), Project: t.Project, Title: d.Work.Title, Body: plan, Route: "build", Status: store.IdeaProposed,
 		Reason: emailIdeaMark + t.ID}
-	it := store.Item{ID: ulid.ItemID(), Kind: "ask", Source: SrcEmail, Title: d.Work.Title, Body: body, Project: t.Project, Urgency: "normal",
+	it := store.Item{ID: ulid.ItemID(), Kind: "ask", Source: SrcEmail, Title: d.Work.Title, Body: shown, Project: t.Project, Urgency: "normal",
 		Options: []string{ProposeBuild, ProposeSave}, Recommend: ProposeBuild, DedupeKey: "key:" + t.Project + ":" + i.ID}
 	itemID, _, err := s.st.UpsertItem(it)
 	if err != nil {
@@ -442,6 +454,42 @@ func (s *Server) afterDraft(t store.EmailThread, d store.Draft) {
 	s.st.SetThreadIdea(t.ID, i.ID, store.IdeaProposed)
 	s.st.AppendToItem(t.ItemID, fmt.Sprintf("**Needs work first:** [%s](/item/%s) in %s. The draft says it's done; send it once that's built, or send the holding reply now.", d.Work.Title, itemID, t.Project))
 	s.bumpEmail()
+}
+
+// isEmailIdea reports an idea docket filed from an email (never a dictated
+// one: those always have a dictation).
+func isEmailIdea(i store.Idea) bool {
+	return i.DictationID == "" && strings.HasPrefix(i.Reason, emailIdeaMark)
+}
+
+// startEmailBuilds starts the build for an email proposal whose Build it is
+// older than the Undo window (an Undo inside it starts nothing). The build
+// session gets the approved plan only.
+func (s *Server) startEmailBuilds() {
+	ideas, err := s.st.EmailIdeasProposed(emailIdeaMark)
+	if err != nil {
+		return
+	}
+	for _, i := range ideas {
+		if !isEmailIdea(i) {
+			continue
+		}
+		it, ok, _ := s.st.GetItem(i.ItemID)
+		if !ok || it.Status != "answered" || !strings.HasPrefix(it.Answer, "Chose: "+ProposeBuild) && !strings.HasPrefix(it.Answer, "Approved.") {
+			continue
+		}
+		if time.Since(time.Unix(it.AnsweredAt, 0)) < s.hold {
+			continue
+		}
+		s.st.EditIdea(i.ID, func(x *store.Idea) error {
+			if x.Status != store.IdeaProposed {
+				return nil
+			}
+			x.Status, x.Route, x.SessionID, x.Error = store.IdeaQueued, "build", "", ""
+			return nil
+		})
+		s.kickIdeas()
+	}
 }
 
 // followIdeas revises a reply when the work it waits on is built, saved

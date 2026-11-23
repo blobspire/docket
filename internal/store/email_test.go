@@ -137,17 +137,16 @@ func TestAHugeReferencesListNeverBlocksStoring(t *testing.T) {
 }
 
 // The cross-pass case: their reply was triaged (with a reply item and a
-// draft) before your message linking it to the conversation was read. The
-// rows merge, and the item and draft move with them.
-func TestEarlyReplysTriageMergesIntoItsConversation(t *testing.T) {
+// draft) before your message linking it to the conversation was read. A
+// thread holding state never moves: the reply item, its draft and anything
+// on its way out stay exactly where they are.
+func TestATriagedEarlyReplyStaysItsOwnThread(t *testing.T) {
 	s := open(t)
 	now := time.Now()
 	inbound := func(f string) bool { return f == "INBOX" }
 	a := &mail.Message{Folder: "INBOX", UID: 1, UIDValidity: 1, MessageID: "A@x", From: mail.Addr{Email: "nancy@x.org"}, Subject: "Undo?", Date: now.Add(-3 * time.Hour)}
 	added, _ := s.AddEmail("gmail", []*mail.Message{a}, me)
 	s.NoteMessages("gmail", added, inbound)
-	s.SetVerdict(ThreadID("gmail", "A@x"), "p1", Verdict{Verdict: "digest", Line: "Nancy asked"})
-
 	c := &mail.Message{Folder: "INBOX", UID: 2, UIDValidity: 1, MessageID: "C@x", InReplyTo: []string{"B@x"}, From: mail.Addr{Email: "nancy@x.org"},
 		Subject: "Re: Undo?", Date: now.Add(-time.Hour)}
 	added, _ = s.AddEmail("gmail", []*mail.Message{c}, me)
@@ -162,21 +161,44 @@ func TestEarlyReplysTriageMergesIntoItsConversation(t *testing.T) {
 	added, _ = s.AddEmail("gmail", []*mail.Message{b}, me)
 	s.NoteMessages("gmail", added, inbound)
 
-	if _, ok := s.Thread(early); ok {
-		t.Fatal("the early thread row should be merged away")
+	th, ok := s.Thread(early)
+	if !ok || th.ItemID != "dk-item" {
+		t.Fatalf("the triaged early thread must stay: %+v", th)
 	}
-	th, ok := s.Thread(ThreadID("gmail", "A@x"))
-	if !ok || th.ItemID != "dk-item" || th.InboundAt != c.Date.Unix() || th.Verdict != "digest" {
+	if d, ok := s.LatestDraft(early); !ok || d.HTML != "<p>draft</p>" {
+		t.Fatal("its draft must stay with it")
+	}
+	if msgs, _ := s.ThreadMessages("gmail", "B@x"); len(msgs) != 1 || msgs[0].MessageID != "C@x" {
+		t.Fatalf("its message must stay with it: %+v", msgs)
+	}
+}
+
+// An early reply nobody has triaged yet does join its conversation, and
+// its pending triage goes with it.
+func TestAnUntriagedEarlyReplyJoinsItsConversation(t *testing.T) {
+	s := open(t)
+	now := time.Now()
+	inbound := func(f string) bool { return f == "INBOX" }
+	a := &mail.Message{Folder: "INBOX", UID: 1, UIDValidity: 1, MessageID: "A@x", From: mail.Addr{Email: "nancy@x.org"}, Subject: "Undo?", Date: now.Add(-3 * time.Hour)}
+	added, _ := s.AddEmail("gmail", []*mail.Message{a}, me)
+	s.NoteMessages("gmail", added, inbound)
+	s.SetVerdict(ThreadID("gmail", "A@x"), "p1", Verdict{Verdict: "digest", Line: "Nancy asked"})
+	c := &mail.Message{Folder: "INBOX", UID: 2, UIDValidity: 1, MessageID: "C@x", InReplyTo: []string{"B@x"}, From: mail.Addr{Email: "nancy@x.org"},
+		Subject: "Re: Undo?", Date: now.Add(-time.Hour)}
+	added, _ = s.AddEmail("gmail", []*mail.Message{c}, me)
+	s.NoteMessages("gmail", added, inbound)
+	b := &mail.Message{Folder: "Sent", UID: 1, UIDValidity: 1, MessageID: "B@x", InReplyTo: []string{"A@x"}, References: []string{"A@x"},
+		From: mail.Addr{Email: "me@example.com"}, Subject: "Re: Undo?", Date: now.Add(-2 * time.Hour)}
+	added, _ = s.AddEmail("gmail", []*mail.Message{b}, me)
+	s.NoteMessages("gmail", added, inbound)
+	if _, ok := s.Thread(ThreadID("gmail", "B@x")); ok {
+		t.Fatal("the untriaged early row should merge away")
+	}
+	th, _ := s.Thread(ThreadID("gmail", "A@x"))
+	if th.InboundAt != c.Date.Unix() || !th.NeedsTriage {
 		t.Fatalf("merged row: %+v", th)
 	}
-	if d, ok := s.LatestDraft(th.ID); !ok || d.HTML != "<p>draft</p>" {
-		t.Fatal("the draft should move with the reply item")
-	}
-	if got, ok := s.ThreadByItem("dk-item"); !ok || got.ID != th.ID {
-		t.Fatal("the item should find its thread")
-	}
-	msgs, _ := s.ThreadMessages("gmail", "A@x")
-	if len(msgs) != 3 {
+	if msgs, _ := s.ThreadMessages("gmail", "A@x"); len(msgs) != 3 {
 		t.Fatalf("messages: %d", len(msgs))
 	}
 }

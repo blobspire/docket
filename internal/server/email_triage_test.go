@@ -23,7 +23,9 @@ func newFakeModel(t *testing.T) *fakeModel {
 	t.Helper()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "claude")
-	os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \""+dir+"/args\"\ncat > \""+dir+"/prompt\"\npwd > \""+dir+"/cwd\"\ncat \""+dir+"/answer.json\"\n"), 0o755)
+	os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \""+dir+"/args\"\ncat > \""+dir+"/prompt\"\npwd > \""+dir+"/cwd\"\n"+
+		"if [ -s \""+dir+"/fail-on\" ] && grep -qF -f \""+dir+"/fail-on\" \""+dir+"/prompt\"; then echo '{\"is_error\":true,\"result\":\"refused\"}'; exit 0; fi\n"+
+		"cat \""+dir+"/answer.json\"\n"), 0o755)
 	return &fakeModel{dir: dir, bin: bin}
 }
 
@@ -330,3 +332,68 @@ func TestAnUnreadableMailboxFilesOneItemAndClosesIt(t *testing.T) {
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+// One email the model can't sort doesn't block the rest, gets surfaced
+// after two tries, and sorting that keeps failing files one item.
+func TestAnUnsortableEmailDoesntBlockTriage(t *testing.T) {
+	e, addr, f := triageEnv(t)
+	mailtest.Append(t, addr, "INBOX", msg("p1@x", "Weird <w@x.org>", "me@example.com", "Weird", "POISON-PILL", dated(at(2*time.Hour))), at(2*time.Hour))
+	mailtest.Append(t, addr, "INBOX", msg("a1@x", "Ann <ann@x.org>", "me@example.com", "Question", "Can you send it?", dated(at(time.Hour))), at(time.Hour))
+	os.WriteFile(filepath.Join(f.dir, "fail-on"), []byte("POISON-PILL"), 0o644)
+	f.answer(`{"structured_output":{"threads":[{"key":"T1","verdict":"reply","line":"Reply to Ann: send it","why":"asked","project":"","work":""}]}}`)
+	p := e.s.emailPass(e.ctx, "test")
+	if p.Reply != 1 {
+		t.Fatalf("Ann's email should still be sorted: %+v", p)
+	}
+	e.s.st.DB.Exec(`UPDATE email_threads SET needs_triage=1 WHERE thread='p1@x'`)
+	e.s.emailPass(e.ctx, "test")
+	lines, _ := e.s.st.DigestLines(time.Now())
+	if len(lines) != 1 || !strings.HasPrefix(lines[0].Line, "Couldn't sort") {
+		t.Fatalf("the unsortable email should reach the digest: %+v", lines)
+	}
+	// Everything failing, twice: one item for the human.
+	os.WriteFile(filepath.Join(f.dir, "fail-on"), []byte("BEGIN EMAIL"), 0o644)
+	mailtest.Append(t, addr, "INBOX", msg("b1@x", "Bob <bob@x.org>", "me@example.com", "Q2", "q"), time.Now())
+	e.s.emailPass(e.ctx, "test")
+	mailtest.Append(t, addr, "INBOX", msg("b2@x", "Bob <bob@x.org>", "me@example.com", "Q3", "q"), time.Now())
+	e.s.emailPass(e.ctx, "test")
+	items, _ := e.s.st.Items("open")
+	found := false
+	for _, it := range items {
+		found = found || it.DedupeKey == "email-triage"
+	}
+	if !found {
+		t.Fatal("sorting that keeps failing must file an item")
+	}
+	if sec := e.s.buildEmail(nil, nil, nil); len(sec.Problems) == 0 {
+		t.Fatal("the Email section must say the last check couldn't sort")
+	}
+}
+
+func TestEmailTextCantBecomeALinkInDocket(t *testing.T) {
+	e, addr, f := triageEnv(t)
+	mailtest.Append(t, addr, "INBOX", msg("l1@x", `"[Verify now](https://evil.example/login)" <x@x.org>`, "me@example.com", "Hi", "hi"), time.Now())
+	f.answer(`{"structured_output":{"threads":[{"key":"T1","verdict":"reply","line":"Reply","why":"see [here](https://evil.example/2)","project":"","work":""}]}}`)
+	e.s.emailPass(e.ctx, "test")
+	th, _ := e.s.st.Thread(store.ThreadID("test", "l1@x"))
+	rec := httptest.NewRecorder()
+	e.s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/item/"+th.ItemID, nil))
+	if strings.Contains(rec.Body.String(), `href="https://evil.example`) {
+		t.Fatal("email text turned into a link on the item")
+	}
+}
+
+func TestEmailCorrectionsStayOutOfTheRuleProposer(t *testing.T) {
+	e, addr, f := triageEnv(t)
+	mailtest.Append(t, addr, "INBOX", msg("q1@x", "Ann <ann@x.org>", "me@example.com", "Question", "q"), time.Now())
+	f.answer(`{"structured_output":{"threads":[{"key":"T1","verdict":"reply","line":"Reply to Ann","why":"x","project":"","work":""}]}}`)
+	e.s.emailPass(e.ctx, "test")
+	th, _ := e.s.st.Thread(store.ThreadID("test", "q1@x"))
+	e.s.Decide(th.ItemID, Action{Kind: "noise", Text: "admin"})
+	ds, _ := e.s.st.DecisionsSince(0, 100)
+	for _, d := range ds {
+		if d.ItemID == th.ItemID {
+			t.Fatal("an email correction reached the rule proposer")
+		}
+	}
+}

@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS email_outbox (
   item_id TEXT NOT NULL DEFAULT '',
   version INTEGER NOT NULL,
   kind TEXT NOT NULL,
+  answers TEXT NOT NULL DEFAULT '',
   hold_until INTEGER NOT NULL,
   status TEXT NOT NULL,
   message_id TEXT NOT NULL DEFAULT '',
@@ -256,6 +257,7 @@ type Outgoing struct {
 	ItemID    string
 	Version   int
 	Kind      string // reply | holding
+	Answers   string // the message it replies to (row id), when it was approved
 	HoldUntil int64  // unix ms
 	Status    string // held | sending | sent | failed | undone
 	MessageID string
@@ -264,11 +266,11 @@ type Outgoing struct {
 	SentAt    int64
 }
 
-const outCols = `id, thread_id, item_id, version, kind, hold_until, status, message_id, error, created_at, sent_at`
+const outCols = `id, thread_id, item_id, version, kind, answers, hold_until, status, message_id, error, created_at, sent_at`
 
 func scanOut(r interface{ Scan(...any) error }) (Outgoing, error) {
 	var o Outgoing
-	err := r.Scan(&o.ID, &o.ThreadID, &o.ItemID, &o.Version, &o.Kind, &o.HoldUntil, &o.Status, &o.MessageID, &o.Error, &o.CreatedAt, &o.SentAt)
+	err := r.Scan(&o.ID, &o.ThreadID, &o.ItemID, &o.Version, &o.Kind, &o.Answers, &o.HoldUntil, &o.Status, &o.MessageID, &o.Error, &o.CreatedAt, &o.SentAt)
 	return o, err
 }
 
@@ -285,8 +287,12 @@ func (s *Store) HoldSend(o Outgoing) error {
 	if n > 0 {
 		return errors.New("a reply to this email is already on its way")
 	}
-	if _, err := tx.Exec(`INSERT INTO email_outbox(`+outCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-		o.ID, o.ThreadID, o.ItemID, o.Version, o.Kind, o.HoldUntil, "held", "", "", time.Now().Unix(), 0); err != nil {
+	tx.QueryRow(`SELECT COUNT(*) FROM email_outbox WHERE thread_id=? AND version=? AND kind=? AND status='sent'`, o.ThreadID, o.Version, o.Kind).Scan(&n)
+	if n > 0 {
+		return errors.New("this version was already sent")
+	}
+	if _, err := tx.Exec(`INSERT INTO email_outbox(`+outCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		o.ID, o.ThreadID, o.ItemID, o.Version, o.Kind, o.Answers, o.HoldUntil, "held", "", "", time.Now().Unix(), 0); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -387,4 +393,36 @@ func (s *Store) TouchItem(id string) {
 // MarkThreadReplied records that you replied (from docket) at a time.
 func (s *Store) MarkThreadReplied(id string, at int64) {
 	s.DB.Exec(`UPDATE email_threads SET replied_at=MAX(replied_at, ?), needs_triage=0, updated_at=? WHERE id=?`, at, time.Now().Unix(), id)
+}
+
+// SentKinds reports which kinds of reply (reply, holding) went out for a
+// draft version, and when the latest did.
+func (s *Store) SentKinds(threadID string, version int) (kinds map[string]bool, at int64) {
+	kinds = map[string]bool{}
+	rows, err := s.DB.Query(`SELECT kind, sent_at FROM email_outbox WHERE thread_id=? AND version=? AND status='sent'`, threadID, version)
+	if err != nil {
+		return kinds, 0
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k string
+		var t int64
+		rows.Scan(&k, &t)
+		kinds[k] = true
+		if t > at {
+			at = t
+		}
+	}
+	return kinds, at
+}
+
+// SentByDocketAsHolding reports a message docket sent as a holding reply:
+// it doesn't answer the email (the real reply is still to come).
+func (s *Store) SentByDocketAsHolding(messageID string) bool {
+	if messageID == "" {
+		return false
+	}
+	var n int
+	s.DB.QueryRow(`SELECT COUNT(*) FROM email_outbox WHERE kind='holding' AND status='sent' AND message_id=?`, messageID).Scan(&n)
+	return n > 0
 }

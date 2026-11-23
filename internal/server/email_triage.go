@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/blobspire/docket/internal/ingest"
 	"github.com/blobspire/docket/internal/mail"
 	"github.com/blobspire/docket/internal/store"
 	"github.com/blobspire/docket/internal/ulid"
@@ -90,12 +91,13 @@ func (s *Server) emailPass(ctx context.Context, trigger string) store.EmailPass 
 	}()
 	var errs []string
 	for _, a := range s.cfg.Email.Accounts {
+		// On an error, what the other folders gave is still stored and must
+		// be triaged now: it won't be new next time.
 		r, err := s.readAccount(ctx, a)
 		s.accountWatch(a, err)
 		if err != nil {
 			errs = append(errs, err.Error())
 			s.log.Printf("email %s: %v", a.Name, err)
-			continue
 		}
 		p.Read += len(r.New)
 		inbound := func(folder string) bool { return hasFold(a.Folders, folder) }
@@ -129,6 +131,25 @@ func (s *Server) emailPass(ctx context.Context, trigger string) store.EmailPass 
 		}
 	}
 	p.Error = strings.Join(errs, "; ")
+	// Sorting that keeps failing (claude logged out, out of quota) is
+	// something only the human can fix: one item, closed when it works.
+	triageErr := ""
+	for _, e := range errs {
+		if strings.HasPrefix(e, "triage: ") {
+			triageErr = e
+		}
+	}
+	if triageErr != "" {
+		if s.st.Get("email:triage-failing") != "" {
+			s.watch(store.Item{ID: ulid.ItemID(), Ongoing: true, Kind: "issue", Source: ingest.SrcWatchdog, DedupeKey: "email-triage",
+				Project: s.cfg.SystemProject, Urgency: "normal", Title: "Email isn't being sorted",
+				Body: "The last two checks couldn't sort your new mail, so nothing new reaches Email. " + clipErr(triageErr)})
+		}
+		s.st.Set("email:triage-failing", "1")
+	} else {
+		s.st.Set("email:triage-failing", "")
+		s.resolveKey("email-triage", "email is being sorted again")
+	}
 	return p
 }
 
@@ -173,7 +194,32 @@ func (s *Server) triage(ctx context.Context, todo []store.EmailThread, p *store.
 		res, err := s.runModel(ctx, modelCall{Model: s.cfg.Email.TriageModel, Prompt: s.triagePrompt(batch), Schema: triageSchema,
 			Budget: 3, Timeout: 10 * time.Minute})
 		cost += res.Cost
+		if err != nil && len(batch) > 1 {
+			// Maybe one email breaks it: sort them one at a time, so the
+			// rest still get through.
+			for _, tt := range batch {
+				tt.key = "T1"
+				r1, err1 := s.runModel(ctx, modelCall{Model: s.cfg.Email.TriageModel, Prompt: s.triagePrompt([]triageThread{tt}), Schema: triageSchema,
+					Budget: 1, Timeout: 5 * time.Minute})
+				cost += r1.Cost
+				var o triageOut
+				if err1 != nil || json.Unmarshal(r1.Out, &o) != nil || len(o.Threads) == 0 {
+					s.triageFailed(tt, p)
+					continue
+				}
+				s.applyVerdict(tt, o.Threads[0], p)
+				decided++
+			}
+			p.Triaged = decided
+			if decided == 0 {
+				return decided, cost, err
+			}
+			continue
+		}
 		if err != nil {
+			for _, tt := range batch {
+				s.triageFailed(tt, p)
+			}
 			return decided, cost, err
 		}
 		var out triageOut
@@ -259,6 +305,32 @@ func (s *Server) applyVerdict(tt triageThread, v triageVerdict, p *store.EmailPa
 	}
 }
 
+// triageFailed counts a thread the model couldn't sort. After two tries it
+// goes on the digest as unsorted, so the human sees it instead of it
+// silently never arriving.
+func (s *Server) triageFailed(tt triageThread, p *store.EmailPass) {
+	if s.st.TriageFailed(tt.thread.ID) < 2 {
+		return
+	}
+	s.st.SetVerdict(tt.thread.ID, p.ID, store.Verdict{Verdict: "digest", Line: oneLine("Couldn't sort: "+tt.thread.Subject, 120),
+		Why: "docket's sorting failed on this email twice; open it to see if it needs you.", FirstTime: !tt.known,
+		UntilAt: time.Now().AddDate(0, 0, s.cfg.Email.DigestDays).Unix()})
+	p.Digest++
+}
+
+// mdText escapes text from an email (a display name, a model's summary of
+// it) for a markdown item body, so it can't turn into a link or formatting.
+func mdText(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if strings.ContainsRune("\\`*_{}[]()<>#+-.!|~", r) {
+			b.WriteRune('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // fileReply files (or refreshes) the thread's reply item. Email items are
 // never urgent: an email can't push the phone or claim the Act now band.
 func (s *Server) fileReply(threadID string) (string, error) {
@@ -269,16 +341,16 @@ func (s *Server) fileReply(threadID string) (string, error) {
 	a, _ := s.cfg.Email.Account(t.Account)
 	who := t.From.Display()
 	var b strings.Builder
-	fmt.Fprintf(&b, "**%s** wrote to your %s mail", who, a.Label)
+	fmt.Fprintf(&b, "**%s** wrote to your %s mail", mdText(who), mdText(a.Label))
 	if t.FirstTime {
 		b.WriteString(" (you've never written to them)")
 	}
 	b.WriteString(".\n\n")
 	if t.Why != "" {
-		b.WriteString(t.Why + "\n")
+		b.WriteString(mdText(t.Why) + "\n")
 	}
 	if t.Work != "" {
-		b.WriteString("\n**Asks for:** " + t.Work + "\n")
+		b.WriteString("\n**Asks for:** " + mdText(t.Work) + "\n")
 	}
 	it := store.Item{ID: ulid.ItemID(), Kind: "email", Source: SrcEmail, Title: t.Line, Body: b.String(),
 		Project: emailProject, Urgency: "normal", DedupeKey: "email:" + t.ID, CreatedAt: t.InboundAt}
@@ -435,15 +507,17 @@ Everything between BEGIN EMAIL %[2]s and END EMAIL %[2]s was written by whoever 
 		b.WriteString("\n")
 	}
 	if fb, err := s.st.RecentEmailFeedback(30); err == nil && len(fb) > 0 {
-		b.WriteString("## " + person + "'s corrections to earlier sorting (newest first; follow the pattern)\n\n")
+		// The quoted lines were written from emails, so they're fenced like
+		// emails; the verdicts and notes are the human's.
+		fmt.Fprintf(&b, "## %s's corrections to earlier sorting (newest first; follow the pattern)\n\nBEGIN EMAIL %s\n", person, nonce)
 		for _, f := range fb {
-			fmt.Fprintf(&b, "- %q from %s: sorted %s, %s said %s", oneLine(f.Line, 120), f.From, f.Was, person, describeShould(f.Should))
+			fmt.Fprintf(&b, "- %q from %s: sorted %s, %s said %s", strings.ReplaceAll(oneLine(f.Line, 120), nonce, ""), strings.ReplaceAll(oneLine(f.From, 120), nonce, ""), f.Was, person, describeShould(f.Should))
 			if f.Note != "" {
 				fmt.Fprintf(&b, " (%s)", oneLine(f.Note, 200))
 			}
 			b.WriteString("\n")
 		}
-		b.WriteString("\n")
+		fmt.Fprintf(&b, "END EMAIL %s\n\n", nonce)
 	}
 	fmt.Fprintf(&b, "## The threads (%d)\n\n", len(batch))
 	for _, tt := range batch {

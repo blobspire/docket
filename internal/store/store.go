@@ -1558,6 +1558,7 @@ type Decision struct {
 func (s *Store) DecisionsSince(ts int64, limit int) ([]Decision, error) {
 	rows, err := s.DB.Query(`SELECT d.item_id, d.action, d.answer, d.context, COALESCE(i.title,''), d.ts FROM decisions d
 		LEFT JOIN items i ON i.id = d.item_id WHERE d.ts >= ? AND d.action IN ('answer','approve','decline','choose','correction','dismiss','noise')
+		AND COALESCE(i.source,'') <> 'email' -- email corrections teach triage, not the coding agents' rules
 		ORDER BY d.ts LIMIT ?`, ts, limit)
 	if err != nil {
 		return nil, err

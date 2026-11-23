@@ -19,15 +19,16 @@ import (
 // emailSection is the bottom of the docket: replies that need you, then the
 // digest of what's worth reading.
 type emailSection struct {
-	Rows     []itemView // reply items
-	Waiting  []itemView // replies on their way out, or waiting on work
-	Digest   []digestLine
-	Earlier  []digestLine // seen before the latest pass came in
-	Pass     store.EmailPass
-	HasPass  bool
-	Running  bool
-	Next     string // when the next pass runs
-	Problems []string
+	Rows       []itemView // reply items
+	Waiting    []itemView // replies on their way out, or waiting on work
+	Digest     []digestLine
+	Earlier    []digestLine // seen before the latest pass came in
+	Pass       store.EmailPass
+	HasPass    bool
+	Running    bool
+	Next       string // when the next pass runs
+	Problems   []string
+	DigestDays int
 }
 
 // digestLine is one line of the digest.
@@ -60,10 +61,12 @@ func (s *Server) buildEmail(open, waiting []Ranked, projects []string) *emailSec
 	e.Running = s.st.RunningPass()
 	now := s.cfg.Now()
 	lines, _ := s.st.DigestLines(now)
+	// Seen lines fold into Earlier once a later check brought new ones.
+	foldBefore := s.st.LastDigestPass()
 	for _, t := range lines {
 		a, _ := s.cfg.Email.Account(t.Account)
 		d := digestLine{EmailThread: t, Label: a.Label, When: shortWhen(now, time.Unix(t.InboundAt, 0).In(s.cfg.loc))}
-		if t.SeenAt > 0 && e.HasPass && t.SeenAt < e.Pass.StartedAt {
+		if t.SeenAt > 0 && foldBefore > 0 && t.SeenAt < foldBefore {
 			e.Earlier = append(e.Earlier, d)
 		} else {
 			e.Digest = append(e.Digest, d)
@@ -87,6 +90,10 @@ func (s *Server) buildEmail(open, waiting []Ranked, projects []string) *emailSec
 			e.Problems = append(e.Problems, "Can't read "+a.Label+" mail")
 		}
 	}
+	if e.HasPass && strings.Contains(e.Pass.Error, "triage: ") {
+		e.Problems = append(e.Problems, "The last check couldn't sort new mail")
+	}
+	e.DigestDays = s.cfg.Email.DigestDays
 	return e
 }
 
@@ -202,7 +209,7 @@ func (s *Server) pageEmail(w http.ResponseWriter, r *http.Request) {
 		t, _ = s.st.Thread(t.ID)
 	}
 	v := s.readerFor(t)
-	if b := r.URL.Query().Get("back"); strings.HasPrefix(b, "/") && !strings.HasPrefix(b, "//") {
+	if b := r.URL.Query().Get("back"); localPath(b) {
 		v.Back = b
 	}
 	s.render(w, "email.html", page{Title: oneLine(firstNonEmptyStr(t.Line, t.Subject), 80), Nav: "email", Email: &v})
@@ -258,7 +265,11 @@ func (s *Server) emailAct(w http.ResponseWriter, r *http.Request) {
 		}
 		line := t.Line
 		if t.Verdict != "reply" || line == "" {
-			line = oneLine("Reply to "+firstName(t.From.Display())+": "+t.Subject, 120)
+			what := t.Subject
+			if t.Verdict == "digest" && t.Line != "" {
+				what = t.Line
+			}
+			line = oneLine("Reply to "+firstName(t.From.Display())+": "+what, 120)
 		}
 		s.st.SetVerdict(t.ID, t.PassID, store.Verdict{Verdict: "reply", Line: line, Why: t.Why, Project: t.Project, Work: t.Work, FirstTime: t.FirstTime})
 		itemID, err = s.fileReply(t.ID)
@@ -287,7 +298,7 @@ func (s *Server) emailAct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	back := r.FormValue("back")
-	if !strings.HasPrefix(back, "/") || strings.HasPrefix(back, "//") {
+	if !localPath(back) {
 		back = "/"
 	}
 	if itemID != "" {
@@ -331,7 +342,16 @@ func (s *Server) emailCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) emailReadAll(w http.ResponseWriter, r *http.Request) {
-	s.st.MarkAllRead(time.Now())
+	r.ParseForm()
+	if ids := r.Form["id"]; len(ids) > 0 {
+		// The lines on your screen, not ones a check added since.
+		if len(ids) > 500 {
+			ids = ids[:500]
+		}
+		s.st.MarkReadIDs(ids)
+	} else {
+		s.st.MarkAllRead(time.Now())
+	}
 	s.bumpEmail()
 	if r.Header.Get("X-Requested-With") == "fetch" {
 		w.Header().Set("Content-Type", "application/json")
@@ -377,6 +397,14 @@ func (s *Server) emailDecided(it store.Item, a Action) {
 	if a.Kind == "noise" {
 		s.st.AddEmailFeedback(store.EmailFeedback{ThreadID: t.ID, Was: "reply", Should: "skip", Line: t.Line, From: t.From.Email, Note: a.Text})
 	}
+	// Closing the reply ("Don't reply", Dismiss, Not worth it, Stash)
+	// cancels a send still in its Undo window.
+	switch a.Kind {
+	case "done", "dismiss", "noise", "stash":
+		if o, ok := s.st.PendingSend(t.ID); ok && o.Status == "held" {
+			s.st.UndoSend(o.ID)
+		}
+	}
 	s.bumpEmail()
 }
 
@@ -389,20 +417,23 @@ type emailItem struct {
 	OpenURL  string
 	OpenName string
 
-	Draft     *store.Draft
-	To, Cc    []recipient
-	Outsider  bool          // a recipient isn't in the thread
-	Preview   template.HTML // the draft as it will look, links annotated
-	Holding   template.HTML
-	EditHTML  string        // the draft for the editor (styled, no annotations)
-	Signature template.HTML // the account's signature, for the preview
-	Job       *store.EmailJob
-	Writing   bool // a draft is being written
-	Pending   *store.Outgoing
-	PendingMs int64 // left of its Undo window
-	Failed    string
-	SaveName  string // "Save to Gmail drafts"
-	HoldSecs  int    // the Undo window
+	Draft       *store.Draft
+	To, Cc      []recipient
+	Outsider    bool          // a recipient isn't in the thread
+	Preview     template.HTML // the draft as it will look, links annotated
+	Holding     template.HTML
+	EditHTML    string        // the draft for the editor (styled, no annotations)
+	Signature   template.HTML // the account's signature, for the preview
+	Job         *store.EmailJob
+	Writing     bool // a draft is being written
+	Pending     *store.Outgoing
+	PendingMs   int64 // left of its Undo window
+	Failed      string
+	Sent        bool   // this version's reply went out
+	SentAt      int64  // when
+	HoldingSent bool   // its holding reply went out
+	SaveName    string // "Save to Gmail drafts"
+	HoldSecs    int    // the Undo window
 }
 
 type recipient struct {
@@ -453,6 +484,10 @@ func (s *Server) emailItem(it store.Item) *emailItem {
 			}
 		}
 	}
+	if e.Draft != nil {
+		kinds, at := s.st.SentKinds(t.ID, e.Draft.Version)
+		e.Sent, e.HoldingSent, e.SentAt = kinds["reply"], kinds["holding"], at
+	}
 	if o, ok := s.st.PendingSend(t.ID); ok {
 		e.Pending = &o
 		if left := o.HoldUntil - time.Now().UnixMilli(); left > 0 {
@@ -474,6 +509,12 @@ func (s *Server) emailItem(it store.Item) *emailItem {
 //	save-draft       put the draft in the account's Drafts folder
 func (s *Server) replyAct(w http.ResponseWriter, r *http.Request, t store.EmailThread, action string) (map[string]any, error) {
 	version, _ := strconv.Atoi(r.FormValue("version"))
+	switch action {
+	case "revise", "redraft", "edit":
+		if _, ok := s.st.PendingSend(t.ID); ok {
+			return nil, errors.New("a reply is on its way; undo it first to change the draft")
+		}
+	}
 	switch action {
 	case "send", "holding":
 		kind := "reply"
@@ -518,7 +559,14 @@ func (s *Server) replyAct(w http.ResponseWriter, r *http.Request, t store.EmailT
 		if strings.TrimSpace(mail.Text(body)) == "" {
 			return nil, errors.New("the draft can't be empty")
 		}
-		to, cc := mail.ParseAddrs(r.FormValue("to")), mail.ParseAddrs(r.FormValue("cc"))
+		to, err := strictAddrs(r.FormValue("to"))
+		if err != nil {
+			return nil, err
+		}
+		cc, err := strictAddrs(r.FormValue("cc"))
+		if err != nil {
+			return nil, err
+		}
 		if len(to) == 0 {
 			return nil, errors.New("who should it go to? Write at least one address in To")
 		}
@@ -563,3 +611,22 @@ func (s *Server) replyAct(w http.ResponseWriter, r *http.Request, t store.EmailT
 }
 
 var errUnknownAction = errors.New("unknown action")
+
+// strictAddrs parses a To or Cc you typed (commas or semicolons), refusing
+// the whole field when one address doesn't parse, so nobody is silently
+// dropped.
+func strictAddrs(field string) ([]mail.Addr, error) {
+	var out []mail.Addr
+	for _, part := range strings.FieldsFunc(field, func(r rune) bool { return r == ',' || r == ';' }) {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		a := mail.ParseAddrs(part)
+		if len(a) != 1 || !strings.Contains(a[0].Email, "@") {
+			return nil, fmt.Errorf("%q isn't an email address I can send to", part)
+		}
+		out = append(out, a[0])
+	}
+	return out, nil
+}

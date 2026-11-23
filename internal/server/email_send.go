@@ -21,6 +21,7 @@ func (s *Server) emailOutTick(ctx context.Context) {
 	if !s.cfg.Email.On() {
 		return
 	}
+	s.startEmailBuilds()
 	s.followIdeas()
 	s.startDrafts(ctx)
 	s.sendDue(ctx)
@@ -33,6 +34,9 @@ func (s *Server) QueueSend(threadID string, version int, kind string) (store.Out
 	t, ok := s.st.Thread(threadID)
 	if !ok {
 		return store.Outgoing{}, errors.New("no such email")
+	}
+	if it, ok, _ := s.st.GetItem(t.ItemID); !ok || !openStatus(it.Status) {
+		return store.Outgoing{}, errors.New("this reply is closed; reopen it to send")
 	}
 	d, ok := s.st.LatestDraft(t.ID)
 	if !ok {
@@ -59,7 +63,7 @@ func (s *Server) QueueSend(threadID string, version int, kind string) (store.Out
 	if len(d.To) == 0 {
 		return store.Outgoing{}, errors.New("the draft has no one to send it to")
 	}
-	o := store.Outgoing{ID: ulid.New(time.Now()), ThreadID: t.ID, ItemID: t.ItemID, Version: d.Version, Kind: kind,
+	o := store.Outgoing{ID: ulid.New(time.Now()), ThreadID: t.ID, ItemID: t.ItemID, Version: d.Version, Kind: kind, Answers: t.LastInbound,
 		HoldUntil: time.Now().Add(s.cfg.Email.SendHold.Duration).UnixMilli()}
 	if err := s.st.HoldSend(o); err != nil {
 		return store.Outgoing{}, err
@@ -85,7 +89,7 @@ func (s *Server) sendDue(ctx context.Context) {
 		return
 	}
 	for _, o := range due {
-		msgID, err := s.sendOne(ctx, o)
+		msgID, err := s.sendOneSafe(ctx, o)
 		if err != nil {
 			s.st.EndSend(o.ID, "failed", "", clipErr(err.Error()))
 			s.sendFailed(o, err)
@@ -132,10 +136,39 @@ func joinDisplay(list []mail.Addr) string {
 	return strings.Join(out, ", ")
 }
 
+func openStatus(st string) bool { return st == "open" || st == "snoozed" || st == "answered" }
+
+// sendOneSafe is sendOne, never taking the server down with it.
+func (s *Server) sendOneSafe(ctx context.Context, o store.Outgoing) (id string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("docket failed while sending (%v); check your Sent folder before trying again", r)
+		}
+	}()
+	return s.sendOne(ctx, o)
+}
+
+// sendOne sends a held reply, after checking nothing changed under it in
+// its Undo window: the item is still open, the approved version is still
+// the newest and no new one is being written, and the email it answers is
+// still the newest in the thread. Otherwise nothing is sent and the human
+// is told why.
 func (s *Server) sendOne(ctx context.Context, o store.Outgoing) (string, error) {
 	t, ok := s.st.Thread(o.ThreadID)
 	if !ok {
 		return "", errors.New("the thread is gone")
+	}
+	if it, ok, _ := s.st.GetItem(t.ItemID); !ok || !openStatus(it.Status) {
+		return "", errors.New("not sent: the reply was closed before its Undo window ended")
+	}
+	if latest, ok := s.st.LatestDraft(t.ID); !ok || latest.Version != o.Version {
+		return "", errors.New("not sent: the draft changed during the Undo window; look at the new version")
+	}
+	if j, ok := s.st.Job(t.ID); ok && (j.Status == "queued" || j.Status == "running") {
+		return "", errors.New("not sent: a new version was being written; look at it first")
+	}
+	if o.Answers != "" && t.LastInbound != o.Answers {
+		return "", fmt.Errorf("not sent: %s wrote again during the Undo window; read the new message first", t.From.Display())
 	}
 	d, ok := s.st.DraftVersion(t.ID, o.Version)
 	if !ok {
@@ -166,12 +199,12 @@ func (s *Server) sendDone(o store.Outgoing) {
 		return
 	}
 	a, _ := s.cfg.Email.Account(t.Account)
-	s.st.MarkThreadReplied(t.ID, time.Now().Unix())
 	if o.Kind == "holding" {
 		s.st.AppendToItem(t.ItemID, "_Sent a holding reply "+time.Now().In(s.cfg.loc).Format("Mon 15:04")+". The full reply is still to come._")
 		s.st.TouchItem(t.ItemID)
 		return
 	}
+	s.st.MarkThreadReplied(t.ID, time.Now().Unix())
 	if it, ok, _ := s.st.GetItem(t.ItemID); ok && (it.Status == "open" || it.Status == "snoozed" || it.Status == "answered") {
 		s.st.SetStatusWith(it.ID, "done", "Sent from your "+a.Label+" mail", "sent", "")
 	}

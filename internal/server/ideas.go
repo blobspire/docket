@@ -640,25 +640,36 @@ func (s *Server) ideaDecided(before store.Item, a Action) {
 	if next == "" || next == i.Status || i.Status == store.IdeaBuilt {
 		return
 	}
-	// No session wrote it (docket filed it from an email): building means
-	// starting a session, given the approved plan and nothing else.
-	fromEmail := i.SessionID == "" && strings.HasPrefix(i.Reason, emailIdeaMark)
-	if next == store.IdeaBuilding && fromEmail {
-		next = store.IdeaQueued
+	if isEmailIdea(i) {
+		s.emailIdeaDecided(i, next)
+		return
 	}
 	s.st.EditIdea(i.ID, func(x *store.Idea) error {
 		x.Status = next
-		if next == store.IdeaBuilding || next == store.IdeaQueued {
+		if next == store.IdeaBuilding {
 			x.Error = ""
-		}
-		if fromEmail && next == store.IdeaQueued {
-			x.Route = "build"
 		}
 		return nil
 	})
-	if next == store.IdeaQueued {
-		s.kickIdeas()
+}
+
+// emailIdeaDecided follows a decision on a proposal docket filed from an
+// email. No session wrote it, so nothing is delivered: Build it is started
+// by startEmailBuilds once the Undo window has passed, and Save for later,
+// Dismiss or an Undo after the build started stop that build session.
+func (s *Server) emailIdeaDecided(i store.Idea, next string) {
+	if next == store.IdeaBuilding {
+		return // startEmailBuilds starts it after the Undo window
 	}
+	switch i.Status {
+	case store.IdeaQueued, store.IdeaWaiting, store.IdeaStarting, store.IdeaResearching, store.IdeaBuilding:
+		sess, _, _ := s.st.GetSession(i.SessionID)
+		s.stopIdeaSession(context.Background(), i, sess)
+	}
+	s.st.EditIdea(i.ID, func(x *store.Idea) error {
+		x.Status, x.SessionID = next, ""
+		return nil
+	})
 }
 
 // ---- the Ideas page's buttons ---------------------------------------------------

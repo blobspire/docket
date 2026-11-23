@@ -223,7 +223,7 @@ func TestEditingAndRevising(t *testing.T) {
 	}
 	sheet := httptest.NewRecorder()
 	e.s.Handler().ServeHTTP(sheet, httptest.NewRequest("GET", "/item/"+th.ItemID, nil))
-	if b := sheet.Body.String(); !strings.Contains(b, `class="addr out"`) || !strings.Contains(b, "anyone in this conversation") {
+	if b := sheet.Body.String(); !strings.Contains(b, `class="addr out"`) || !strings.Contains(b, "anyone who wrote in this conversation") {
 		i := strings.Index(b, "dr-h")
 		t.Errorf("a recipient outside the thread must be flagged:\n%.1500s", b[max(i, 0):])
 	}
@@ -285,5 +285,123 @@ func TestFirstNameReadsOutlookStyleNames(t *testing.T) {
 		if got := firstName(in); got != want {
 			t.Errorf("%q => %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestAVersionIsSentOnceAndClosedRepliesNeverSend(t *testing.T) {
+	e, f, smtp, th := replyEnv(t)
+	f.answer(strings.Replace(nancyDraft, "%s", "false", 1))
+	e.runDrafts()
+	e.s.cfg.Email.SendHold.Duration = 0
+	if _, err := e.s.QueueSend(th.ID, 1, "reply"); err != nil {
+		t.Fatal(err)
+	}
+	e.s.sendDue(e.ctx)
+	e.s.Decide(th.ItemID, Action{Kind: "reopen"})
+	if _, err := e.s.QueueSend(th.ID, 1, "reply"); err == nil || !strings.Contains(err.Error(), "already sent") {
+		t.Fatalf("a second send of the same version: %v", err)
+	}
+	sheet := httptest.NewRecorder()
+	e.s.Handler().ServeHTTP(sheet, httptest.NewRequest("GET", "/item/"+th.ItemID, nil))
+	if b := sheet.Body.String(); !strings.Contains(b, "This version already went out") || strings.Contains(b, `data-email-do="send"`) {
+		t.Fatal("the sheet must say it was sent and offer no Send")
+	}
+	if len(smtp.Messages()) != 1 {
+		t.Fatalf("sent %d", len(smtp.Messages()))
+	}
+	// A dismissed reply can't send, even a new version.
+	d, _ := e.s.st.LatestDraft(th.ID)
+	d.HTML, d.Source = "<p>second</p>", "edit"
+	v, _ := e.s.st.AddDraft(d)
+	e.s.Decide(th.ItemID, Action{Kind: "dismiss"})
+	if _, err := e.s.QueueSend(th.ID, v, "reply"); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("a closed reply sent: %v", err)
+	}
+}
+
+func TestNothingChangesUnderAHeldSend(t *testing.T) {
+	e, f, smtp, th := replyEnv(t)
+	f.answer(strings.Replace(nancyDraft, "%s", "false", 1))
+	e.runDrafts()
+	e.s.cfg.Email.SendHold.Duration = time.Hour
+	if _, err := e.s.QueueSend(th.ID, 1, "reply"); err != nil {
+		t.Fatal(err)
+	}
+	// Edits and revisions wait until it's undone.
+	if rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {"1"}, "html": {"<p>x</p>"}, "to": {"nancy@example.org"}}); rec.Code != 409 {
+		t.Fatalf("edit during the hold: %d", rec.Code)
+	}
+	if rec := postForm(e, "/email/"+th.ID+"/revise", url.Values{"text": {"shorter"}}); rec.Code != 409 {
+		t.Fatalf("revise during the hold: %d", rec.Code)
+	}
+	// "Don't reply" cancels it.
+	e.s.Decide(th.ItemID, Action{Kind: "done"})
+	if last, _ := e.s.st.LastSend(th.ID); last.Status != "undone" {
+		t.Fatalf("closing the reply should withdraw the held send: %+v", last)
+	}
+	e.s.st.DB.Exec(`UPDATE email_outbox SET hold_until=0`)
+	e.s.sendDue(e.ctx)
+	if len(smtp.Messages()) != 0 {
+		t.Fatal("sent after Don't reply")
+	}
+}
+
+func TestANewMessageDuringTheUndoWindowStopsTheSend(t *testing.T) {
+	e, f, smtp, th := replyEnv(t)
+	f.answer(strings.Replace(nancyDraft, "%s", "false", 1))
+	e.runDrafts()
+	e.s.cfg.Email.SendHold.Duration = time.Hour
+	if _, err := e.s.QueueSend(th.ID, 1, "reply"); err != nil {
+		t.Fatal(err)
+	}
+	// Nancy writes again before the hold ends (a redraft gets queued too).
+	e.s.st.DB.Exec(`UPDATE email_jobs SET status='done'`)
+	m, _ := e.s.st.EmailMessageByID(th.LastInbound)
+	e.s.st.DB.Exec(`UPDATE email_threads SET last_inbound='other-message' WHERE id=?`, th.ID)
+	_ = m
+	e.s.st.DB.Exec(`UPDATE email_outbox SET hold_until=0`)
+	e.s.sendDue(e.ctx)
+	if len(smtp.Messages()) != 0 {
+		t.Fatal("sent over a newer message")
+	}
+	if last, _ := e.s.st.LastSend(th.ID); last.Status != "failed" || !strings.Contains(last.Error, "wrote again") {
+		t.Fatalf("last send: %+v", last)
+	}
+}
+
+func TestAHoldingReplyInSentDoesntCloseTheReply(t *testing.T) {
+	e, f, smtp, th := replyEnv(t)
+	f.answer(`{"session_id":"s","structured_output":{"subject":"Re: Undo a removed resident?","reply_all":false,"body_html":"<p>Live now.</p>",
+		"holding_html":"<p>We'll add it this week.</p>","notes":"","questions":[],"work":{"needed":false,"title":"","plan":"","why":""}}}`)
+	e.runDrafts()
+	e.s.cfg.Email.SendHold.Duration = 0
+	e.s.QueueSend(th.ID, 1, "holding")
+	e.s.sendDue(e.ctx)
+	sent := smtp.Messages()[0].Data
+	// Gmail puts the holding reply in Sent; the next check reads it.
+	addr := strings.Split(e.s.cfg.Email.Accounts[0].IMAP, ",")[0]
+	mailtest.Append(t, addr, "Sent", strings.ReplaceAll(sent, "\r\n", "\n"), time.Now())
+	e.s.emailPass(e.ctx, "test")
+	if it, _, _ := e.s.st.GetItem(th.ItemID); it.Status != "open" {
+		t.Fatalf("a holding reply closed the reply: %s %q", it.Status, it.Resolution)
+	}
+}
+
+func TestAReplyToElsewhereIsShownAndFlagged(t *testing.T) {
+	f := newFakeModel(t)
+	e, addr, _ := emailEnv(t, "")
+	e.s.cfg.Chief.Claude = f.bin
+	mailtest.Append(t, addr, "INBOX", msg("r1@x", "Nancy Smith <nancy@example.org>", "me@example.com", "Hi", "Can you help?",
+		`Reply-To: "Nancy Smith" <nancy@evil.test>`), time.Now())
+	f.answer(`{"structured_output":{"threads":[{"key":"T1","verdict":"reply","line":"Reply to Nancy","why":"x","project":"","work":""}]}}`)
+	e.s.emailPass(e.ctx, "test")
+	th, _ := e.s.st.Thread(store.ThreadID("test", "r1@x"))
+	f.answer(strings.Replace(nancyDraft, "%s", "false", 1))
+	e.runDrafts()
+	sheet := httptest.NewRecorder()
+	e.s.Handler().ServeHTTP(sheet, httptest.NewRequest("GET", "/item/"+th.ItemID, nil))
+	b := sheet.Body.String()
+	if !strings.Contains(b, "&lt;nancy@evil.test&gt;") || !strings.Contains(b, `class="addr out"`) {
+		t.Fatal("a Reply-To nobody wrote from must show its address, in red")
 	}
 }

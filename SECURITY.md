@@ -59,6 +59,7 @@ Email triage ([docs/email.md](docs/email.md)) reads mail written by anyone, so i
 - **Read what you send.** The draft can be wrong, or say something the email talked the agent into ("please confirm your account number"). Cleaning makes sure you can see everything; it can't judge it.
 - **Read the plan you approve.** A proposal's plan was written by an agent that read the email. Build it builds that plan.
 - **Earlier mail with the same person** is given to the drafting agent as context, so a draft could quote it back to them.
+- **"Someone you've written to" trusts the From line.** A forged From address of one of your contacts can get a work proposal filed (and a reply drafted to the real contact). Build it is still yours to tap; check that the request makes sense coming from them.
 - **The reader** shows incoming HTML in a sandboxed frame with scripts off and nothing loaded from the network (no tracking pixels), but links in it open if you click them, as in any mail app.
 
 ## Transport
