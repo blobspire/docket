@@ -110,8 +110,10 @@ func TestHeldAnswerGoesOutWhenTheHoldEnds(t *testing.T) {
 	}
 	select {
 	case <-e.s.deliverKick:
-		if waited := time.Since(start); waited < e.s.hold {
-			t.Fatalf("the deliverer was woken after %v, before the hold ended", waited)
+		// The hold ends at the stored millisecond, which can be up to 1 ms
+		// before start+hold: that's the moment to compare with.
+		if now := time.Now(); now.UnixMilli() < ds[0].HoldUntil {
+			t.Fatalf("the deliverer was woken %v before the hold ended", time.UnixMilli(ds[0].HoldUntil).Sub(now))
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("nothing woke the deliverer when the hold ended")
