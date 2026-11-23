@@ -13,6 +13,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/blobspire/docket/internal/mail"
 	"github.com/blobspire/docket/internal/store"
 )
 
@@ -35,6 +36,7 @@ type Config struct {
 	Chief         Chief       `toml:"chief"`
 	Transcribe    Transcribe  `toml:"transcribe"`
 	Ideas         IdeasConfig `toml:"ideas"`
+	Email         EmailConfig `toml:"email"`
 
 	loc *time.Location
 }
@@ -112,6 +114,36 @@ type IdeasConfig struct {
 	CloneDir    string   `toml:"clone_dir"`    // where docket clones repositories on the server (default ~/code/git)
 	ClaudeArgs  []string `toml:"claude_args"`  // flags for the sessions it starts (default --permission-mode auto)
 	BudgetUSD   float64  `toml:"router_budget_usd"`
+}
+
+// EmailConfig is the [email] section: the mailboxes docket triages. Mail is
+// read and sent only by this server, with the accounts' passwords in files
+// only it can read; agents never get mail access. See docs/email.md.
+type EmailConfig struct {
+	Accounts    []mail.Account `toml:"account"`
+	Schedule    []string       `toml:"schedule"`     // triage passes (default 08:00, 12:30, 17:30)
+	TriageModel string         `toml:"triage_model"` // sorts mail (default claude-sonnet-5-5)
+	DraftModel  string         `toml:"draft_model"`  // researches and drafts replies (default claude-opus-5-5)
+	MaxRunning  int            `toml:"max_running"`  // drafts written at once; the rest wait (default 4)
+	DigestDays  int            `toml:"digest_days"`  // how long a digest line stays (default 3)
+	KeepDays    int            `toml:"keep_days"`    // how long message bodies are kept (default 30)
+	Backfill    string         `toml:"backfill"`     // how far back the first read looks (default 3d)
+	Voice       string         `toml:"voice"`        // the drafting guide (default: the draft-email skill)
+	SendHold    Duration       `toml:"send_hold"`    // Undo window before a reply goes out (default 30s)
+	MaxPerPass  int            `toml:"max_per_pass"` // messages read per folder per pass (default 300)
+}
+
+// On reports whether any mailbox is configured.
+func (e EmailConfig) On() bool { return len(e.Accounts) > 0 }
+
+// Account looks up a mailbox by name.
+func (e EmailConfig) Account(name string) (mail.Account, bool) {
+	for _, a := range e.Accounts {
+		if a.Name == name {
+			return a, true
+		}
+	}
+	return mail.Account{}, false
 }
 
 // Lead looks up a lead by name.
@@ -242,6 +274,9 @@ func LoadConfig(path string) (*Config, error) {
 	if c.Ideas.BudgetUSD <= 0 {
 		c.Ideas.BudgetUSD = 1
 	}
+	if err := c.Email.check(); err != nil {
+		return nil, err
+	}
 	seenLead := map[string]bool{}
 	for i := range c.Leads {
 		l := &c.Leads[i]
@@ -272,6 +307,59 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 	return &c, nil
+}
+
+func (e *EmailConfig) check() error {
+	seen := map[string]bool{}
+	for i := range e.Accounts {
+		if err := e.Accounts[i].Check(); err != nil {
+			return fmt.Errorf("config: %w", err)
+		}
+		if seen[e.Accounts[i].Name] {
+			return fmt.Errorf("config: two email accounts are named %s", e.Accounts[i].Name)
+		}
+		seen[e.Accounts[i].Name] = true
+	}
+	if len(e.Schedule) == 0 {
+		e.Schedule = []string{"daily@08:00", "daily@12:30", "daily@17:30"}
+	}
+	for _, sch := range e.Schedule {
+		if _, err := parseSchedule(sch); err != nil {
+			return fmt.Errorf("config: email.schedule: %w", err)
+		}
+	}
+	if e.TriageModel == "" {
+		e.TriageModel = "claude-sonnet-5-5"
+	}
+	if e.DraftModel == "" {
+		e.DraftModel = "claude-opus-5-5"
+	}
+	if e.MaxRunning <= 0 {
+		e.MaxRunning = 4
+	}
+	if e.DigestDays <= 0 {
+		e.DigestDays = 3
+	}
+	if e.KeepDays <= 0 {
+		e.KeepDays = 30
+	}
+	if e.Backfill == "" {
+		e.Backfill = "3d"
+	}
+	if _, err := parseEvery(e.Backfill); err != nil {
+		return fmt.Errorf("config: email.backfill: %w", err)
+	}
+	if e.Voice == "" {
+		e.Voice = "~/.claude/skills/draft-email/SKILL.md"
+	}
+	e.Voice = expand(e.Voice)
+	if e.SendHold.Duration <= 0 {
+		e.SendHold.Duration = 30 * time.Second
+	}
+	if e.MaxPerPass <= 0 {
+		e.MaxPerPass = 300
+	}
+	return nil
 }
 
 // loadEnv reads NTFY_SERVER / NTFY_TOPIC / NTFY_TOKEN from a KEY=VALUE file.

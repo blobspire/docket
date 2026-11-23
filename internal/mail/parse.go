@@ -1,0 +1,251 @@
+package mail
+
+import (
+	"bytes"
+	"io"
+	"mime"
+	"strings"
+	"time"
+
+	_ "github.com/emersion/go-message/charset" // decode non-UTF-8 mail
+	gomail "github.com/emersion/go-message/mail"
+	"golang.org/x/net/html"
+)
+
+// Message is one email as docket keeps it.
+type Message struct {
+	Folder      string
+	UID         uint32
+	UIDValidity uint32
+	MessageID   string   // without angle brackets
+	InReplyTo   []string // without angle brackets
+	References  []string
+	From        Addr
+	ReplyTo     []Addr
+	To          []Addr
+	Cc          []Addr
+	Subject     string
+	Date        time.Time
+	Text        string // readable text: the text/plain part, else the HTML's text
+	HTML        string // the HTML part as sent (shown only in a sandbox)
+	Attachments []Attachment
+	ListID      string
+	Bulk        bool // mailing list, bulk or automatic mail
+	Seen        bool
+	Size        int
+}
+
+// Attachment is a file's name, type and size; docket doesn't keep the file.
+type Attachment struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+	Size int    `json:"size"`
+}
+
+const (
+	maxText = 100_000
+	maxHTML = 500_000
+)
+
+// Parse reads a raw RFC 5322 message. It never fails outright on a broken
+// message: whatever headers and text it could read are returned.
+func Parse(raw []byte) (*Message, error) {
+	m := &Message{Size: len(raw)}
+	r, err := gomail.CreateReader(bytes.NewReader(raw))
+	if err != nil && r == nil {
+		return m, err
+	}
+	h := r.Header
+	if list, err := h.AddressList("From"); err == nil && len(list) > 0 {
+		m.From = Addr{Name: list[0].Name, Email: strings.ToLower(list[0].Address)}
+	} else if v := h.Get("From"); v != "" {
+		if a := ParseAddrs(v); len(a) > 0 {
+			m.From = a[0]
+		}
+	}
+	m.ReplyTo = addrs(h, "Reply-To")
+	m.To = addrs(h, "To")
+	m.Cc = addrs(h, "Cc")
+	if s, err := h.Subject(); err == nil {
+		m.Subject = s
+	} else {
+		m.Subject = h.Get("Subject")
+	}
+	m.Subject, _ = StripInvisible(strings.TrimSpace(m.Subject))
+	m.Date, _ = h.Date()
+	if id, err := h.MessageID(); err == nil {
+		m.MessageID = id
+	} else {
+		m.MessageID = strings.Trim(strings.TrimSpace(h.Get("Message-Id")), "<>")
+	}
+	m.InReplyTo, _ = h.MsgIDList("In-Reply-To")
+	m.References, _ = h.MsgIDList("References")
+	m.ListID = strings.TrimSpace(h.Get("List-Id"))
+	prec := strings.ToLower(h.Get("Precedence"))
+	auto := strings.ToLower(h.Get("Auto-Submitted"))
+	m.Bulk = m.ListID != "" || h.Get("List-Unsubscribe") != "" || prec == "bulk" || prec == "list" || prec == "junk" ||
+		(auto != "" && auto != "no")
+
+	var text, htmlBody strings.Builder
+	for {
+		p, err := r.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			if p == nil {
+				break
+			}
+		}
+		switch ph := p.Header.(type) {
+		case *gomail.InlineHeader:
+			ct, _, _ := ph.ContentType()
+			b, _ := io.ReadAll(io.LimitReader(p.Body, maxHTML+1))
+			switch ct {
+			case "text/plain", "":
+				if text.Len() < maxText {
+					text.Write(b)
+				}
+			case "text/html":
+				if htmlBody.Len() < maxHTML {
+					htmlBody.Write(b)
+				}
+			default:
+				if name := partName(ph.Header.Get("Content-Disposition"), ph.Header.Get("Content-Type")); name != "" {
+					m.Attachments = append(m.Attachments, Attachment{Name: name, Type: ct, Size: len(b)})
+				}
+			}
+		case *gomail.AttachmentHeader:
+			name, _ := ph.Filename()
+			ct, _, _ := ph.ContentType()
+			n, _ := io.Copy(io.Discard, io.LimitReader(p.Body, 50<<20))
+			if name == "" {
+				name = "attachment"
+			}
+			m.Attachments = append(m.Attachments, Attachment{Name: name, Type: ct, Size: int(n)})
+		}
+	}
+	m.HTML = clip(htmlBody.String(), maxHTML)
+	m.Text = strings.TrimSpace(text.String())
+	if m.Text == "" && m.HTML != "" {
+		m.Text = HTMLText(m.HTML)
+	}
+	m.Text, _ = StripInvisible(clip(m.Text, maxText))
+	return m, nil
+}
+
+func addrs(h gomail.Header, key string) []Addr {
+	list, err := h.AddressList(key)
+	if err != nil {
+		return ParseAddrs(h.Get(key))
+	}
+	out := make([]Addr, 0, len(list))
+	for _, a := range list {
+		out = append(out, Addr{Name: a.Name, Email: strings.ToLower(a.Address)})
+	}
+	return out
+}
+
+func partName(disp, ctype string) string {
+	if _, p, err := mime.ParseMediaType(disp); err == nil && p["filename"] != "" {
+		return p["filename"]
+	}
+	if _, p, err := mime.ParseMediaType(ctype); err == nil && p["name"] != "" {
+		return p["name"]
+	}
+	return ""
+}
+
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	s = s[:n]
+	for len(s) > 0 && !utf8Start(s[len(s)-1]) {
+		s = s[:len(s)-1]
+	}
+	if len(s) > 0 {
+		s = s[:len(s)-1]
+	}
+	return s
+}
+
+func utf8Start(b byte) bool { return b&0xC0 != 0x80 }
+
+// HTMLText is the readable text of an incoming HTML email: visible text only
+// (no scripts, styles or hidden head), blocks on their own lines.
+func HTMLText(s string) string {
+	doc, err := html.Parse(strings.NewReader(s))
+	if err != nil {
+		return ""
+	}
+	var b strings.Builder
+	var walk func(n *html.Node)
+	walk = func(n *html.Node) {
+		switch n.Type {
+		case html.TextNode:
+			b.WriteString(spaces.ReplaceAllString(n.Data, " "))
+			return
+		case html.ElementNode:
+			switch n.Data {
+			case "script", "style", "head", "title", "noscript", "template", "svg":
+				return
+			case "br":
+				b.WriteString("\n")
+				return
+			}
+			if hiddenStyle(n) {
+				return
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+		if n.Type == html.ElementNode {
+			switch n.Data {
+			case "p", "div", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6", "table", "blockquote", "section", "article", "header", "footer":
+				b.WriteString("\n")
+			case "td", "th":
+				b.WriteString(" ")
+			}
+		}
+	}
+	walk(doc)
+	lines := strings.Split(b.String(), "\n")
+	out := lines[:0]
+	blank := 0
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if l == "" {
+			blank++
+			if blank > 1 {
+				continue
+			}
+		} else {
+			blank = 0
+		}
+		out = append(out, l)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+// hiddenStyle reports text a mail client wouldn't show. Triage reads the
+// text a person would see, so preheader tricks and hidden instructions in
+// an incoming email are left out of what the model is given.
+func hiddenStyle(n *html.Node) bool {
+	for _, a := range n.Attr {
+		k := strings.ToLower(a.Key)
+		if k == "hidden" || (k == "aria-hidden" && a.Val == "true") {
+			return true
+		}
+		if k == "style" {
+			v := strings.ToLower(strings.ReplaceAll(a.Val, " ", ""))
+			for _, h := range []string{"display:none", "visibility:hidden", "font-size:0", "max-height:0", "opacity:0", "mso-hide:all"} {
+				if strings.Contains(v, h) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
