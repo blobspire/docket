@@ -210,6 +210,7 @@ func (s *Store) AddEmail(account string, msgs []*mail.Message, me func(string) b
 			// Best effort: a failure here leaves a reply in its own thread,
 			// never the message unstored.
 			tx.Exec(`UPDATE email_messages SET thread=? WHERE account=? AND thread IN (?`+strings.Repeat(",?", len(keys)-1)+`)`, args...)
+			mergeThreads(tx, account, keys, thread)
 		}
 		added = append(added, e)
 	}
@@ -781,4 +782,52 @@ func (s *Store) EmailVersion() string {
 	var r, se int64
 	s.DB.QueryRow(`SELECT COALESCE(SUM(read_at),0), COALESCE(SUM(seen_at>0),0) FROM email_threads WHERE verdict='digest'`).Scan(&r, &se)
 	return fmt.Sprintf("%d.%d.%s.%d", n, mx, p, r)
+}
+
+// mergeThreads folds the triage rows of threads that turned out to be part
+// of thread `into` (their replies arrived before the message linking them)
+// into its row: the newest message to you wins, a pending triage stays
+// pending, and the reply item, drafts, jobs and sends move with it.
+func mergeThreads(tx *sql.Tx, account string, keys []string, into string) error {
+	to := ThreadID(account, into)
+	now := time.Now().Unix()
+	for _, k := range keys {
+		from := ThreadID(account, k)
+		if from == to {
+			continue
+		}
+		var exists int
+		tx.QueryRow(`SELECT COUNT(*) FROM email_threads WHERE id=?`, from).Scan(&exists)
+		if exists == 0 {
+			continue
+		}
+		var have int
+		tx.QueryRow(`SELECT COUNT(*) FROM email_threads WHERE id=?`, to).Scan(&have)
+		if have == 0 {
+			if _, err := tx.Exec(`UPDATE email_threads SET id=?, thread=?, updated_at=? WHERE id=?`, to, into, now, from); err != nil {
+				return err
+			}
+		} else {
+			if _, err := tx.Exec(`UPDATE email_threads AS t SET
+				subject = CASE WHEN o.inbound_at > t.inbound_at THEN o.subject ELSE t.subject END,
+				from_name = CASE WHEN o.inbound_at > t.inbound_at THEN o.from_name ELSE t.from_name END,
+				from_addr = CASE WHEN o.inbound_at > t.inbound_at THEN o.from_addr ELSE t.from_addr END,
+				last_inbound = CASE WHEN o.inbound_at > t.inbound_at THEN o.last_inbound ELSE t.last_inbound END,
+				inbound_at = MAX(t.inbound_at, o.inbound_at),
+				replied_at = MAX(t.replied_at, o.replied_at),
+				needs_triage = MAX(t.needs_triage, o.needs_triage),
+				item_id = CASE WHEN t.item_id = '' THEN o.item_id ELSE t.item_id END,
+				verdict = CASE WHEN t.verdict = '' THEN o.verdict ELSE t.verdict END,
+				line = CASE WHEN t.line = '' THEN o.line ELSE t.line END,
+				updated_at = ?
+				FROM (SELECT * FROM email_threads WHERE id=?) AS o WHERE t.id=?`, now, from, to); err != nil {
+				return err
+			}
+			tx.Exec(`DELETE FROM email_threads WHERE id=?`, from)
+		}
+		for _, table := range []string{"email_drafts", "email_jobs", "email_outbox", "email_feedback"} {
+			tx.Exec(`UPDATE OR IGNORE `+table+` SET thread_id=? WHERE thread_id=?`, to, from)
+		}
+	}
+	return nil
 }
