@@ -733,6 +733,7 @@
         v0 = document.body.dataset.version = doc.body.dataset.version;
         if ($(".side") && sideAt) [$(".side").scrollLeft, $(".side").scrollTop] = sideAt;
         applyFolds();
+        observeDigest();
         const q1 = q0 && $("#q");
         if (q1) {
           q1.focus({ preventScroll: true });
@@ -773,7 +774,66 @@
   window.docketToast = toast;
   window.docketRefresh = () => refresh(true);
 
+  // ---- email ------------------------------------------------------------------------------------
+  // The digest: a line counts as seen once it has been on screen for a
+  // moment, and seen lines fold into "Earlier" when the next check brings
+  // new ones. Its buttons, Check now and Mark all read act in place.
+  const seenQ = new Set(), seenTimers = new Map();
+  let seenFlush = null;
+  const flushSeen = () => {
+    seenFlush = null;
+    if (!seenQ.size) return;
+    const body = new URLSearchParams();
+    seenQ.forEach((id) => body.append("id", id));
+    seenQ.clear();
+    fetch("/email/seen", { method: "POST", body, headers: { "X-Requested-With": "fetch" } }).catch(() => {});
+  };
+  const seenObs = "IntersectionObserver" in window ? new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      const id = e.target.dataset.thread;
+      if (e.isIntersecting && !document.hidden) {
+        if (!seenTimers.has(id)) seenTimers.set(id, setTimeout(() => {
+          seenTimers.delete(id);
+          seenObs.unobserve(e.target);
+          seenQ.add(id);
+          if (!seenFlush) seenFlush = setTimeout(flushSeen, 1500);
+        }, 1200));
+      } else if (seenTimers.has(id)) { clearTimeout(seenTimers.get(id)); seenTimers.delete(id); }
+    }
+  }, { threshold: 0.6 }) : null;
+  const observeDigest = () => { if (seenObs && docket) $$(".esec .dg[data-thread]").forEach((li) => seenObs.observe(li)); };
+  addEventListener("pagehide", flushSeen);
+  document.addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-email-act], [data-email-check], [data-email-readall]");
+    if (!b) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (b.disabled) return;
+    b.disabled = true;
+    let url, msg;
+    const li = b.closest("[data-thread]");
+    if (b.hasAttribute("data-email-check")) { url = "/email/check"; msg = "Checking your mail. New email appears here in a minute or two."; }
+    else if (b.hasAttribute("data-email-readall")) { url = "/email/read-all"; msg = "Marked all read"; }
+    else {
+      const a = b.dataset.emailAct;
+      url = `/email/${encodeURIComponent(li.dataset.thread)}/${a}`;
+      msg = { read: "Read", reply: "Moved to Email · needs you", noise: "Off the digest. Triage learns from it.", digest: "On the digest" }[a] || "Done";
+      li.classList.add("leaving");
+    }
+    try {
+      const res = await fetch(url, { method: "POST", headers: { "X-Requested-With": "fetch" }, signal: timeout(15000) });
+      if (!res.ok) throw new Error(String(res.status));
+      toast(msg);
+    } catch (_) {
+      toast("That didn't work. Try again.", { err: true });
+      if (li) li.classList.remove("leaving");
+    }
+    b.disabled = false;
+    refresh(true);
+  }, true);
+
   // ---- start --------------------------------------------------------------------------------------
+  observeDigest();
   applyFolds();
   if (solo) { const sh = $(".sheet"); if (sh) setupSheet(sh); }
   // The toast an action on the last page left for this one.

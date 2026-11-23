@@ -185,6 +185,8 @@ func kindName(k string) string {
 		return "Waiting"
 	case "rule":
 		return "Rule"
+	case "email":
+		return "Reply"
 	}
 	return k
 }
@@ -260,6 +262,12 @@ func (s *Server) Handler() http.Handler {
 	// The old "Only you" page is gone; old links land on the queue.
 	mux.Handle("GET /checklist", http.RedirectHandler("/", http.StatusMovedPermanently))
 	mux.HandleFunc("GET /leads", s.pageLeads)
+	mux.HandleFunc("GET /email/skipped", s.pageSkipped)
+	mux.HandleFunc("POST /email/check", s.emailCheck)
+	mux.HandleFunc("POST /email/seen", s.emailSeen)
+	mux.HandleFunc("POST /email/read-all", s.emailReadAll)
+	mux.HandleFunc("GET /email/{id}", s.pageEmail)
+	mux.HandleFunc("POST /email/{id}/{action}", s.emailAct)
 	mux.HandleFunc("GET /brain", s.pageBrain)
 	mux.HandleFunc("POST /brain/propose", s.proposeNow)
 	mux.HandleFunc("POST /rule/{id}/retire", s.retireRule)
@@ -370,6 +378,8 @@ type page struct {
 	IdeaCount   int      // dictations and ideas that need the human (drafts, failures)
 	Mic         bool     // speech-to-text is set up: the capture sheet records
 	ProjectList []string // for the capture sheet's project picker
+	Email       *readerView
+	Skipped     *skippedView
 }
 
 // attachment is one piece of evidence as the item sheet shows it.
@@ -426,6 +436,9 @@ func (s *Server) render(w http.ResponseWriter, name string, p page) {
 			if it.Kind == "rule" {
 				p.RuleCount++
 				continue
+			}
+			if it.Kind == "email" || it.Project == emailProject {
+				continue // email has its own section and never counts in the badge
 			}
 			p.Count++
 			p.Hot = p.Hot || it.Urgency == "now"
@@ -484,6 +497,10 @@ func (s *Server) pageItem(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Slice(names, func(i, j int) bool { return projectLess(names[i], names[j]) })
 	one := s.rows([]Ranked{{Item: it, Session: sess}}, "docket", true, names)[0]
+	if it.Kind == "email" {
+		one.Email = s.emailItem(it)
+		one.Projects = nil // an email reply stays in Email
+	}
 	one.LastAction = s.st.LastDecision(it.ID)
 	var atts []attachment
 	images := 0

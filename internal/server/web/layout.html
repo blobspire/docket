@@ -238,6 +238,15 @@
     {{if and $it.Recommend (not $it.Options)}}<p class="recline"><b>Recommends:</b> {{$it.Recommend}}</p>{{end}}
     {{with $it.Blocks}}<p class="recline"><b>Blocks:</b> {{.}}</p>{{end}}
     {{with $it.Body}}<div class="prose">{{md .}}</div>{{end}}
+    {{with $it.Email}}
+    <div class="subh">{{template "i" "user"}}The email{{if .Earlier}} · {{add .Earlier 1}} messages{{end}}</div>
+    <div class="em-box">
+      <div class="em-h"><b>{{.Latest.From.Display}}</b> <span class="muted">&lt;{{.Latest.From.Email}}&gt; · {{.Latest.When}} · {{.Label}}</span></div>
+      <div class="em-s">{{.Thread.Subject}}</div>
+      <div class="rd-txt clamp">{{.Latest.Text}}</div>
+      <div class="acts"><a class="sb" href="/email/{{.Thread.ID}}?keep=1&amp;back=/item/{{$it.ID}}">Open the whole email</a>{{with .OpenURL}}<a class="sb" href="{{.}}" target="_blank" rel="noopener noreferrer">{{template "i" "ext"}}{{$.One.Email.OpenName}}</a>{{end}}</div>
+    </div>
+    {{end}}
     {{if .Attachments}}
     <div class="subh">{{template "i" "clip"}}Attachments · {{len .Attachments}}</div>
     {{range .Attachments}}

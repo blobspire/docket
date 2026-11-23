@@ -5,11 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"regexp"
 	"strings"
 	"time"
 
+	"github.com/blobspire/docket/internal/ingest"
 	"github.com/blobspire/docket/internal/mail"
 	"github.com/blobspire/docket/internal/store"
+	"github.com/blobspire/docket/internal/ulid"
 )
 
 // Email triage, server side. docket itself reads and sends mail; the
@@ -205,4 +209,60 @@ func hasFold(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// accountWatch files one item when a mailbox can't be read, and closes it
+// when reading works again. For a gateway that signs in with a device code
+// (DavMail), the item carries the newest code from the gateway's log.
+func (s *Server) accountWatch(a mail.Account, err error) {
+	key := "email-account:" + a.Name
+	if err == nil {
+		s.resolveKey(key, "your "+a.Label+" mail can be read again")
+		return
+	}
+	body := fmt.Sprintf("docket couldn't read your %s mail, so triage is skipping it until this is fixed.\n\n%s", a.Label, clipErr(err.Error()))
+	if url, code, at, ok := signinCode(a.SigninLog); ok {
+		left := time.Until(at.Add(15 * time.Minute))
+		if left > 0 {
+			body = fmt.Sprintf("Sign in to your %s mail again: open %s and enter **%s** (it works for about %d more minutes).\n\nIf it has expired, tap **Check now** under Email for a fresh code.\n\n%s",
+				a.Label, url, code, int(left.Minutes())+1, clipErr(err.Error()))
+		} else {
+			body += "\n\nIt probably needs you to sign in again: tap **Check now** under Email and a fresh sign-in code will appear here."
+		}
+	}
+	s.watch(store.Item{ID: ulid.ItemID(), Ongoing: true, Kind: "issue", Source: ingest.SrcWatchdog, DedupeKey: key,
+		Project: s.cfg.SystemProject, Urgency: "normal", Title: "Can't read your " + a.Label + " mail", Body: body})
+}
+
+var signinRE = regexp.MustCompile(`open the page (https://\S+) and enter the code (\S+?)\.? to authenticate`)
+
+// signinCode finds the newest device sign-in code in a gateway's log (the
+// last 64 KB), and when the log was last written.
+func signinCode(path string) (url, code string, at time.Time, ok bool) {
+	if path == "" {
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return
+	}
+	off := fi.Size() - 64<<10
+	if off < 0 {
+		off = 0
+	}
+	buf := make([]byte, fi.Size()-off)
+	if _, err := f.ReadAt(buf, off); err != nil && err != io.EOF {
+		return
+	}
+	m := signinRE.FindAllStringSubmatch(string(buf), -1)
+	if len(m) == 0 {
+		return
+	}
+	last := m[len(m)-1]
+	return last[1], last[2], fi.ModTime(), true
 }

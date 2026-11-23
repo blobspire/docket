@@ -1,0 +1,20 @@
+{{define "skipped.html"}}{{template "head" .}}{{$v := .Skipped}}
+<main class="main solo" id="main" data-label="Skipped email">
+  <div class="pg">
+  <a class="back" href="/#email">{{template "i" "chev-l"}}<span>docket</span></a>
+  <div class="mh"><div>
+    <h1>Skipped email</h1>
+    <p>What the last check left out{{if $v.Pass.EndedAt}} ({{ago $v.Pass.EndedAt}}){{end}}. If one needed you, say so: triage learns from it.</p>
+  </div></div>
+  {{if $v.Lines}}<ol class="dl">{{range $v.Lines}}
+  <li class="dg" data-thread="{{.ID}}">
+    <a class="dg-l" href="/email/{{.ID}}?back=/email/skipped"><span class="dg-a">{{.Label}}</span><span class="dg-t">{{.Line}}</span><span class="dg-m">{{.From.Display}} · {{.When}}{{with .Why}} · {{.}}{{end}}</span></a>
+    <div class="dg-q" role="group" aria-label="Correct triage">
+      <button type="button" class="qb" data-email-act="reply" title="It needed a reply: draft one">{{template "i" "pen"}}<span>Needs a reply</span></button>
+      <button type="button" class="qb" data-email-act="digest" title="It was worth reading: put it on the digest">{{template "i" "check"}}<span>Worth reading</span></button>
+    </div>
+  </li>{{end}}</ol>
+  {{else}}<div class="blank"><b>Nothing was skipped.</b></div>{{end}}
+  </div>
+</main>
+{{template "foot" .}}{{end}}

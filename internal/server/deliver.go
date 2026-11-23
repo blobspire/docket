@@ -47,7 +47,8 @@ func (s *Server) Decide(id string, a Action) error {
 	before, _, _ := s.st.GetItem(id)
 	err := s.decide(id, a)
 	if err == nil && before.ID != "" {
-		s.ideaDecided(before, a) // a proposal's idea follows what was decided
+		s.ideaDecided(before, a)  // a proposal's idea follows what was decided
+		s.emailDecided(before, a) // and an email reply's thread does too
 	}
 	return err
 }

@@ -41,6 +41,9 @@ type Account struct {
 	SignatureText string `toml:"signature_text"`
 	// Web is how "Open in …" links are built: "gmail", "outlook" or "".
 	Web string `toml:"web"`
+	// SigninLog is a file where a gateway prints device sign-in codes
+	// (DavMail's output); a failed read shows the newest code on docket.
+	SigninLog string `toml:"signin_log"`
 }
 
 // DefaultGmailSkip keeps Gmail's Promotions and Social tabs out of triage.
@@ -89,6 +92,7 @@ func (a *Account) Check() error {
 	a.PasswordFile = expand(a.PasswordFile)
 	a.SignatureHTML = expand(a.SignatureHTML)
 	a.SignatureText = expand(a.SignatureText)
+	a.SigninLog = expand(a.SigninLog)
 	if len(a.Folders) == 0 {
 		a.Folders = []string{"INBOX"}
 	}

@@ -1,0 +1,35 @@
+{{define "email.html"}}{{template "head" .}}{{$v := .Email}}{{$t := $v.Thread}}
+<main class="main solo" id="main" data-label="Email">
+  <div class="pg rd">
+  <a class="back" href="{{$v.Back}}">{{template "i" "chev-l"}}<span>docket</span></a>
+  <div class="kick"><span class="chip k-reply">{{$v.Label}}</span>{{if $t.FirstTime}}<span title="You've never written to them">first-time sender</span>{{end}}{{with $t.Verdict}}<span>{{if eq . "reply"}}needs a reply{{else if eq . "digest"}}worth reading{{else if eq . "skip"}}skipped{{end}}</span>{{end}}</div>
+  <h1 class="rd-s">{{$t.Subject}}</h1>
+  {{with $t.Line}}<p class="rd-line">{{.}}</p>{{end}}
+  <div class="rd-acts">
+    {{if ne $t.Verdict "reply"}}<form method="post" action="/email/{{$t.ID}}/reply"><button class="sb pri" type="submit">{{template "i" "pen"}}Needs a reply</button></form>{{else if $t.ItemID}}<a class="sb pri" href="/item/{{$t.ItemID}}">{{template "i" "pen"}}Open the reply</a>{{end}}
+    {{if eq $t.Verdict "skip"}}<form method="post" action="/email/{{$t.ID}}/digest"><input type="hidden" name="back" value="/email/{{$t.ID}}"><button class="sb" type="submit">Worth reading</button></form>{{end}}
+    {{if eq $t.Verdict "digest"}}{{if $t.ReadAt}}<form method="post" action="/email/{{$t.ID}}/unread"><input type="hidden" name="back" value="/"><button class="sb" type="submit">{{template "i" "undo"}}Back on the digest</button></form>{{end}}
+    <form method="post" action="/email/{{$t.ID}}/noise"><input type="hidden" name="back" value="/"><button class="sb" type="submit">{{template "i" "thumb"}}Not worth it</button></form>{{end}}
+    {{with $v.OpenURL}}<a class="sb" href="{{.}}" target="_blank" rel="noopener noreferrer">{{template "i" "ext"}}{{$v.OpenName}}</a>{{end}}
+  </div>
+  {{range $v.Messages}}
+  <details class="rd-msg">
+    <summary><b>{{if .FromMe}}You{{else}}{{.From.Display}}{{end}}</b> · {{.When}}</summary>
+    <div class="rd-txt">{{.Text}}</div>
+  </details>
+  {{end}}
+  {{with $v.Latest}}
+  <div class="rd-h">
+    <div><b>{{if .FromMe}}You{{else}}{{.From.Display}}{{end}}</b>{{if not .FromMe}} &lt;{{.From.Email}}&gt;{{end}}</div>
+    <div class="muted">{{.When}}</div>
+    <div class="muted small">To {{.ToLine}}{{with .CcLine}} · Cc {{.}}{{end}}</div>
+  </div>
+  {{if .Pruned}}<p class="muted">docket no longer keeps this message's text. {{with $v.OpenURL}}<a href="{{.}}" target="_blank" rel="noopener noreferrer">Open it in your mail.</a>{{end}}</p>
+  {{else if .Frame}}<iframe class="rd-f" sandbox="allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer" srcdoc="{{.Frame}}" title="The email"></iframe>
+  <details class="rd-msg"><summary>Plain text</summary><div class="rd-txt">{{.Text}}</div></details>
+  {{else}}<div class="rd-txt">{{.Text}}</div>{{end}}
+  {{with .Attachments}}<p class="muted small">{{template "i" "clip"}} {{range $i, $a := .}}{{if $i}}, {{end}}{{$a.Name}}{{end}} (open it in your mail)</p>{{end}}
+  {{end}}
+  </div>
+</main>
+{{template "foot" .}}{{end}}

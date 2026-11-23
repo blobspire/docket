@@ -6,7 +6,7 @@
   <div class="mh">
     <div>
       <h1>{{$q.Heading}}{{if $q.ProjectInfo}} <button type="button" class="edit" data-edit-project aria-label="Edit the project">{{template "i" "pen"}}</button>{{end}}</h1>
-      <p>{{if $q.Need}}{{$q.Need}} need{{if eq $q.Need 1}}s{{end}} you{{else}}Nothing needs you{{end}}{{if $q.Waiting}} · {{$q.Waiting}} waiting on agents{{end}}</p>
+      <p>{{if $q.Need}}{{$q.Need}} need{{if eq $q.Need 1}}s{{end}} you{{else}}Nothing needs you{{end}}{{if $q.Waiting}} · {{$q.Waiting}} waiting on agents{{end}}{{with $q.Email}}{{if .Need}} · {{.Need}} email{{if gt .Need 1}}s{{end}} to answer{{end}}{{end}}</p>
       {{with $q.Desc}}<p class="desc">{{.}}</p>{{end}}
     </div>
     <div class="sortw">
@@ -51,6 +51,8 @@
   </section>
   {{end}}
 
+  {{with $q.Email}}{{template "emailsecs" .}}{{end}}
+
   {{if $q.Empty}}
   <div class="blank">
     <b>Nothing needs you{{if ne $q.Mode "all"}} here{{end}}.</b>
@@ -68,3 +70,41 @@
 </main>
 </div>
 {{template "foot" .}}{{end}}
+
+{{/* The bottom of the docket: email replies, then the digest. */}}
+{{define "emailsecs"}}
+<section class="sec esec" id="email" aria-label="Email that needs you">
+  <h2><span>Email · needs you</span>{{if .Rows}} <span class="cnt">{{len .Rows}}</span>{{end}}</h2>
+  <p class="emeta">{{if .Running}}Checking your mail…{{else if .HasPass}}Checked {{ago .Pass.EndedAt}}: {{.Pass.Triaged}} sorted · {{.Pass.Reply}} to answer · {{.Pass.Digest}} to read{{if .Pass.Skip}} · <a href="/email/skipped?pass={{.Pass.ID}}">{{.Pass.Skip}} skipped</a>{{end}}{{else}}Not checked yet{{end}}{{with .Next}} · next at {{.}}{{end}}
+    <button type="button" class="lnk" data-email-check{{if .Running}} disabled{{end}}>Check now</button></p>
+  {{range .Problems}}<p class="banner stuck">{{template "i" "alert"}}<span>{{.}}. <a href="/health">Details on Health</a>.</span></p>{{end}}
+  {{if .Rows}}<ol class="rows">{{range .Rows}}{{template "row" .}}{{end}}</ol>{{else}}<p class="muted small">No email needs an answer.</p>{{end}}
+  {{if .Waiting}}
+  <details class="wt" data-wt="p:email">
+    <summary>{{template "i" "clock"}}<span>Waiting</span><span class="cnt">{{len .Waiting}}</span>{{template "i" "chev-d"}}</summary>
+    <ol class="rows wl">{{range .Waiting}}{{template "row" .}}{{end}}</ol>
+  </details>
+  {{end}}
+</section>
+<section class="sec esec dig" aria-label="Email worth reading">
+  <h2><span>Email · worth reading</span>{{if .Digest}} <span class="cnt">{{len .Digest}}</span>{{end}}{{if or .Digest .Earlier}} <button type="button" class="lnk" data-email-readall>Mark all read</button>{{end}}</h2>
+  {{if .Digest}}<ol class="dl">{{range .Digest}}{{template "digestline" .}}{{end}}</ol>{{else if not .Earlier}}<p class="muted small">Nothing to read. Lines stay for 3 days, or until you tick them off.</p>{{end}}
+  {{if .Earlier}}
+  <details class="wt" data-wt="email:earlier">
+    <summary>{{template "i" "clock"}}<span>Earlier</span><span class="cnt">{{len .Earlier}}</span>{{template "i" "chev-d"}}</summary>
+    <ol class="dl">{{range .Earlier}}{{template "digestline" .}}{{end}}</ol>
+  </details>
+  {{end}}
+</section>
+{{end}}
+
+{{define "digestline"}}
+<li class="dg" data-thread="{{.ID}}">
+  <a class="dg-l" href="/email/{{.ID}}"><span class="dg-a">{{.Label}}</span><span class="dg-t">{{.Line}}</span><span class="dg-m">{{.From.Display}} · {{.When}}</span></a>
+  <div class="dg-q" role="group" aria-label="Digest actions">
+    <button type="button" class="qb" data-email-act="reply" title="It needs a reply: draft one">{{template "i" "pen"}}<span>Needs a reply</span></button>
+    <button type="button" class="qb" data-email-act="noise" title="Not worth my time: triage learns from it">{{template "i" "thumb"}}<span>Not worth it</span></button>
+    <button type="button" class="qb q-done" data-email-act="read" title="Read: take it off the digest">{{template "i" "check"}}<span>Read</span></button>
+  </div>
+</li>
+{{end}}

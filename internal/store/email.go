@@ -1,7 +1,9 @@
 package store
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -57,6 +59,60 @@ CREATE TABLE IF NOT EXISTS email_messages (
 );
 CREATE INDEX IF NOT EXISTS email_messages_mid ON email_messages(account, message_id);
 CREATE INDEX IF NOT EXISTS email_messages_thread ON email_messages(account, thread, date);
+CREATE TABLE IF NOT EXISTS email_threads (
+  id TEXT PRIMARY KEY,
+  account TEXT NOT NULL,
+  thread TEXT NOT NULL,
+  subject TEXT NOT NULL DEFAULT '',
+  from_name TEXT NOT NULL DEFAULT '',
+  from_addr TEXT NOT NULL DEFAULT '',
+  last_inbound TEXT NOT NULL DEFAULT '',
+  inbound_at INTEGER NOT NULL DEFAULT 0,
+  replied_at INTEGER NOT NULL DEFAULT 0,
+  verdict TEXT NOT NULL DEFAULT '',
+  line TEXT NOT NULL DEFAULT '',
+  why TEXT NOT NULL DEFAULT '',
+  project TEXT NOT NULL DEFAULT '',
+  work TEXT NOT NULL DEFAULT '',
+  first_time INTEGER NOT NULL DEFAULT 0,
+  needs_triage INTEGER NOT NULL DEFAULT 0,
+  triaged_at INTEGER NOT NULL DEFAULT 0,
+  pass_id TEXT NOT NULL DEFAULT '',
+  item_id TEXT NOT NULL DEFAULT '',
+  seen_at INTEGER NOT NULL DEFAULT 0,
+  read_at INTEGER NOT NULL DEFAULT 0,
+  until_at INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (account, thread)
+);
+CREATE INDEX IF NOT EXISTS email_threads_todo ON email_threads(needs_triage);
+CREATE INDEX IF NOT EXISTS email_threads_verdict ON email_threads(verdict, until_at);
+CREATE INDEX IF NOT EXISTS email_threads_item ON email_threads(item_id);
+CREATE TABLE IF NOT EXISTS email_passes (
+  id TEXT PRIMARY KEY,
+  trigger TEXT NOT NULL DEFAULT '',
+  started_at INTEGER NOT NULL,
+  ended_at INTEGER NOT NULL DEFAULT 0,
+  read INTEGER NOT NULL DEFAULT 0,
+  triaged INTEGER NOT NULL DEFAULT 0,
+  reply INTEGER NOT NULL DEFAULT 0,
+  digest INTEGER NOT NULL DEFAULT 0,
+  skip INTEGER NOT NULL DEFAULT 0,
+  answered INTEGER NOT NULL DEFAULT 0,
+  cost REAL NOT NULL DEFAULT 0,
+  error TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS email_feedback (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  thread_id TEXT NOT NULL,
+  was TEXT NOT NULL,
+  should TEXT NOT NULL,
+  line TEXT NOT NULL DEFAULT '',
+  from_addr TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS email_contacts (
   account TEXT NOT NULL,
   address TEXT NOT NULL,
@@ -388,4 +444,341 @@ func b2i(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// ThreadID is a thread's short, URL-safe id.
+func ThreadID(account, thread string) string {
+	h := sha256.Sum256([]byte(account + "\x00" + thread))
+	return "et-" + hex.EncodeToString(h[:6])
+}
+
+// EmailThread is a conversation as triage sees it.
+type EmailThread struct {
+	ID          string
+	Account     string
+	Thread      string
+	Subject     string
+	From        mail.Addr // the newest message to you
+	LastInbound string    // that message's row id
+	InboundAt   int64
+	RepliedAt   int64  // your newest message in the thread
+	Verdict     string // reply | digest | skip ("" until triaged)
+	Line        string // the one line shown: a digest fact, or the reply's title
+	Why         string
+	Project     string // a project it's about, if any
+	Work        string // work it asks for, if any
+	FirstTime   bool   // you've never written to the sender
+	NeedsTriage bool
+	TriagedAt   int64
+	PassID      string
+	ItemID      string // the reply item
+	SeenAt      int64  // a digest line scrolled into view
+	ReadAt      int64  // ticked off, or opened
+	UntilAt     int64  // a digest line fades then
+	CreatedAt   int64
+	UpdatedAt   int64
+}
+
+const threadCols = `id, account, thread, subject, from_name, from_addr, last_inbound, inbound_at, replied_at, verdict, line, why,
+	project, work, first_time, needs_triage, triaged_at, pass_id, item_id, seen_at, read_at, until_at, created_at, updated_at`
+
+func scanThread(r interface{ Scan(...any) error }) (EmailThread, error) {
+	var t EmailThread
+	var first, needs int
+	err := r.Scan(&t.ID, &t.Account, &t.Thread, &t.Subject, &t.From.Name, &t.From.Email, &t.LastInbound, &t.InboundAt, &t.RepliedAt,
+		&t.Verdict, &t.Line, &t.Why, &t.Project, &t.Work, &first, &needs, &t.TriagedAt, &t.PassID, &t.ItemID, &t.SeenAt, &t.ReadAt,
+		&t.UntilAt, &t.CreatedAt, &t.UpdatedAt)
+	t.FirstTime, t.NeedsTriage = first != 0, needs != 0
+	return t, err
+}
+
+func (s *Store) threads(where string, args ...any) ([]EmailThread, error) {
+	rows, err := s.DB.Query(`SELECT `+threadCols+` FROM email_threads WHERE `+where, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []EmailThread
+	for rows.Next() {
+		t, err := scanThread(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// Thread loads one thread by id.
+func (s *Store) Thread(id string) (EmailThread, bool) {
+	t, err := scanThread(s.DB.QueryRow(`SELECT `+threadCols+` FROM email_threads WHERE id=?`, id))
+	return t, err == nil
+}
+
+// ThreadByItem finds the thread a reply item belongs to.
+func (s *Store) ThreadByItem(itemID string) (EmailThread, bool) {
+	if itemID == "" {
+		return EmailThread{}, false
+	}
+	t, err := scanThread(s.DB.QueryRow(`SELECT `+threadCols+` FROM email_threads WHERE item_id=?`, itemID))
+	return t, err == nil
+}
+
+// ThreadActivity is what new messages changed in one thread.
+type ThreadActivity struct {
+	ID         string
+	NewInbound bool // a message to you newer than any seen before
+	Answered   bool // your newest message is newer than the newest to you
+}
+
+// NoteMessages updates threads from newly stored messages. Messages to you
+// are the ones in a triage folder (inbound) and not from you; a thread with
+// a newer one needs triage again. Your own messages (from Sent, or anywhere)
+// mark the thread answered when they're newer than the newest message to
+// you.
+func (s *Store) NoteMessages(account string, msgs []EmailMessage, inbound func(folder string) bool) ([]ThreadActivity, error) {
+	type agg struct {
+		in      *EmailMessage
+		repl    int64
+		subject string
+	}
+	by := map[string]*agg{}
+	var order []string
+	for i := range msgs {
+		m := &msgs[i]
+		a := by[m.Thread]
+		if a == nil {
+			a = &agg{}
+			by[m.Thread] = a
+			order = append(order, m.Thread)
+		}
+		if m.FromMe {
+			if m.Date > a.repl {
+				a.repl = m.Date
+			}
+			if a.subject == "" {
+				a.subject = m.Subject
+			}
+			continue
+		}
+		if !inbound(m.Folder) {
+			continue
+		}
+		if a.in == nil || m.Date > a.in.Date {
+			a.in = m
+		}
+	}
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	now := time.Now().Unix()
+	var out []ThreadActivity
+	for _, th := range order {
+		a := by[th]
+		id := ThreadID(account, th)
+		var inAt, replAt int64
+		exists := tx.QueryRow(`SELECT inbound_at, replied_at FROM email_threads WHERE id=?`, id).Scan(&inAt, &replAt) == nil
+		if !exists {
+			if a.in == nil && a.repl == 0 {
+				continue
+			}
+			if a.in == nil {
+				// Only your own message: remember when you wrote, so a later
+				// message to you is judged against it.
+				if _, err := tx.Exec(`INSERT INTO email_threads(id, account, thread, subject, replied_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?)`,
+					id, account, th, a.subject, a.repl, now, now); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			if _, err := tx.Exec(`INSERT INTO email_threads(id, account, thread, created_at, updated_at) VALUES (?,?,?,?,?)`, id, account, th, now, now); err != nil {
+				return nil, err
+			}
+		}
+		act := ThreadActivity{ID: id}
+		if a.in != nil && a.in.Date > inAt {
+			act.NewInbound = true
+			inAt = a.in.Date
+			if _, err := tx.Exec(`UPDATE email_threads SET subject=?, from_name=?, from_addr=?, last_inbound=?, inbound_at=?, needs_triage=1, updated_at=? WHERE id=?`,
+				a.in.Subject, a.in.From.Name, a.in.From.Email, a.in.ID, a.in.Date, now, id); err != nil {
+				return nil, err
+			}
+		}
+		if a.repl > replAt {
+			replAt = a.repl
+			if _, err := tx.Exec(`UPDATE email_threads SET replied_at=?, updated_at=? WHERE id=?`, a.repl, now, id); err != nil {
+				return nil, err
+			}
+		}
+		act.Answered = replAt > 0 && replAt >= inAt
+		if act.Answered {
+			tx.Exec(`UPDATE email_threads SET needs_triage=0 WHERE id=?`, id)
+		}
+		if act.NewInbound || act.Answered {
+			out = append(out, act)
+		}
+	}
+	return out, tx.Commit()
+}
+
+// ThreadsToTriage lists threads with a message to you not yet triaged,
+// oldest first.
+func (s *Store) ThreadsToTriage(limit int) ([]EmailThread, error) {
+	return s.threads(`needs_triage=1 AND inbound_at>replied_at ORDER BY inbound_at LIMIT ?`, limit)
+}
+
+// Verdict is triage's call on one thread.
+type Verdict struct {
+	Verdict, Line, Why, Project, Work string
+	FirstTime                         bool
+	UntilAt                           int64
+}
+
+// SetVerdict records triage's call.
+func (s *Store) SetVerdict(id, passID string, v Verdict) error {
+	now := time.Now().Unix()
+	_, err := s.DB.Exec(`UPDATE email_threads SET verdict=?, line=?, why=?, project=?, work=?, first_time=?, needs_triage=0, triaged_at=?, pass_id=?,
+		until_at=?, seen_at=CASE WHEN ?='digest' THEN 0 ELSE seen_at END, read_at=CASE WHEN ?='digest' THEN 0 ELSE read_at END, updated_at=? WHERE id=?`,
+		v.Verdict, v.Line, v.Why, v.Project, v.Work, b2i(v.FirstTime), now, passID, v.UntilAt, v.Verdict, v.Verdict, now, id)
+	return err
+}
+
+// SetThreadItem links a thread to its reply item.
+func (s *Store) SetThreadItem(id, itemID string) error {
+	_, err := s.DB.Exec(`UPDATE email_threads SET item_id=?, updated_at=? WHERE id=?`, itemID, time.Now().Unix(), id)
+	return err
+}
+
+// DigestLines lists the digest: lines not ticked off that haven't faded,
+// newest first.
+func (s *Store) DigestLines(now time.Time) ([]EmailThread, error) {
+	return s.threads(`verdict='digest' AND read_at=0 AND until_at>? ORDER BY inbound_at DESC`, now.Unix())
+}
+
+// SkippedIn lists what a pass left out.
+func (s *Store) SkippedIn(passID string) ([]EmailThread, error) {
+	return s.threads(`verdict='skip' AND pass_id=? ORDER BY inbound_at DESC`, passID)
+}
+
+// MarkSeen records digest lines scrolled into view (first time only).
+func (s *Store) MarkSeen(ids []string) error {
+	now := time.Now().Unix()
+	for _, id := range ids {
+		if _, err := s.DB.Exec(`UPDATE email_threads SET seen_at=? WHERE id=? AND seen_at=0`, now, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// MarkRead ticks a digest line off (or brings it back, with read false).
+func (s *Store) MarkRead(id string, read bool) error {
+	v := int64(0)
+	if read {
+		v = time.Now().Unix()
+	}
+	_, err := s.DB.Exec(`UPDATE email_threads SET read_at=?, seen_at=CASE WHEN seen_at=0 THEN ? ELSE seen_at END, updated_at=? WHERE id=?`, v, v, time.Now().Unix(), id)
+	return err
+}
+
+// MarkAllRead ticks off every digest line showing.
+func (s *Store) MarkAllRead(now time.Time) (int64, error) {
+	r, err := s.DB.Exec(`UPDATE email_threads SET read_at=?, seen_at=CASE WHEN seen_at=0 THEN ? ELSE seen_at END WHERE verdict='digest' AND read_at=0 AND until_at>?`,
+		now.Unix(), now.Unix(), now.Unix())
+	if err != nil {
+		return 0, err
+	}
+	return r.RowsAffected()
+}
+
+// EmailPass is one triage pass.
+type EmailPass struct {
+	ID        string
+	Trigger   string
+	StartedAt int64
+	EndedAt   int64
+	Read      int
+	Triaged   int
+	Reply     int
+	Digest    int
+	Skip      int
+	Answered  int
+	Cost      float64
+	Error     string
+}
+
+// StartPass records a pass starting.
+func (s *Store) StartPass(id, trigger string) error {
+	_, err := s.DB.Exec(`INSERT INTO email_passes(id, trigger, started_at) VALUES (?,?,?)`, id, trigger, time.Now().Unix())
+	return err
+}
+
+// EndPass records what a pass did.
+func (s *Store) EndPass(p EmailPass) error {
+	_, err := s.DB.Exec(`UPDATE email_passes SET ended_at=?, read=?, triaged=?, reply=?, digest=?, skip=?, answered=?, cost=?, error=? WHERE id=?`,
+		time.Now().Unix(), p.Read, p.Triaged, p.Reply, p.Digest, p.Skip, p.Answered, p.Cost, p.Error, p.ID)
+	return err
+}
+
+// LastPass is the most recent finished pass.
+func (s *Store) LastPass() (EmailPass, bool) {
+	var p EmailPass
+	err := s.DB.QueryRow(`SELECT id, trigger, started_at, ended_at, read, triaged, reply, digest, skip, answered, cost, error FROM email_passes
+		WHERE ended_at>0 ORDER BY started_at DESC LIMIT 1`).Scan(&p.ID, &p.Trigger, &p.StartedAt, &p.EndedAt, &p.Read, &p.Triaged, &p.Reply,
+		&p.Digest, &p.Skip, &p.Answered, &p.Cost, &p.Error)
+	return p, err == nil
+}
+
+// RunningPass reports a pass that started and hasn't finished (in the
+// last hour; an older one died with the server).
+func (s *Store) RunningPass() bool {
+	var n int
+	s.DB.QueryRow(`SELECT COUNT(*) FROM email_passes WHERE ended_at=0 AND started_at>?`, time.Now().Add(-time.Hour).Unix()).Scan(&n)
+	return n > 0
+}
+
+// EmailFeedback is a correction to triage: what it said, and what it
+// should have said.
+type EmailFeedback struct {
+	ThreadID, Was, Should, Line, From, Note string
+	At                                      int64
+}
+
+// AddEmailFeedback records a correction.
+func (s *Store) AddEmailFeedback(f EmailFeedback) error {
+	_, err := s.DB.Exec(`INSERT INTO email_feedback(thread_id, was, should, line, from_addr, note, at) VALUES (?,?,?,?,?,?,?)`,
+		f.ThreadID, f.Was, f.Should, f.Line, f.From, f.Note, time.Now().Unix())
+	return err
+}
+
+// RecentEmailFeedback lists the latest corrections, newest first.
+func (s *Store) RecentEmailFeedback(limit int) ([]EmailFeedback, error) {
+	rows, err := s.DB.Query(`SELECT thread_id, was, should, line, from_addr, note, at FROM email_feedback ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []EmailFeedback
+	for rows.Next() {
+		var f EmailFeedback
+		if err := rows.Scan(&f.ThreadID, &f.Was, &f.Should, &f.Line, &f.From, &f.Note, &f.At); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// EmailVersion changes whenever something the Email sections show changes,
+// so open pages refresh.
+func (s *Store) EmailVersion() string {
+	var n, mx int64
+	var p string
+	s.DB.QueryRow(`SELECT COUNT(*), COALESCE(MAX(updated_at),0) FROM email_threads WHERE verdict<>'skip'`).Scan(&n, &mx)
+	s.DB.QueryRow(`SELECT COALESCE(MAX(id),'') FROM email_passes`).Scan(&p)
+	var r, se int64
+	s.DB.QueryRow(`SELECT COALESCE(SUM(read_at),0), COALESCE(SUM(seen_at>0),0) FROM email_threads WHERE verdict='digest'`).Scan(&r, &se)
+	return fmt.Sprintf("%d.%d.%s.%d", n, mx, p, r)
 }

@@ -28,6 +28,7 @@ type queueView struct {
 	Now      []itemView // the act-now band
 	Sections []section
 	Snoozed  []itemView
+	Email    *emailSection // the bottom of the All view, when email is set up
 
 	ProjectInfo *store.Project // project view: for the edit form
 	Projects    []string       // every project name, for "move to"
@@ -71,7 +72,8 @@ type itemView struct {
 	LastAction  string           // the human's latest logged action on it
 	Projects    []string         // where it can be moved
 	Person      string
-	Idea        string // the idea it proposes a plan for (docket propose)
+	Idea        string     // the idea it proposes a plan for (docket propose)
+	Email       *emailItem // an email reply: its thread
 }
 
 // AnswerVerb and AnswerWhat split Answered for templates.
@@ -406,6 +408,10 @@ func (s *Server) buildQueue(query url.Values) (*queueView, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Email replies live in their own sections at the bottom, never in a
+	// project's section, the Act now band or the counts.
+	open, emailOpen := splitEmail(open)
+	waiting, emailWait := splitEmail(waiting)
 	q := &queueView{Sort: query.Get("sort"), Project: store.Slug(query.Get("p")), Place: store.Slug(query.Get("place"))}
 	if !sortOK(q.Sort) {
 		q.Sort = "priority"
@@ -548,6 +554,9 @@ func (s *Server) buildQueue(query url.Values) (*queueView, error) {
 		}
 	default:
 		q.Sections = s.byProject(rest, wait, desc, q)
+	}
+	if q.Mode == "all" && s.cfg.Email.On() {
+		q.Email = s.buildEmail(emailOpen, emailWait, q.Projects)
 	}
 	return q, nil
 }
