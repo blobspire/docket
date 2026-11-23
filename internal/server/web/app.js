@@ -842,8 +842,19 @@
     if (!res.ok) throw new Error(j.error || `failed (${res.status})`);
     return j;
   };
-  const reloadSheet = () => {
-    if (solo) { location.reload(); return; }
+  const reloadSheet = async () => {
+    if (solo) {
+      // An item's own page: swap in a fresh sheet, so a toast (and its
+      // Undo) stays on screen.
+      try {
+        const res = await fetch(location.href, { signal: timeout(15000) });
+        const sh = res.ok && $(".sheet", new DOMParser().parseFromString(await res.text(), "text/html"));
+        const cur = $(".sheet");
+        if (sh && cur) { cur.replaceWith(sh); setupSheet(sh); return; }
+      } catch (_) {}
+      location.reload();
+      return;
+    }
     if (openId) openSheet(openId, "none");
     refresh(true);
   };

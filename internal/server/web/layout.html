@@ -381,7 +381,7 @@
   {{if and $e $e.Draft (not $e.Pending)}}
   <form class="ans" data-email-revise hidden><textarea name="text" rows="1" placeholder="What should change? (shorter, mention Friday, …)" aria-label="What should change"></textarea><button type="button" class="ans-x" data-email-revise-x aria-label="Cancel">{{template "i" "x"}}</button><button type="submit" class="send" aria-label="Ask for the changes">{{template "i" "send"}}</button></form>
   <div class="dk-a">
-    <button type="button" class="ob rec" data-email-do="send" data-version="{{$e.Draft.Version}}"{{if $e.Writing}} disabled{{end}} title="Send this version (you get {{secs 30000}} s to undo)">{{template "i" "send"}}<span>Send</span></button>
+    <button type="button" class="ob rec" data-email-do="send" data-version="{{$e.Draft.Version}}"{{if $e.Writing}} disabled{{end}} title="Send this version (you get {{$e.HoldSecs}} s to undo)">{{template "i" "send"}}<span>Send</span></button>
     {{if $e.Holding}}<button type="button" class="ob" data-email-do="holding" data-version="{{$e.Draft.Version}}"{{if $e.Writing}} disabled{{end}} title="Send the holding reply now; the full reply comes later">{{template "i" "clock"}}<span>Send holding reply</span></button>{{end}}
     <button type="button" class="ob ghost" data-email-revise-open title="Tell the agent what to change">{{template "i" "pen"}}<span>Ask for changes</span></button>
     <button type="button" class="ob ghost" data-email-edit-open title="Edit the text yourself">{{template "i" "pen"}}<span>Edit</span></button>

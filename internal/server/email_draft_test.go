@@ -279,3 +279,11 @@ func TestModelCallsCanNeverGetAShell(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestFirstNameReadsOutlookStyleNames(t *testing.T) {
+	for in, want := range map[string]string{"Nancy Smith": "Nancy", "Smith, Nancy": "Nancy", "\"Wendrowski, Cole\"": "Cole", "nancy@example.org": "nancy", "Registrar": "Registrar"} {
+		if got := firstName(in); got != want {
+			t.Errorf("%q => %q, want %q", in, got, want)
+		}
+	}
+}

@@ -296,8 +296,13 @@ func (s *Server) emailAct(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, back, http.StatusSeeOther)
 }
 
+// firstName is the first name in a display name: "Nancy Smith" and
+// Outlook's "Smith, Nancy" both give Nancy.
 func firstName(s string) string {
-	s = strings.TrimSpace(s)
+	s = strings.TrimSpace(strings.Trim(strings.TrimSpace(s), `"'`))
+	if last, first, ok := strings.Cut(s, ","); ok && strings.TrimSpace(first) != "" && !strings.Contains(last, "@") {
+		s = strings.TrimSpace(first)
+	}
 	if i := strings.IndexAny(s, " @"); i > 0 {
 		return s[:i]
 	}
@@ -397,6 +402,7 @@ type emailItem struct {
 	PendingMs int64 // left of its Undo window
 	Failed    string
 	SaveName  string // "Save to Gmail drafts"
+	HoldSecs  int    // the Undo window
 }
 
 type recipient struct {
@@ -411,7 +417,7 @@ func (s *Server) emailItem(it store.Item) *emailItem {
 	}
 	v := s.readerFor(t)
 	e := &emailItem{Thread: t, Label: v.Label, Latest: v.Latest, Earlier: len(v.Messages), OpenURL: v.OpenURL, OpenName: v.OpenName,
-		SaveName: "Save to " + v.Label + " drafts"}
+		SaveName: "Save to " + v.Label + " drafts", HoldSecs: int(s.cfg.Email.SendHold.Duration.Seconds())}
 	if j, ok := s.st.Job(t.ID); ok {
 		e.Job = &j
 		e.Writing = j.Status == "queued" || j.Status == "running"
