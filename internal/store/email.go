@@ -813,7 +813,22 @@ func (s *Store) AddEmailFeedback(f EmailFeedback) error {
 
 // RecentEmailFeedback lists the latest corrections, newest first.
 func (s *Store) RecentEmailFeedback(limit int) ([]EmailFeedback, error) {
-	rows, err := s.DB.Query(`SELECT thread_id, was, should, line, from_addr, note, at FROM email_feedback ORDER BY id DESC LIMIT ?`, limit)
+	return s.emailFeedback(s.DB.Query(`SELECT thread_id, was, should, line, from_addr, note, at FROM email_feedback ORDER BY id DESC LIMIT ?`, limit))
+}
+
+// TriageFeedback is the corrections triage hears: the latest ones, and
+// the latest of those the human explained in a note even once they're
+// older. A note says why ("I'm only cc'd so I can fix the site; editors
+// answer these"), the context that matters most, so it doesn't roll off
+// with the plain corrections. Newest first.
+func (s *Store) TriageFeedback(recent, noted int) ([]EmailFeedback, error) {
+	return s.emailFeedback(s.DB.Query(`SELECT thread_id, was, should, line, from_addr, note, at FROM email_feedback
+		WHERE id IN (SELECT id FROM email_feedback ORDER BY id DESC LIMIT ?)
+		   OR id IN (SELECT id FROM email_feedback WHERE note<>'' ORDER BY id DESC LIMIT ?)
+		ORDER BY id DESC`, recent, noted))
+}
+
+func (s *Store) emailFeedback(rows *sql.Rows, err error) ([]EmailFeedback, error) {
 	if err != nil {
 		return nil, err
 	}

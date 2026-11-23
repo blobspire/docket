@@ -9,7 +9,7 @@
     {{if ne $t.Verdict "reply"}}<form method="post" action="/email/{{$t.ID}}/reply"><button class="sb" type="submit">{{template "i" "pen"}}Needs a reply</button></form>{{else if $t.ItemID}}<a class="sb pri" href="/item/{{$t.ItemID}}">{{template "i" "pen"}}Open the reply</a>{{end}}
     {{if eq $t.Verdict "skip"}}<form method="post" action="/email/{{$t.ID}}/digest"><input type="hidden" name="back" value="/email/{{$t.ID}}"><button class="sb" type="submit">Worth reading</button></form>{{end}}
     {{if eq $t.Verdict "digest"}}{{if $t.ReadAt}}<form method="post" action="/email/{{$t.ID}}/unread"><input type="hidden" name="back" value="/"><button class="sb" type="submit">{{template "i" "undo"}}Back on the digest</button></form>{{end}}
-    <form method="post" action="/email/{{$t.ID}}/noise"><input type="hidden" name="back" value="/"><button class="sb" type="submit">{{template "i" "thumb"}}Not worth it</button></form>{{end}}
+    <form method="post" action="/email/{{$t.ID}}/noise" data-email-noise><input type="hidden" name="back" value="/"><input type="hidden" name="note" value=""><button class="sb" type="submit">{{template "i" "thumb"}}Not worth it</button></form>{{end}}
     {{with $v.OpenURL}}<a class="sb" href="{{.}}" target="_blank" rel="noopener noreferrer">{{template "i" "ext"}}{{$v.OpenName}}</a>{{end}}
   </div>
   {{range $v.Messages}}
