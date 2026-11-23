@@ -509,13 +509,14 @@ func (s *Server) emailItem(it store.Item) *emailItem {
 //	send / holding   hold the shown version for the Undo window, then send it
 //	undo-send        withdraw it
 //	revise           ask the drafting agent for changes, in your words
-//	redraft          write the draft again from scratch
+//	redraft          write the draft again (keeping your edits and asked-for changes in this reply)
+//	retry            run the job that failed again, as it was
 //	edit             save your own edit of the draft (and recipients)
 //	save-draft       put the draft in the account's Drafts folder
 func (s *Server) replyAct(w http.ResponseWriter, r *http.Request, t store.EmailThread, action string) (map[string]any, error) {
 	version, _ := strconv.Atoi(r.FormValue("version"))
 	switch action {
-	case "revise", "redraft", "edit":
+	case "revise", "redraft", "retry", "edit":
 		if _, ok := s.st.PendingSend(t.ID); ok {
 			return nil, errors.New("a reply is on its way; undo it first to change the draft")
 		}
@@ -549,6 +550,17 @@ func (s *Server) replyAct(w http.ResponseWriter, r *http.Request, t store.EmailT
 		}
 		kick(s.emailOutKick)
 		return nil, nil
+	case "retry":
+		// The job that failed, as it was: a revision keeps what you asked for.
+		j, ok := s.st.Job(t.ID)
+		if !ok || j.Status != "failed" {
+			return nil, errors.New("there's nothing to try again")
+		}
+		if err := s.st.QueueDraft(t.ID, j.Kind, j.Instruction); err != nil {
+			return nil, err
+		}
+		kick(s.emailOutKick)
+		return nil, nil
 	case "edit":
 		d, ok := s.st.LatestDraft(t.ID)
 		if !ok {
@@ -578,6 +590,7 @@ func (s *Server) replyAct(w http.ResponseWriter, r *http.Request, t store.EmailT
 		_ = removed // your own edit: formatting the editor added is simply dropped
 		nd := d
 		nd.HTML, nd.To, nd.Cc, nd.Source, nd.Instruction, nd.Removed = body, to, cc, "edit", "", nil
+		nd.HandRecipients = d.HandRecipients || !sameAddrs(to, d.To) || !sameAddrs(cc, d.Cc)
 		// Your own edit is written with the thread in front of you: it
 		// knows what the sheet you edited in showed (a message that came
 		// while you typed isn't in it), never more than is stored.
@@ -686,4 +699,26 @@ func editAddrs(list []mail.Addr) string {
 		}
 	}
 	return strings.Join(out, ", ")
+}
+
+// sameAddrs reports whether two recipient lists name the same addresses
+// (names and order aside).
+func sameAddrs(a, b []mail.Addr) bool {
+	set := func(l []mail.Addr) map[string]bool {
+		m := map[string]bool{}
+		for _, x := range l {
+			m[strings.ToLower(x.Email)] = true
+		}
+		return m
+	}
+	x, y := set(a), set(b)
+	if len(x) != len(y) {
+		return false
+	}
+	for k := range x {
+		if !y[k] {
+			return false
+		}
+	}
+	return true
 }

@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS email_drafts (
   source TEXT NOT NULL DEFAULT '',
   instruction TEXT NOT NULL DEFAULT '',
   basis INTEGER NOT NULL DEFAULT 0,
+  hand_recipients INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   PRIMARY KEY (thread_id, version)
 );
@@ -85,15 +86,18 @@ type Draft struct {
 	Source      string   // agent | revision | edit
 	Instruction string   // your words that asked for this version
 	Basis       int64    // the last stored message it saw (email_messages.seq); later ones aren't in it
-	CreatedAt   int64
+	// HandRecipients: you changed To/Cc in an edit of this reply, so later
+	// versions of it keep them as you set them.
+	HandRecipients bool
+	CreatedAt      int64
 }
 
-const draftCols = `thread_id, version, subject, to_json, cc_json, html, holding, notes, questions, work, removed, source, instruction, basis, created_at`
+const draftCols = `thread_id, version, subject, to_json, cc_json, html, holding, notes, questions, work, removed, source, instruction, basis, hand_recipients, created_at`
 
 func scanDraft(r interface{ Scan(...any) error }) (Draft, error) {
 	var d Draft
 	var to, cc, qs, work, removed string
-	err := r.Scan(&d.ThreadID, &d.Version, &d.Subject, &to, &cc, &d.HTML, &d.Holding, &d.Notes, &qs, &work, &removed, &d.Source, &d.Instruction, &d.Basis, &d.CreatedAt)
+	err := r.Scan(&d.ThreadID, &d.Version, &d.Subject, &to, &cc, &d.HTML, &d.Holding, &d.Notes, &qs, &work, &removed, &d.Source, &d.Instruction, &d.Basis, &d.HandRecipients, &d.CreatedAt)
 	json.Unmarshal([]byte(to), &d.To)
 	json.Unmarshal([]byte(cc), &d.Cc)
 	json.Unmarshal([]byte(qs), &d.Questions)
@@ -124,8 +128,8 @@ func (s *Store) AddDraft(d Draft) (int, error) {
 		qs = []byte("[]")
 	}
 	now := time.Now().Unix()
-	if _, err := tx.Exec(`INSERT INTO email_drafts(`+draftCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		d.ThreadID, v, d.Subject, js(d.To), js(d.Cc), d.HTML, d.Holding, d.Notes, string(qs), work, js(d.Removed), d.Source, d.Instruction, d.Basis, now); err != nil {
+	if _, err := tx.Exec(`INSERT INTO email_drafts(`+draftCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		d.ThreadID, v, d.Subject, js(d.To), js(d.Cc), d.HTML, d.Holding, d.Notes, string(qs), work, js(d.Removed), d.Source, d.Instruction, d.Basis, d.HandRecipients, now); err != nil {
 		return 0, err
 	}
 	return v, tx.Commit()
@@ -449,6 +453,17 @@ func (s *Store) WroteSince(account, thread string, sinceRow int64, inbound []str
 	args = append(args, sinceRow)
 	var n int
 	s.DB.QueryRow(q, args...).Scan(&n)
+	return n > 0
+}
+
+// RepliedSince reports a message from you in the thread (any folder; a
+// holding reply docket sent doesn't count, like for closing the item)
+// stored after the given one: you've replied since.
+func (s *Store) RepliedSince(account, thread string, sinceSeq int64) bool {
+	var n int
+	s.DB.QueryRow(`SELECT COUNT(*) FROM email_messages m WHERE m.account=? AND m.thread=? AND m.from_me=1 AND m.seq>?
+		AND (m.message_id='' OR NOT EXISTS (SELECT 1 FROM email_outbox o WHERE o.kind='holding' AND o.status='sent' AND o.message_id=m.message_id))`,
+		account, thread, sinceSeq).Scan(&n)
 	return n > 0
 }
 

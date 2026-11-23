@@ -379,6 +379,7 @@ var added = []struct{ table, column, ddl string }{
 	{"email_outbox", "answers", "TEXT NOT NULL DEFAULT ''"},
 	{"email_drafts", "basis", "INTEGER NOT NULL DEFAULT 0"},
 	{"email_messages", "seq", "INTEGER NOT NULL DEFAULT 0"},
+	{"email_drafts", "hand_recipients", "INTEGER NOT NULL DEFAULT 0"},
 }
 
 func migrate(db *sql.DB) error {

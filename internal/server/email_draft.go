@@ -93,8 +93,8 @@ func (s *Server) runDraft(ctx context.Context, j store.EmailJob) {
 	// saw then; if anything arrived since, write it fresh from the whole
 	// thread instead, so the new version can't hide a newer message.
 	basis := s.st.LastMessageRow() // read before the thread is, so it never overstates what was seen
-	builtOn := prevFor(j, prev, hasPrev)
-	if j.Kind == "revise" && j.Session != "" && hasPrev && !s.st.WroteSince(t.Account, t.Thread, prev.Basis, s.inbound(t.Account)) {
+	builtOn := s.buildsOn(t, j, prev, hasPrev)
+	if j.Kind == "revise" && j.Session != "" && builtOn != nil && !s.st.WroteSince(t.Account, t.Thread, prev.Basis, s.inbound(t.Account)) {
 		call.Resume = j.Session
 		call.Prompt = s.revisePrompt(prev, j.Instruction)
 		basis = prev.Basis
@@ -107,7 +107,7 @@ func (s *Server) runDraft(ctx context.Context, j store.EmailJob) {
 		// start over with everything in the prompt.
 		call.Resume = ""
 		basis = s.st.LastMessageRow()
-		call.Prompt = s.draftPrompt(t, a, code, &prev, j.Instruction)
+		call.Prompt = s.draftPrompt(t, a, code, builtOn, j.Instruction)
 		res, err = s.runModel(ctx, call)
 	}
 	if err != nil {
@@ -130,6 +130,9 @@ func (s *Server) runDraft(ctx context.Context, j store.EmailJob) {
 			d.Instruction = builtOn.Instruction
 		}
 	}
+	if builtOn != nil && builtOn.HandRecipients {
+		d.To, d.Cc, d.HandRecipients = builtOn.To, builtOn.Cc, true // as you set them
+	}
 	if _, err := s.st.AddDraft(d); err != nil {
 		s.st.EndJob(t.ID, "failed", res.Session, err.Error())
 		return
@@ -139,15 +142,31 @@ func (s *Server) runDraft(ctx context.Context, j store.EmailJob) {
 	s.afterDraft(t, d)
 }
 
-// prevFor is the version a new draft builds on: the latest one for a
-// revision, and whenever the latest has your input in it (your edit, or
-// changes you asked for), so a redraft (after a new message, say) never
-// drops it. An agent's own draft is otherwise written again from scratch.
-func prevFor(j store.EmailJob, prev store.Draft, ok bool) *store.Draft {
-	if ok && (j.Kind == "revise" || prev.Source == "edit" || prev.Source == "revision") {
+// buildsOn is the version a new draft is written from. A reply is the
+// versions since you last replied in the thread (from docket or your own
+// mail; a holding reply doesn't count). Within it your input carries: a
+// revision builds on the latest version, and so does any new draft when the
+// latest has your edit or changes you asked for, so a redraft (after a new
+// message, say) never drops them. An agent's own draft is written again
+// from scratch, and so is the first version after you've replied: what you
+// sent is done, not a draft to keep.
+func (s *Server) buildsOn(t store.EmailThread, j store.EmailJob, prev store.Draft, ok bool) *store.Draft {
+	if !ok || s.repliedAfter(t, prev) {
+		return nil
+	}
+	if j.Kind == "revise" || prev.Source == "edit" || prev.Source == "revision" {
 		return &prev
 	}
 	return nil
+}
+
+// repliedAfter reports a full reply of yours after draft d: d itself went
+// out from docket, or a message from you was stored since d was written.
+func (s *Server) repliedAfter(t store.EmailThread, d store.Draft) bool {
+	if kinds, _ := s.st.SentKinds(t.ID, d.Version); kinds["reply"] {
+		return true
+	}
+	return s.st.RepliedSince(t.Account, t.Thread, d.Basis)
 }
 
 // draftFrom turns a session's answer into a stored draft: cleaned HTML,

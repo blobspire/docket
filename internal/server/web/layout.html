@@ -246,7 +246,7 @@
     {{if and .Stale (not .Sent)}}<div class="banner stuck">{{template "i" "alert"}}<div><b>{{.Thread.From.Display}} wrote again after this draft.</b> {{if .Writing}}A new version is being written.{{else}}Read the new message below, then Redraft or Edit the reply.{{end}} <button type="button" class="lnk" data-email-do="redraft">Redraft</button></div></div>{{end}}
     {{if .Writing}}<p class="muted" data-email-writing>{{if .Draft}}Writing a new version…{{else}}Writing a draft. It appears here in a minute or two.{{end}}</p>{{end}}
     {{if and (not .Draft) (not .Job)}}<p class="muted">No draft yet. <button type="button" class="lnk" data-email-do="redraft">Write one</button></p>{{end}}
-    {{if and .Job (eq .Job.Status "failed") (not .Writing)}}<div class="banner stuck">{{template "i" "alert"}}<div><b>The draft couldn't be written.</b> {{.Job.Error}} <button type="button" class="lnk" data-email-do="redraft">Try again</button></div></div>{{end}}
+    {{if and .Job (eq .Job.Status "failed") (not .Writing)}}<div class="banner stuck">{{template "i" "alert"}}<div><b>The draft couldn't be written.</b> {{.Job.Error}} <button type="button" class="lnk" data-email-do="retry">Try again</button></div></div>{{end}}
     {{with .Draft}}
     <div class="dr" data-email-draft data-thread="{{$e.Thread.ID}}" data-version="{{.Version}}" data-seen="{{$e.Seen}}">
       <div class="dr-h">

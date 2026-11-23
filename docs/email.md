@@ -10,7 +10,7 @@ Three times a day docket reads the mail accounts you connect and sorts what's ne
   - **Send a holding reply** ("good idea, we'll add it this week"), when the real answer needs work first.
   - Close it without replying (Don't reply, Not worth it, Dismiss), or Stash or Snooze it like any item.
 
-  If they write again before you send, the old version can't be sent: a new one is written for their latest message, keeping your own edits and the changes you asked for.
+  If they write again before you send, the old version can't be sent: a new one is written for their latest message, keeping your own edits, the recipients you set and the changes you asked for. Once you've replied, the next email in the conversation gets a fresh draft.
 - **Email · worth reading.** One line per email that matters but needs no reply: a meeting moved, a deadline, a result posted. Each line is written so you don't have to open the email ("Lab meeting moved Thu → Fri 2pm"). Lines you've scrolled past fold into Earlier when the next check brings new ones, tick one off with **Read**, and they fade after three days, so there's nothing to clear. Tap a line to open the whole email, with a link to it in Gmail or Outlook.
 - **Skipped.** Everything else: newsletters, receipts, notifications. The Email header links to what the last check skipped, so you can see what it left out.
 

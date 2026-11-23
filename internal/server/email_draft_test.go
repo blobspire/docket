@@ -695,3 +695,198 @@ func TestARedraftOfTheAgentsOwnDraftStartsOver(t *testing.T) {
 		t.Fatalf("source: %s", d.Source)
 	}
 }
+
+func replyAll(body string) string {
+	return strings.Replace(draftAnswer(body), `"reply_all":false`, `"reply_all":true`, 1)
+}
+
+func emails(l []mail.Addr) string {
+	var out []string
+	for _, x := range l {
+		out = append(out, x.Email)
+	}
+	return strings.Join(out, ",")
+}
+
+// After you've sent your (edited) reply, the next email in the conversation
+// gets a fresh draft: what you sent isn't a draft to keep, nor are the
+// recipients you set for it.
+func TestASentReplyIsntTheNextDraftsStart(t *testing.T) {
+	e, f, smtp, th := replyEnv(t)
+	f.answer(replyAll("AGENT-V1"))
+	e.runDrafts()
+	if rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {"1"}, "seen": {sheetSeen(t, e, th)}, "html": {"<p>SENT-REPLY-TEXT</p>"},
+		"to": {"nancy@example.org"}, "cc": {"sam@example.org"}}); rec.Code != 200 {
+		t.Fatalf("edit: %d %s", rec.Code, rec.Body.String())
+	}
+	e.s.cfg.Email.SendHold.Duration = 0
+	if _, err := e.s.QueueSend(th.ID, 2, "reply"); err != nil {
+		t.Fatal(err)
+	}
+	e.s.sendDue(e.ctx)
+	if len(smtp.Messages()) != 1 {
+		t.Fatalf("sent %d", len(smtp.Messages()))
+	}
+	// Asking for changes to what's already gone out writes a fresh draft
+	// too, never resuming the session that wrote it.
+	if rec := postForm(e, "/email/"+th.ID+"/revise", url.Values{"text": {"shorter"}}); rec.Code != 200 {
+		t.Fatalf("revise: %d %s", rec.Code, rec.Body.String())
+	}
+	f.answer(draftAnswer("FRESH"))
+	e.runDrafts()
+	if p, args := f.prompt(), strings.Join(f.args(), " "); strings.Contains(p, "SENT-REPLY-TEXT") || strings.Contains(args, "--resume") {
+		t.Fatalf("a revision after the reply went out built on it (resume: %v):\n%s", strings.Contains(args, "--resume"), p)
+	}
+	// Nancy answers, later.
+	mailtest.Append(t, e.s.cfg.Email.Accounts[0].IMAP, "INBOX", msg("n9@x", "Nancy Smith <nancy@example.org>", "me@example.com", "Re: Undo a removed resident?",
+		"Thanks! New question: can I add a second resident?", "In-Reply-To: <n1@x>", "References: <n1@x>", "Cc: Pat <pat@example.org>, Sam <sam@example.org>",
+		dated(time.Now().Add(2*time.Hour))), time.Now().Add(2*time.Hour))
+	f.answer(`{"structured_output":{"threads":[{"key":"T1","verdict":"reply","line":"Reply to Nancy: second resident?","why":"asked","project":"","work":""}]}}`)
+	e.s.emailPass(e.ctx, "test")
+	e.s.st.DB.Exec(`DELETE FROM email_drafts WHERE thread_id=? AND version=3`, th.ID) // as if the revision hadn't been asked for
+	f.answer(replyAll("NEW"))
+	e.runDrafts()
+	if p := f.prompt(); strings.Contains(p, "SENT-REPLY-TEXT") || strings.Contains(p, "Your previous draft") || !strings.Contains(p, "second resident") {
+		t.Fatalf("the next reply must start fresh:\n%s", p)
+	}
+	d, _ := e.s.st.LatestDraft(th.ID)
+	if d.Source != "agent" || d.HandRecipients || !strings.Contains(emails(d.Cc), "pat@") {
+		t.Fatalf("a fresh reply, docket's recipients: %s hand=%v cc=%s", d.Source, d.HandRecipients, emails(d.Cc))
+	}
+}
+
+// The same when you replied from your own mail app: the next email gets a
+// fresh draft. And within that next reply, your edit carries again.
+func TestAReplyFromYourOwnMailStartsFresh(t *testing.T) {
+	e, f, _, th := replyEnv(t)
+	f.answer(draftAnswer("AGENT-V1"))
+	e.runDrafts()
+	if rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {"1"}, "seen": {sheetSeen(t, e, th)}, "html": {"<p>NEVER-SENT-EDIT</p>"}, "to": {"nancy@example.org"}}); rec.Code != 200 {
+		t.Fatalf("edit: %d %s", rec.Code, rec.Body.String())
+	}
+	addr := e.s.cfg.Email.Accounts[0].IMAP
+	// You answer from your phone instead; then Nancy writes back.
+	mailtest.Append(t, addr, "Sent", msg("mine@x", "Cole <me@example.com>", "Nancy Smith <nancy@example.org>", "Re: Undo a removed resident?",
+		"Yes, done.", "In-Reply-To: <n1@x>", "References: <n1@x>", dated(time.Now().Add(time.Hour))), time.Now().Add(time.Hour))
+	mailtest.Append(t, addr, "INBOX", msg("n9@x", "Nancy Smith <nancy@example.org>", "me@example.com", "Re: Undo a removed resident?",
+		"Thanks! New question: can I add a second resident?", "In-Reply-To: <mine@x>", "References: <n1@x> <mine@x>", dated(time.Now().Add(2*time.Hour))), time.Now().Add(2*time.Hour))
+	f.answer(`{"structured_output":{"threads":[{"key":"T1","verdict":"reply","line":"Reply to Nancy: second resident?","why":"asked","project":"","work":""}]}}`)
+	e.s.emailPass(e.ctx, "test")
+	f.answer(draftAnswer("NEW"))
+	e.runDrafts()
+	if p := f.prompt(); strings.Contains(p, "NEVER-SENT-EDIT") || strings.Contains(p, "Your previous draft") {
+		t.Fatalf("after your own reply the next draft must start fresh:\n%s", p)
+	}
+	// In the new reply, you edit; she writes again: your new edit carries
+	// (your earlier reply came before it).
+	d, _ := e.s.st.LatestDraft(th.ID)
+	if rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {fmt.Sprint(d.Version)}, "seen": {sheetSeen(t, e, th)}, "html": {"<p>SECOND-EDIT</p>"}, "to": {"nancy@example.org"}}); rec.Code != 200 {
+		t.Fatalf("edit: %d %s", rec.Code, rec.Body.String())
+	}
+	mailtest.Append(t, addr, "INBOX", msg("n10@x", "Nancy Smith <nancy@example.org>", "me@example.com", "Re: Undo a removed resident?",
+		"Oh, and by when?", "In-Reply-To: <mine@x>", "References: <n1@x> <mine@x>", dated(time.Now().Add(3*time.Hour))), time.Now().Add(3*time.Hour))
+	f.answer(`{"structured_output":{"threads":[]}}`)
+	e.s.readAccount(e.ctx, e.s.cfg.Email.Accounts[0])
+	e.s.staleDrafts()
+	f.answer(draftAnswer("v-next"))
+	e.runDrafts()
+	if p := f.prompt(); !strings.Contains(p, "SECOND-EDIT") {
+		t.Fatalf("your edit in this reply must carry:\n%s", p)
+	}
+}
+
+// A holding reply isn't your reply: after it goes out, a redraft still
+// builds on your edit.
+func TestAHoldingReplyKeepsYourEditGoing(t *testing.T) {
+	e, f, smtp, th := replyEnv(t)
+	f.answer(`{"session_id":"s","structured_output":{"subject":"Re: Undo a removed resident?","reply_all":false,"body_html":"<p>Live now.</p>",
+		"holding_html":"<p>We'll add it this week.</p>","notes":"","questions":[],"work":{"needed":false,"title":"","plan":"","why":""}}}`)
+	e.runDrafts()
+	if rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {"1"}, "seen": {sheetSeen(t, e, th)}, "html": {"<p>MY-OWN-WORDS</p>"}, "to": {"nancy@example.org"}}); rec.Code != 200 {
+		t.Fatalf("edit: %d %s", rec.Code, rec.Body.String())
+	}
+	e.s.cfg.Email.SendHold.Duration = 0
+	if _, err := e.s.QueueSend(th.ID, 2, "holding"); err != nil {
+		t.Fatal(err)
+	}
+	e.s.sendDue(e.ctx)
+	addr := strings.Split(e.s.cfg.Email.Accounts[0].IMAP, ",")[0]
+	mailtest.Append(t, addr, "Sent", strings.ReplaceAll(smtp.Messages()[0].Data, "\r\n", "\n"), time.Now())
+	nancyWrites(t, e, f, "n2@x", "Also, which form do I use?")
+	e.s.staleDrafts()
+	f.answer(draftAnswer("v3"))
+	e.runDrafts()
+	if p := f.prompt(); !strings.Contains(p, "MY-OWN-WORDS") {
+		t.Fatalf("a holding reply ended your reply; the redraft dropped your edit:\n%s", p)
+	}
+}
+
+// Recipients you set by hand stay through a redraft; recipients you left
+// alone stay docket's to choose.
+func TestARedraftKeepsTheRecipientsYouSet(t *testing.T) {
+	e, f, _, th := replyEnv(t)
+	f.answer(replyAll("AGENT-V1"))
+	e.runDrafts()
+	if d1, _ := e.s.st.LatestDraft(th.ID); !strings.Contains(emails(d1.Cc), "pat@") {
+		t.Fatalf("setup: v1 should reply to all: %s", emails(d1.Cc))
+	}
+	// You take Pat off.
+	if rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {"1"}, "seen": {sheetSeen(t, e, th)}, "html": {"<p>MY-OWN-WORDS</p>"},
+		"to": {"nancy@example.org"}, "cc": {"sam@example.org"}}); rec.Code != 200 {
+		t.Fatalf("edit: %d %s", rec.Code, rec.Body.String())
+	}
+	nancyWrites(t, e, f, "n2@x", "Also, which form do I use?")
+	e.s.staleDrafts()
+	f.answer(replyAll("MY-OWN-WORDS and form B"))
+	e.runDrafts()
+	d3, _ := e.s.st.LatestDraft(th.ID)
+	if d3.Version != 3 || emails(d3.To) != "nancy@example.org" || emails(d3.Cc) != "sam@example.org" || !d3.HandRecipients {
+		t.Fatalf("v%d: to=%s cc=%s hand=%v; want Pat kept off", d3.Version, emails(d3.To), emails(d3.Cc), d3.HandRecipients)
+	}
+
+	// An edit of the words alone leaves the recipients docket's.
+	e2, f2, _, th2 := replyEnv(t)
+	f2.answer(draftAnswer("AGENT-V1"))
+	e2.runDrafts()
+	// The sender's address as their mail wrote it (mixed case); the editor
+	// sends it back lowercased.
+	e2.s.st.DB.Exec(`UPDATE email_drafts SET to_json=? WHERE thread_id=?`, `[{"Name":"Nancy Smith","Email":"Nancy@Example.org"}]`, th2.ID)
+	if rec := postForm(e2, "/email/"+th2.ID+"/edit", url.Values{"version": {"1"}, "seen": {sheetSeen(t, e2, th2)}, "html": {"<p>words</p>"}, "to": {"Nancy Smith <NANCY@example.org>"}}); rec.Code != 200 {
+		t.Fatalf("edit: %d %s", rec.Code, rec.Body.String())
+	}
+	if d, _ := e2.s.st.LatestDraft(th2.ID); d.HandRecipients {
+		t.Fatal("the recipients weren't changed: they stay docket's")
+	}
+}
+
+// Try again after a failed revision runs that revision again, with what
+// you asked for.
+func TestTryAgainKeepsWhatYouAskedFor(t *testing.T) {
+	e, f, _, th := replyEnv(t)
+	f.answer(draftAnswer("AGENT-V1"))
+	e.runDrafts()
+	if rec := postForm(e, "/email/"+th.ID+"/retry", url.Values{}); rec.Code != 409 {
+		t.Fatalf("nothing failed: nothing to try again: %d", rec.Code)
+	}
+	if rec := postForm(e, "/email/"+th.ID+"/revise", url.Values{"text": {"mention FRIDAY-PICKUP"}}); rec.Code != 200 {
+		t.Fatalf("revise: %d", rec.Code)
+	}
+	f.answer(`not json at all`)
+	e.runDrafts()
+	sheet := httptest.NewRecorder()
+	e.s.Handler().ServeHTTP(sheet, httptest.NewRequest("GET", "/item/"+th.ItemID, nil))
+	if !strings.Contains(sheet.Body.String(), `data-email-do="retry">Try again`) {
+		t.Fatal("the failed draft's banner should offer Try again")
+	}
+	if rec := postForm(e, "/email/"+th.ID+"/retry", url.Values{}); rec.Code != 200 {
+		t.Fatalf("retry: %d %s", rec.Code, rec.Body.String())
+	}
+	f.answer(draftAnswer("V2"))
+	e.runDrafts()
+	if p := f.prompt(); !strings.Contains(p, "FRIDAY-PICKUP") {
+		t.Fatalf("Try again forgot what you asked for:\n%s", p)
+	}
+	if d, _ := e.s.st.LatestDraft(th.ID); d.Source != "revision" || d.Instruction != "mention FRIDAY-PICKUP" {
+		t.Fatalf("v2: %s %q", d.Source, d.Instruction)
+	}
+}
