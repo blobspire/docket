@@ -377,15 +377,14 @@ func mdText(s string) string {
 
 // fileReplyNoDraft files the reply item without writing a draft (for mail
 // docket couldn't sort; Redraft on the item writes one).
-func (s *Server) fileReplyNoDraft(threadID string) {
-	s.noDraft = threadID
-	s.fileReply(threadID)
-	s.noDraft = ""
-}
+func (s *Server) fileReplyNoDraft(threadID string) { s.fileReplyItem(threadID, false) }
 
-// fileReply files (or refreshes) the thread's reply item. Email items are
+// fileReply files (or refreshes) the thread's reply item and drafts it.
+func (s *Server) fileReply(threadID string) (string, error) { return s.fileReplyItem(threadID, true) }
+
+// fileReplyItem files (or refreshes) the thread's reply item. Email items are
 // never urgent: an email can't push the phone or claim the Act now band.
-func (s *Server) fileReply(threadID string) (string, error) {
+func (s *Server) fileReplyItem(threadID string, draft bool) (string, error) {
 	t, ok := s.st.Thread(threadID)
 	if !ok {
 		return "", fmt.Errorf("no thread %s", threadID)
@@ -415,7 +414,7 @@ func (s *Server) fileReply(threadID string) (string, error) {
 	}
 	// A new reply, or a new message in the thread since the last draft:
 	// write a draft (a thread being drafted right now keeps its job).
-	if d, ok := s.st.LatestDraft(t.ID); s.noDraft != t.ID && (!ok || s.st.WroteSince(t.Account, t.Thread, d.CreatedAt-1)) {
+	if d, ok := s.st.LatestDraft(t.ID); draft && (!ok || s.st.WroteSince(t.Account, t.Thread, d.CreatedAt-1)) {
 		if err := s.st.QueueDraft(t.ID, "draft", ""); err == nil {
 			kick(s.emailOutKick)
 		}

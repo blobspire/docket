@@ -27,7 +27,6 @@ type Server struct {
 	emailKick      chan struct{}
 	emailOutKick   chan struct{}
 	drafting       sync.WaitGroup // drafting sessions running
-	noDraft        string         // a thread fileReply files without drafting (the email loop only)
 	pullKick       map[string]chan struct{}
 
 	finishMu sync.Mutex // one dictation finishes at a time
