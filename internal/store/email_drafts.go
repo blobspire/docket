@@ -299,18 +299,20 @@ func (d Draft) YouAsked() bool {
 }
 
 // failedAskHolds reports whether what a job that failed at `failed` was
-// asked still applies: no version was saved since (your edit replaces
-// it), and you haven't replied since the latest version (a reply ends
-// the reply it was asked for).
+// asked still applies: you haven't saved your own edit since (it replaces
+// the ask; while a job is failed nothing else can write a version, so a
+// version from the same second is the one it was asked on), and you
+// haven't replied since the latest version (a reply ends the reply it was
+// asked for).
 func failedAskHolds(tx *sql.Tx, threadID string, failed int64) bool {
 	var d Draft
-	switch err := tx.QueryRow(`SELECT version, basis, created_at FROM email_drafts WHERE thread_id=? ORDER BY version DESC LIMIT 1`, threadID).Scan(&d.Version, &d.Basis, &d.CreatedAt); {
+	switch err := tx.QueryRow(`SELECT version, basis, source, created_at FROM email_drafts WHERE thread_id=? ORDER BY version DESC LIMIT 1`, threadID).Scan(&d.Version, &d.Basis, &d.Source, &d.CreatedAt); {
 	case errors.Is(err, sql.ErrNoRows):
 		return true
 	case err != nil:
 		return false
 	}
-	return d.CreatedAt < failed && !repliedAfter(tx, threadID, d)
+	return !(d.Source == "edit" && d.CreatedAt >= failed) && !repliedAfter(tx, threadID, d)
 }
 
 // Job loads a thread's job.

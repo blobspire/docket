@@ -647,7 +647,7 @@ func TestARedraftKeepsYourEdit(t *testing.T) {
 	e.s.staleDrafts()
 	f.answer(draftAnswer("v4"))
 	e.runDrafts()
-	if p := f.prompt(); !strings.Contains(p, "MY-OWN-WORDS and the form is B") || !strings.Contains(p, "keep them") {
+	if p := f.prompt(); !strings.Contains(p, "MY-OWN-WORDS and the form is B") || !strings.Contains(p, "edited it by hand: keep their edits") {
 		t.Fatalf("the next redraft must build on the version that kept your edit:\n%s", p)
 	}
 }
@@ -1252,19 +1252,52 @@ func TestANewerWorkNoteReplacesTheOlderOne(t *testing.T) {
 	f.answer(workDraft)
 	e.runDrafts()
 	p := f.prompt()
-	if strings.Contains(p, "saved it for later") || !strings.Contains(p, "done and shipped") || !strings.Contains(p, "follow the newer note") {
+	if strings.Contains(p, "saved it for later") || !strings.Contains(p, "done and shipped") || !strings.Contains(p, "docket's newer note below replaces that") {
 		t.Fatalf("both notes about the work, or not the newest:\n%s", p)
 	}
-	if strings.Contains(p, "changes Cole asked for: \""+store.WorkNote) {
-		t.Fatalf("docket's note shown as something you asked for:\n%s", p)
+	// Cole neither edited nor asked for anything here: nothing says so.
+	for _, bad := range []string{"edited it by hand", "Cole asked for", "made or asked for", "What Cole asks now"} {
+		if strings.Contains(p, bad) {
+			t.Fatalf("docket's note passed off as Cole's (%q):\n%s", bad, p)
+		}
 	}
 	// Then she writes again: the note still holds, as docket's.
 	nancyWrites(t, e, f, "n2@x", "Also, which form do I use?")
 	e.s.staleDrafts()
 	f.answer(workDraft)
 	e.runDrafts()
-	if p := f.prompt(); !strings.Contains(p, "docket's note about the requested work, which still holds") || !strings.Contains(p, "done and shipped") {
-		t.Fatalf("the redraft must keep docket's note about the work:\n%s", p)
+	p = f.prompt()
+	if !strings.Contains(p, "which still holds") || !strings.Contains(p, "done and shipped") || strings.Contains(p, "edited it by hand") || strings.Contains(p, "Cole asked for") {
+		t.Fatalf("the redraft must keep docket's note about the work, as docket's:\n%s", p)
+	}
+}
+
+// After your edit, docket's note about the work and the next redraft still
+// say the reply holds your edit (it's built on it), and your asks and
+// docket's note each go under their own heading.
+func TestYourEditUnderDocketsWorkNoteIsStillYours(t *testing.T) {
+	e, f, th := workEnv(t, true)
+	if rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {"1"}, "seen": {sheetSeen(t, e, th)}, "html": {"<p>MINE</p>"}, "to": {"nancy@example.org"}}); rec.Code != 200 {
+		t.Fatalf("edit: %d %s", rec.Code, rec.Body.String())
+	}
+	ideaID, _ := e.s.st.ThreadIdea(th.ID)
+	e.s.st.EditIdea(ideaID, func(x *store.Idea) error { x.Status = store.IdeaSaved; return nil })
+	e.s.followIdeas()
+	if rec := postForm(e, "/email/"+th.ID+"/revise", url.Values{"text": {"say THANKS"}}); rec.Code != 200 {
+		t.Fatalf("revise: %d", rec.Code)
+	}
+	f.answer(workDraft)
+	e.runDrafts()
+	p := f.prompt()
+	if !strings.Contains(p, "edited it by hand") || !strings.Contains(p, "## What Cole asks now\n\nsay THANKS") || !strings.Contains(p, "## docket's note about the work this email asked for\n\n"+store.WorkNote+"Cole saved it") {
+		t.Fatalf("your edit, your ask and docket's note, each as what it is:\n%s", p)
+	}
+	nancyWrites(t, e, f, "n2@x", "Also, which form do I use?")
+	e.s.staleDrafts()
+	f.answer(workDraft)
+	e.runDrafts()
+	if p := f.prompt(); !strings.Contains(p, "edited it by hand") || !strings.Contains(p, `Cole asked for: "say THANKS"`) || !strings.Contains(p, "which still holds") {
+		t.Fatalf("the redraft must still know all three:\n%s", p)
 	}
 }
 

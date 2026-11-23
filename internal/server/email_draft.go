@@ -147,6 +147,34 @@ func (s *Server) buildsOn(t store.EmailThread, j store.EmailJob, prev store.Draf
 	return nil
 }
 
+// splitWork splits combined asks into yours and docket's latest note about
+// the requested work.
+func splitWork(instruction string) (yours []string, work string) {
+	for _, a := range store.Asks(instruction) {
+		if store.IsWorkNote(a) {
+			work = a
+		} else {
+			yours = append(yours, a)
+		}
+	}
+	return yours, work
+}
+
+// handEdited reports whether d is your own edit or was built on one. A
+// revision is always built on the version just before it (nothing else
+// can be saved while it's written), back to an edit or the agent's own
+// draft, and never across a reply of yours.
+func (s *Server) handEdited(threadID string, d store.Draft) bool {
+	for d.Source == "revision" && d.Version > 1 {
+		p, ok := s.st.DraftVersion(threadID, d.Version-1)
+		if !ok {
+			return false
+		}
+		d = p
+	}
+	return d.Source == "edit"
+}
+
 // quoteAsks quotes asks for a prompt note, the newest kept when they
 // don't all fit in budget runes.
 func quoteAsks(asks []string, budget int) string {
@@ -429,37 +457,32 @@ Follow this guide to %[1]s's writing voice and formatting exactly. Ignore its pa
 		}
 		fmt.Fprintf(&b, "END EMAIL %s\n\n", nonce)
 	}
+	// What each part came from, said only where it's true: their own
+	// edits, the changes they asked for, and docket's note about the work
+	// an email asked for (never passed off as theirs).
+	nowYours, nowWork := splitWork(instruction)
 	if prev != nil {
 		fmt.Fprintf(&b, "## Your previous draft\n\nBEGIN DRAFT %s\n%s\nEND DRAFT %s\n\n", nonce, strings.ReplaceAll(prev.HTML, nonce, ""), nonce)
-		var yours []string
-		work := ""
-		for _, a := range store.Asks(prev.Instruction) {
-			if store.IsWorkNote(a) {
-				work = a
-			} else {
-				yours = append(yours, a)
-			}
+		yours, work := splitWork(prev.Instruction)
+		if s.handEdited(t.ID, *prev) {
+			fmt.Fprintf(&b, "- %s edited it by hand: keep their edits.\n", person)
+		}
+		if len(yours) > 0 {
+			fmt.Fprintf(&b, "- It has changes %s asked for: %s. Keep them.\n", person, quoteAsks(yours, 3000))
 		}
 		switch {
-		case prev.Source == "edit":
-			fmt.Fprintf(&b, "(%s edited it by hand; keep their edits, and update it for anything new in the conversation.)\n\n", person)
-		case prev.Source == "revision" && len(yours) > 0:
-			fmt.Fprintf(&b, "(It has changes %s asked for: %s. Keep them, and update it for anything new in the conversation.)\n\n", person, quoteAsks(yours, 3000))
-		case prev.Source == "revision":
-			fmt.Fprintf(&b, "(It has changes %s made or asked for; keep them, and update it for anything new in the conversation.)\n\n", person)
+		case work != "" && nowWork != "":
+			b.WriteString("- It was written for an earlier state of the work this email asked for; docket's newer note below replaces that.\n")
+		case work != "":
+			fmt.Fprintf(&b, "- It was written for docket's note about the work this email asked for, which still holds: \"%s\"\n", oneLine(work, 600))
 		}
-		if prev.Source == "revision" && work != "" {
-			// docket's note about the work, not something they asked for;
-			// a newer note below replaces it.
-			if slices.ContainsFunc(store.Asks(instruction), store.IsWorkNote) {
-				b.WriteString("(It was written for an earlier state of the requested work; follow the newer note below instead.)\n\n")
-			} else {
-				fmt.Fprintf(&b, "(It was written for docket's note about the requested work, which still holds: \"%s\")\n\n", oneLine(work, 600))
-			}
-		}
+		b.WriteString("- Update it for anything new in the conversation.\n\n")
 	}
-	if strings.TrimSpace(instruction) != "" {
-		fmt.Fprintf(&b, "## What %s asked for\n\n%s\n\n", person, clipRunes(strings.TrimSpace(instruction), 16000)) // several asks of up to 4000 each
+	if len(nowYours) > 0 {
+		fmt.Fprintf(&b, "## What %s asks now\n\n%s\n\n", person, clipRunes(strings.Join(nowYours, "\n\nAlso: "), 16000)) // several asks of up to 4000 each
+	}
+	if nowWork != "" {
+		fmt.Fprintf(&b, "## docket's note about the work this email asked for\n\n%s\n\n", clipRunes(nowWork, 2000))
 	}
 	b.WriteString("Return the JSON now.\n")
 	return b.String()

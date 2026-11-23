@@ -460,3 +460,19 @@ func TestAMessageMergedIntoAThreadIsNewToIt(t *testing.T) {
 		t.Fatal("the follow-up the draft never saw doesn't count as new")
 	}
 }
+
+// docket's own rewrite can fail within the second the version it was
+// asked on was written: its ask still carries (only your edit, which can
+// only come after the failure, replaces it).
+func TestASameSecondFailureStillCarries(t *testing.T) {
+	s := open(t)
+	s.AddDraft(Draft{ThreadID: "t1", HTML: "<p>v1</p>", Source: "agent"})
+	s.QueueDraft("t1", "revise", WorkNote+"it's done and shipped.")
+	s.NextJobs(1)
+	s.EndJob("t1", "failed", "", "overloaded")
+	s.DB.Exec(`UPDATE email_jobs SET ended_at=(SELECT created_at FROM email_drafts WHERE thread_id='t1')`) // the same second
+	s.QueueDraft("t1", "draft", "")
+	if j, _ := s.Job("t1"); j.Kind != "revise" || !strings.Contains(j.Instruction, "done and shipped") {
+		t.Fatalf("docket's note was lost: %+v", j)
+	}
+}
