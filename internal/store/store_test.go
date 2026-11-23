@@ -249,6 +249,12 @@ func TestConcurrentMigrationsOfAnOldDatabase(t *testing.T) {
 			}
 		}
 	}
+	// And from before seq and its index (made after the columns are added).
+	for _, q := range []string{`DROP INDEX email_messages_seq`, `ALTER TABLE email_messages DROP COLUMN seq`} {
+		if _, err := s.DB.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
 	s.Close()
 	var wg sync.WaitGroup
 	errs := make(chan error, 4)
