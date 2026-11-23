@@ -232,10 +232,10 @@ func (s *Store) QueueDraft(threadID, kind, instruction string) error {
 			j.Kind = "revise"
 		}
 		_, err = tx.Exec(`UPDATE email_jobs SET kind=?, instruction=? WHERE thread_id=?`, j.Kind, CombineAsks(j.Instruction, instruction), threadID)
-	case j.Status == "failed" && !draftedSince(tx, threadID, j.EndedAt):
+	case j.Status == "failed" && failedAskHolds(tx, threadID, j.EndedAt):
 		// It failed, so what it was asked never made it into a version: the
 		// new request carries it too (a Redraft after a failed change keeps
-		// the change). A version saved since then (your edit) starts over.
+		// the change), while it's still the same reply.
 		if j.Kind == "revise" {
 			kind = "revise"
 		}
@@ -266,8 +266,8 @@ const WorkNote = "About the work this email asked for: "
 // exact repeat is dropped (asked twice: said once). docket's newest note
 // about the work replaces its earlier one.
 func CombineAsks(have, ask string) string {
-	parts := splitAsks(have)
-	for _, a := range splitAsks(ask) {
+	parts := Asks(have)
+	for _, a := range Asks(ask) {
 		if strings.HasPrefix(a, WorkNote) {
 			parts = slices.DeleteFunc(parts, func(p string) bool { return strings.HasPrefix(p, WorkNote) })
 		}
@@ -278,7 +278,8 @@ func CombineAsks(have, ask string) string {
 	return strings.Join(parts, askSep)
 }
 
-func splitAsks(s string) []string {
+// Asks splits combined asks into each one, in the order they were made.
+func Asks(s string) []string {
 	var out []string
 	for _, a := range strings.Split(s, askSep) {
 		if a = strings.TrimSpace(a); a != "" {
@@ -288,17 +289,28 @@ func splitAsks(s string) []string {
 	return out
 }
 
+// IsWorkNote reports docket's own note about the requested work.
+func IsWorkNote(ask string) bool { return strings.HasPrefix(ask, WorkNote) }
+
 // YouAsked reports changes you asked for in this version's line (more
 // than docket's own note about the work).
 func (d Draft) YouAsked() bool {
-	return slices.ContainsFunc(splitAsks(d.Instruction), func(a string) bool { return !strings.HasPrefix(a, WorkNote) })
+	return slices.ContainsFunc(Asks(d.Instruction), func(a string) bool { return !strings.HasPrefix(a, WorkNote) })
 }
 
-// draftedSince reports a version of the thread's draft saved at or after t.
-func draftedSince(tx *sql.Tx, threadID string, t int64) bool {
-	var n int
-	tx.QueryRow(`SELECT COUNT(*) FROM email_drafts WHERE thread_id=? AND created_at>=?`, threadID, t).Scan(&n)
-	return n > 0
+// failedAskHolds reports whether what a job that failed at `failed` was
+// asked still applies: no version was saved since (your edit replaces
+// it), and you haven't replied since the latest version (a reply ends
+// the reply it was asked for).
+func failedAskHolds(tx *sql.Tx, threadID string, failed int64) bool {
+	var d Draft
+	switch err := tx.QueryRow(`SELECT version, basis, created_at FROM email_drafts WHERE thread_id=? ORDER BY version DESC LIMIT 1`, threadID).Scan(&d.Version, &d.Basis, &d.CreatedAt); {
+	case errors.Is(err, sql.ErrNoRows):
+		return true
+	case err != nil:
+		return false
+	}
+	return d.CreatedAt < failed && !repliedAfter(tx, threadID, d)
 }
 
 // Job loads a thread's job.
@@ -576,12 +588,39 @@ const notForward = `NOT (LOWER(LTRIM(m.subject)) LIKE 'fwd:%' OR LOWER(LTRIM(m.s
 // label) isn't new, and docket's own sends never count here: the outbox
 // says which version went out, and a holding reply isn't an answer.
 func (s *Store) RepliedSince(account, thread string, sinceSeq int64) bool {
+	return repliedSince(s.DB, account, thread, sinceSeq)
+}
+
+// querier is a database or a transaction.
+type querier interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+func repliedSince(q querier, account, thread string, sinceSeq int64) bool {
 	var n int
-	s.DB.QueryRow(`SELECT COUNT(*) FROM email_messages m WHERE m.account=? AND m.thread=? AND m.from_me=1 AND m.seq>? AND `+notForward+`
+	q.QueryRow(`SELECT COUNT(*) FROM email_messages m WHERE m.account=? AND m.thread=? AND m.from_me=1 AND m.seq>? AND `+notForward+`
 		AND (m.message_id='' OR (NOT EXISTS (SELECT 1 FROM email_outbox o WHERE o.status='sent' AND o.message_id=m.message_id)
 			AND NOT EXISTS (SELECT 1 FROM email_messages c WHERE c.account=m.account AND c.message_id=m.message_id AND c.seq<=?)))`,
 		account, thread, sinceSeq, sinceSeq).Scan(&n)
 	return n > 0
+}
+
+// RepliedAfter reports a full reply of yours after version d of a
+// thread's draft: d itself went out from docket, or you wrote one outside
+// docket since d was written (RepliedSince). It ends the reply d is in.
+func (s *Store) RepliedAfter(threadID string, d Draft) bool { return repliedAfter(s.DB, threadID, d) }
+
+func repliedAfter(q querier, threadID string, d Draft) bool {
+	var sent int
+	q.QueryRow(`SELECT COUNT(*) FROM email_outbox WHERE thread_id=? AND version=? AND kind='reply' AND status='sent'`, threadID, d.Version).Scan(&sent)
+	if sent > 0 {
+		return true
+	}
+	var account, thread string
+	if q.QueryRow(`SELECT account, thread FROM email_threads WHERE id=?`, threadID).Scan(&account, &thread) != nil {
+		return false
+	}
+	return repliedSince(q, account, thread, d.Basis)
 }
 
 // LastMessageRow is the newest stored message (its seq): what a draft

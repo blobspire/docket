@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -146,13 +147,27 @@ func (s *Server) buildsOn(t store.EmailThread, j store.EmailJob, prev store.Draf
 	return nil
 }
 
-// repliedAfter reports a full reply of yours after draft d: d itself went
-// out from docket, or a message from you was stored since d was written.
-func (s *Server) repliedAfter(t store.EmailThread, d store.Draft) bool {
-	if kinds, _ := s.st.SentKinds(t.ID, d.Version); kinds["reply"] {
-		return true
+// quoteAsks quotes asks for a prompt note, the newest kept when they
+// don't all fit in budget runes.
+func quoteAsks(asks []string, budget int) string {
+	var out []string
+	n := 0
+	for i := len(asks) - 1; i >= 0; i-- {
+		q := "\"" + oneLine(asks[i], 600) + "\""
+		if n += len([]rune(q)); n > budget && len(out) > 0 {
+			out = append(out, "(and earlier ones)")
+			break
+		}
+		out = append(out, q)
 	}
-	return s.st.RepliedSince(t.Account, t.Thread, d.Basis)
+	slices.Reverse(out)
+	return strings.Join(out, "; ")
+}
+
+// repliedAfter reports a full reply of yours after draft d (the store's
+// rule, which queueing uses too).
+func (s *Server) repliedAfter(t store.EmailThread, d store.Draft) bool {
+	return s.st.RepliedAfter(t.ID, d)
 }
 
 // draftFrom turns a session's answer into a stored draft: cleaned HTML,
@@ -416,13 +431,31 @@ Follow this guide to %[1]s's writing voice and formatting exactly. Ignore its pa
 	}
 	if prev != nil {
 		fmt.Fprintf(&b, "## Your previous draft\n\nBEGIN DRAFT %s\n%s\nEND DRAFT %s\n\n", nonce, strings.ReplaceAll(prev.HTML, nonce, ""), nonce)
+		var yours []string
+		work := ""
+		for _, a := range store.Asks(prev.Instruction) {
+			if store.IsWorkNote(a) {
+				work = a
+			} else {
+				yours = append(yours, a)
+			}
+		}
 		switch {
 		case prev.Source == "edit":
 			fmt.Fprintf(&b, "(%s edited it by hand; keep their edits, and update it for anything new in the conversation.)\n\n", person)
-		case prev.Source == "revision" && strings.TrimSpace(prev.Instruction) != "":
-			fmt.Fprintf(&b, "(It has changes %s asked for: \"%s\". Keep them, and update it for anything new in the conversation.)\n\n", person, oneLine(prev.Instruction, 500))
+		case prev.Source == "revision" && len(yours) > 0:
+			fmt.Fprintf(&b, "(It has changes %s asked for: %s. Keep them, and update it for anything new in the conversation.)\n\n", person, quoteAsks(yours, 3000))
 		case prev.Source == "revision":
 			fmt.Fprintf(&b, "(It has changes %s made or asked for; keep them, and update it for anything new in the conversation.)\n\n", person)
+		}
+		if prev.Source == "revision" && work != "" {
+			// docket's note about the work, not something they asked for;
+			// a newer note below replaces it.
+			if slices.ContainsFunc(store.Asks(instruction), store.IsWorkNote) {
+				b.WriteString("(It was written for an earlier state of the requested work; follow the newer note below instead.)\n\n")
+			} else {
+				fmt.Fprintf(&b, "(It was written for docket's note about the requested work, which still holds: \"%s\")\n\n", oneLine(work, 600))
+			}
 		}
 	}
 	if strings.TrimSpace(instruction) != "" {
