@@ -89,9 +89,14 @@ func (s *Server) runDraft(ctx context.Context, j store.EmailJob) {
 	prev, hasPrev := s.st.LatestDraft(t.ID)
 	call := modelCall{Model: s.cfg.Email.DraftModel, Schema: draftSchema, Tools: "Read,Grep,Glob", Restricted: true, Dir: dir,
 		Keep: true, Budget: 5, Timeout: 20 * time.Minute}
-	if j.Kind == "revise" && j.Session != "" && hasPrev {
+	// A revision resumes its drafting session, which knows only the mail it
+	// saw then; if anything arrived since, write it fresh from the whole
+	// thread instead, so the new version can't hide a newer message.
+	basis := s.st.LastMessageRow() // read before the thread is, so it never overstates what was seen
+	if j.Kind == "revise" && j.Session != "" && hasPrev && !s.st.WroteSince(t.Account, t.Thread, prev.Basis, s.inbound(t.Account)) {
 		call.Resume = j.Session
 		call.Prompt = s.revisePrompt(prev, j.Instruction)
+		basis = prev.Basis
 	} else {
 		call.Prompt = s.draftPrompt(t, a, code, prevFor(j, prev, hasPrev), j.Instruction)
 	}
@@ -100,6 +105,7 @@ func (s *Server) runDraft(ctx context.Context, j store.EmailJob) {
 		// The session couldn't be resumed (cleaned up, another machine):
 		// start over with everything in the prompt.
 		call.Resume = ""
+		basis = s.st.LastMessageRow()
 		call.Prompt = s.draftPrompt(t, a, code, &prev, j.Instruction)
 		res, err = s.runModel(ctx, call)
 	}
@@ -114,7 +120,7 @@ func (s *Server) runDraft(ctx context.Context, j store.EmailJob) {
 		return
 	}
 	d := s.draftFrom(t, a, out, j)
-	d.Basis = j.StartedAt // it saw the mail stored before it started
+	d.Basis = basis // the mail it saw: stored before this
 	if _, err := s.st.AddDraft(d); err != nil {
 		s.st.EndJob(t.ID, "failed", res.Session, err.Error())
 		return
@@ -575,10 +581,10 @@ func (s *Server) staleDrafts() {
 	}
 	for _, t := range threads {
 		d, ok := s.st.LatestDraft(t.ID)
-		if !ok || !s.st.WroteSince(t.Account, t.Thread, d.Basis+1, s.inbound(t.Account)) {
+		if !ok || !s.st.WroteSince(t.Account, t.Thread, d.Basis, s.inbound(t.Account)) {
 			continue
 		}
-		if j, ok := s.st.Job(t.ID); ok && (j.Status == "queued" || j.Status == "running" || j.StartedAt > d.Basis && j.Status == "failed") {
+		if j, ok := s.st.Job(t.ID); ok && (j.Status == "queued" || j.Status == "running" || j.Status == "failed" && j.StartedAt > d.CreatedAt) {
 			continue
 		}
 		if _, ok := s.st.PendingSend(t.ID); ok {

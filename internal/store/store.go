@@ -314,6 +314,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("store: migrate: %w", err)
 	}
+	db.Exec(`UPDATE email_drafts SET basis=(SELECT COALESCE(MAX(rowid),0) FROM email_messages) WHERE basis=0`) // drafts from before basis existed
 	// Databases created before search existed: index their items once.
 	var indexed, items int
 	db.QueryRow(`SELECT COUNT(*) FROM items_fts`).Scan(&indexed)

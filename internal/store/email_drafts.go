@@ -84,7 +84,7 @@ type Draft struct {
 	Removed     []string // what mail.Clean took out of the agent's HTML
 	Source      string   // agent | revision | edit
 	Instruction string   // your words that asked for this version
-	Basis       int64    // the mail it saw: messages that arrived after this aren't in it
+	Basis       int64    // the last stored message it saw (email_messages rowid); later ones aren't in it
 	CreatedAt   int64
 }
 
@@ -124,9 +124,6 @@ func (s *Store) AddDraft(d Draft) (int, error) {
 		qs = []byte("[]")
 	}
 	now := time.Now().Unix()
-	if d.Basis == 0 {
-		d.Basis = now
-	}
 	if _, err := tx.Exec(`INSERT INTO email_drafts(`+draftCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		d.ThreadID, v, d.Subject, js(d.To), js(d.Cc), d.HTML, d.Holding, d.Notes, string(qs), work, js(d.Removed), d.Source, d.Instruction, d.Basis, now); err != nil {
 		return 0, err
@@ -435,22 +432,30 @@ func (s *Store) SentByDocketAsHolding(messageID string) bool {
 }
 
 // WroteSince reports a message to you, in one of the inbound folders,
-// that docket first stored at or after a time (unix seconds): judged by
-// arrival, not its sender-written Date, and a copy of a message already
+// stored after the given one (email_messages rowid, so by arrival order:
+// no clock or sender-written Date involved). A copy of a message already
 // seen (another folder, a renumbered folder) doesn't count.
-func (s *Store) WroteSince(account, thread string, since int64, inbound []string) bool {
+func (s *Store) WroteSince(account, thread string, sinceRow int64, inbound []string) bool {
 	if len(inbound) == 0 {
 		return false
 	}
-	q := `SELECT COUNT(*) FROM email_messages m WHERE m.account=? AND m.thread=? AND m.from_me=0 AND m.fetched_at>=? AND m.folder IN (?` +
+	q := `SELECT COUNT(*) FROM email_messages m WHERE m.account=? AND m.thread=? AND m.from_me=0 AND m.rowid>? AND m.folder IN (?` +
 		strings.Repeat(",?", len(inbound)-1) + `) AND (m.message_id='' OR NOT EXISTS (SELECT 1 FROM email_messages o WHERE o.account=m.account
-		AND o.message_id=m.message_id AND o.fetched_at<?))`
-	args := []any{account, thread, since}
+		AND o.message_id=m.message_id AND o.rowid<=?))`
+	args := []any{account, thread, sinceRow}
 	for _, f := range inbound {
 		args = append(args, f)
 	}
-	args = append(args, since)
+	args = append(args, sinceRow)
 	var n int
 	s.DB.QueryRow(q, args...).Scan(&n)
 	return n > 0
+}
+
+// LastMessageRow is the newest stored message (its rowid): what a draft
+// written now has seen.
+func (s *Store) LastMessageRow() int64 {
+	var n int64
+	s.DB.QueryRow(`SELECT COALESCE(MAX(rowid),0) FROM email_messages`).Scan(&n)
+	return n
 }

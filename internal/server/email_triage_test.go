@@ -487,3 +487,25 @@ func TestAnAnswerThatSortsNothingDoesntBlock(t *testing.T) {
 		t.Fatal("the email that made the model answer nothing should be counted")
 	}
 }
+
+// The model going down after the test email passed (every single fails)
+// counts nothing against the emails.
+func TestAnOutageAfterTheTestEmailCountsNothing(t *testing.T) {
+	e, addr, f := triageEnv(t)
+	for _, id := range []string{"a@x", "b@x", "c@x"} {
+		mailtest.Append(t, addr, "INBOX", msg(id, "Ann <ann@x.org>", "me@example.com", "Q "+id, "question "+id), time.Now())
+	}
+	// Batches and singles about real mail fail; the test email ("Lunch on
+	// Friday?") passes.
+	os.WriteFile(filepath.Join(f.dir, "fail-on"), []byte("question "), 0o644)
+	f.answer(`{"structured_output":{"threads":[{"key":"T1","verdict":"skip","line":"x","why":"x","project":"","work":""}]}}`)
+	for i := 0; i < 3; i++ {
+		e.s.emailPass(e.ctx, "test")
+	}
+	for _, id := range []string{"a@x", "b@x", "c@x"} {
+		th, _ := e.s.st.Thread(store.ThreadID("test", id))
+		if th.Verdict != "" || e.s.st.TriageFails(th.ID) != 0 {
+			t.Fatalf("%s demoted by an outage: %+v", id, th)
+		}
+	}
+}

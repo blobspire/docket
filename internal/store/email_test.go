@@ -241,8 +241,7 @@ func TestWroteSinceIgnoresCopiesAndOtherFolders(t *testing.T) {
 	s := open(t)
 	inbound := []string{"INBOX", "Important"}
 	s.AddEmail("gmail", []*mail.Message{{Folder: "INBOX", UID: 1, UIDValidity: 1, MessageID: "m1@x", From: mail.Addr{Email: "n@x.org"}, Date: time.Now()}}, me)
-	s.DB.Exec(`UPDATE email_messages SET fetched_at=fetched_at-100`)
-	basis := time.Now().Unix() - 50
+	basis := s.LastMessageRow()
 	// The same message shows up in another watched folder: not new.
 	s.AddEmail("gmail", []*mail.Message{{Folder: "Important", UID: 9, UIDValidity: 1, MessageID: "m1@x", From: mail.Addr{Email: "n@x.org"}, Date: time.Now()}}, me)
 	if s.WroteSince("gmail", "m1@x", basis, inbound) {
@@ -256,5 +255,8 @@ func TestWroteSinceIgnoresCopiesAndOtherFolders(t *testing.T) {
 	s.AddEmail("gmail", []*mail.Message{{Folder: "INBOX", UID: 2, UIDValidity: 1, MessageID: "m2@x", InReplyTo: []string{"m1@x"}, From: mail.Addr{Email: "n@x.org"}, Date: time.Now().Add(-48 * time.Hour)}}, me)
 	if !s.WroteSince("gmail", "m1@x", basis, inbound) {
 		t.Fatal("a new (backdated) message must count")
+	}
+	if s.WroteSince("gmail", "m1@x", s.LastMessageRow(), inbound) {
+		t.Fatal("nothing after the newest")
 	}
 }

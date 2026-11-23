@@ -430,6 +430,7 @@ type emailItem struct {
 	Pending     *store.Outgoing
 	PendingMs   int64 // left of its Undo window
 	Failed      string
+	Stale       bool   // they wrote again after this draft
 	Sent        bool   // this version's reply went out
 	SentAt      int64  // when
 	HoldingSent bool   // its holding reply went out
@@ -486,6 +487,7 @@ func (s *Server) emailItem(it store.Item) *emailItem {
 		}
 	}
 	if e.Draft != nil {
+		e.Stale = s.st.WroteSince(t.Account, t.Thread, e.Draft.Basis, s.inbound(t.Account))
 		kinds, at := s.st.SentKinds(t.ID, e.Draft.Version)
 		e.Sent, e.HoldingSent, e.SentAt = kinds["reply"], kinds["holding"], at
 	}
@@ -574,6 +576,9 @@ func (s *Server) replyAct(w http.ResponseWriter, r *http.Request, t store.EmailT
 		_ = removed // your own edit: formatting the editor added is simply dropped
 		nd := d
 		nd.HTML, nd.To, nd.Cc, nd.Source, nd.Instruction, nd.Removed = body, to, cc, "edit", "", nil
+		// Your own edit is written with the thread in front of you: it
+		// knows everything stored so far.
+		nd.Basis = s.st.LastMessageRow()
 		v, err := s.st.AddDraft(nd)
 		if err != nil {
 			return nil, err
@@ -620,9 +625,13 @@ func strictAddrs(field string) ([]mail.Addr, error) {
 	// Semicolons (Outlook) separate like commas, except inside a quoted
 	// name ("Smith, Nancy" stays one name).
 	var b strings.Builder
-	quoted := false
+	quoted, escaped := false, false
 	for _, r := range field {
 		switch {
+		case escaped:
+			escaped = false
+		case r == '\\' && quoted:
+			escaped = true
 		case r == '"':
 			quoted = !quoted
 		case r == ';' && !quoted:

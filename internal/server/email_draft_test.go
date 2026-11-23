@@ -436,7 +436,6 @@ func TestABackdatedMessageDuringTheUndoWindowStopsTheSend(t *testing.T) {
 	if _, err := e.s.QueueSend(th.ID, 1, "reply"); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(1100 * time.Millisecond)
 	// Nancy writes again, but her message's Date is hours old.
 	addr := e.s.cfg.Email.Accounts[0].IMAP
 	mailtest.Append(t, addr, "INBOX", msg("n2@x", "Nancy Smith <nancy@example.org>", "me@example.com", "Re: Undo a removed resident?",
@@ -457,8 +456,7 @@ func TestAMessageDuringDraftingMakesTheDraftStale(t *testing.T) {
 	e, f, smtp, th := replyEnv(t)
 	f.answer(strings.Replace(nancyDraft, "%s", "false", 1))
 	e.runDrafts()
-	// The draft started writing a while ago; Nancy's message arrived since.
-	e.s.st.DB.Exec(`UPDATE email_drafts SET basis=basis-30`)
+	// Nancy's message arrives after the draft was written.
 	addr := e.s.cfg.Email.Accounts[0].IMAP
 	mailtest.Append(t, addr, "INBOX", msg("n2@x", "Nancy Smith <nancy@example.org>", "me@example.com", "Re: Undo a removed resident?",
 		"Never mind, don't do it.", "In-Reply-To: <n1@x>", "References: <n1@x>", dated(at(5*time.Hour))), time.Now())
@@ -466,6 +464,11 @@ func TestAMessageDuringDraftingMakesTheDraftStale(t *testing.T) {
 	e.s.readAccount(e.ctx, e.s.cfg.Email.Accounts[0])
 	if _, err := e.s.QueueSend(th.ID, 1, "reply"); err == nil || !strings.Contains(err.Error(), "wrote again") {
 		t.Fatalf("a stale draft must not send: %v", err)
+	}
+	sheet := httptest.NewRecorder()
+	e.s.Handler().ServeHTTP(sheet, httptest.NewRequest("GET", "/item/"+th.ItemID, nil))
+	if !strings.Contains(sheet.Body.String(), "wrote again after this draft") {
+		t.Fatal("the sheet must say the draft is stale before Send is pressed")
 	}
 	e.s.staleDrafts()
 	if j, _ := e.s.st.Job(th.ID); j.Status != "queued" {
@@ -476,9 +479,58 @@ func TestAMessageDuringDraftingMakesTheDraftStale(t *testing.T) {
 	}
 	// A copy of an already-seen message (another folder) doesn't count.
 	e.s.st.DB.Exec(`UPDATE email_jobs SET status='done'`)
-	e.s.st.DB.Exec(`UPDATE email_drafts SET basis=?`, time.Now().Unix()+5)
+	e.s.st.DB.Exec(`UPDATE email_drafts SET basis=?`, e.s.st.LastMessageRow())
 	e.s.staleDrafts()
 	if j, _ := e.s.st.Job(th.ID); j.Status != "done" {
 		t.Fatalf("nothing new: no redraft: %+v", j)
+	}
+}
+
+// A revision can't hide a newer message: it doesn't resume the old
+// session when something arrived since, and a resumed one keeps the old
+// basis. A hand edit, made with the thread in front of you, can be sent.
+func TestARevisionCantHideANewerMessage(t *testing.T) {
+	e, f, smtp, th := replyEnv(t)
+	f.answer(strings.Replace(nancyDraft, "%s", "false", 1))
+	e.runDrafts()
+	addr := e.s.cfg.Email.Accounts[0].IMAP
+	mailtest.Append(t, addr, "INBOX", msg("n2@x", "Nancy Smith <nancy@example.org>", "me@example.com", "Re: Undo a removed resident?",
+		"Never mind, don't do it.", "In-Reply-To: <n1@x>", "References: <n1@x>"), time.Now())
+	e.s.readAccount(e.ctx, e.s.cfg.Email.Accounts[0])
+	// The human asks for changes before any redraft ran.
+	if rec := postForm(e, "/email/"+th.ID+"/revise", url.Values{"text": {"shorter"}}); rec.Code != 200 {
+		t.Fatalf("revise: %d %s", rec.Code, rec.Body.String())
+	}
+	f.answer(`{"session_id":"sess-2","structured_output":{"subject":"Re: Undo a removed resident?","reply_all":false,"body_html":"<p>OK, we won't.</p>","holding_html":"","notes":"","questions":[],"work":{"needed":false,"title":"","plan":"","why":""}}}`)
+	e.runDrafts()
+	if strings.Contains(strings.Join(f.args(), " "), "--resume") || !strings.Contains(f.prompt(), "Never mind, don't do it.") {
+		t.Fatalf("with a newer message the revision must be written fresh from the whole thread:\n%s", f.prompt())
+	}
+	d, _ := e.s.st.LatestDraft(th.ID)
+	if _, err := e.s.QueueSend(th.ID, d.Version, "reply"); err != nil {
+		t.Fatalf("the fresh revision saw everything and can be sent: %v", err)
+	}
+	_ = smtp
+}
+
+func TestAHandEditOfAStaleDraftCanBeSent(t *testing.T) {
+	e, f, _, th := replyEnv(t)
+	f.answer(strings.Replace(nancyDraft, "%s", "false", 1))
+	e.runDrafts()
+	addr := e.s.cfg.Email.Accounts[0].IMAP
+	mailtest.Append(t, addr, "INBOX", msg("n2@x", "Nancy Smith <nancy@example.org>", "me@example.com", "Re: Undo a removed resident?",
+		"Also, Friday works.", "In-Reply-To: <n1@x>", "References: <n1@x>"), time.Now())
+	e.s.readAccount(e.ctx, e.s.cfg.Email.Accounts[0])
+	// Redrafting keeps failing.
+	e.s.st.QueueDraft(th.ID, "draft", "")
+	e.s.st.DB.Exec(`UPDATE email_jobs SET status='failed', started_at=?, error='overloaded'`, time.Now().Unix()+1)
+	if _, err := e.s.QueueSend(th.ID, 1, "reply"); err == nil || !strings.Contains(err.Error(), "Redraft or Edit") {
+		t.Fatalf("the refusal must say what to do, not promise a new version: %v", err)
+	}
+	if rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {"1"}, "html": {"<p>Friday it is.</p>"}, "to": {"nancy@example.org"}}); rec.Code != 200 {
+		t.Fatalf("edit: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := e.s.QueueSend(th.ID, 2, "reply"); err != nil {
+		t.Fatalf("your edit can be sent: %v", err)
 	}
 }

@@ -204,7 +204,11 @@ func (s *Server) triage(ctx context.Context, todo []store.EmailThread, p *store.
 	}
 	decided := 0
 	var cost float64
+	deadline := time.Now().Add(45 * time.Minute) // one check's sorting, at most
 	for len(todo) > 0 {
+		if ctx.Err() != nil || time.Now().After(deadline) {
+			return decided, cost, nil // the rest waits for the next check
+		}
 		var batch []triageThread
 		size := 0
 		for len(todo) > 0 && len(batch) < triageBatch {
@@ -236,17 +240,38 @@ func (s *Server) triage(ctx context.Context, todo []store.EmailThread, p *store.
 		if !works {
 			return decided, cost, err // an outage: nothing is the emails' fault
 		}
+		var failed []triageThread
+		ok := 0
 		for _, tt := range batch {
+			if ctx.Err() != nil || time.Now().After(deadline) {
+				return decided, cost, errors.New("stopped before the end of the batch")
+			}
 			tt.key = "T1"
 			one, c, err1 := s.sortBatch(ctx, []triageThread{tt}, 1, 5*time.Minute)
 			cost += c
 			if err1 != nil {
-				fail(tt)
+				failed = append(failed, tt)
 				continue
 			}
 			s.applyVerdict(tt, one["T1"], p)
 			decided++
+			ok++
 			p.Triaged++
+		}
+		// Counted only with evidence the model was working for other mail
+		// (or the email was alone): if every one failed, the model went
+		// down after the test email passed.
+		// An email that already failed alone while the model worked counts
+		// again, so two bad emails left on their own still reach you.
+		counted := 0
+		for _, tt := range failed {
+			if ok > 0 || len(batch) == 1 || s.st.TriageFails(tt.thread.ID) > 0 {
+				fail(tt)
+				counted++
+			}
+		}
+		if ok == 0 && counted == 0 && len(failed) > 0 {
+			return decided, cost, err
 		}
 	}
 	return decided, cost, nil
@@ -417,7 +442,7 @@ func (s *Server) fileReplyItem(threadID string, draft bool) (string, error) {
 	}
 	// A new reply, or a new message in the thread since the last draft:
 	// write a draft (a thread being drafted right now keeps its job).
-	if d, ok := s.st.LatestDraft(t.ID); draft && (!ok || s.st.WroteSince(t.Account, t.Thread, d.Basis+1, s.inbound(t.Account))) {
+	if d, ok := s.st.LatestDraft(t.ID); draft && (!ok || s.st.WroteSince(t.Account, t.Thread, d.Basis, s.inbound(t.Account))) {
 		if err := s.st.QueueDraft(t.ID, "draft", ""); err == nil {
 			kick(s.emailOutKick)
 		}
