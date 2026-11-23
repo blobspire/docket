@@ -58,12 +58,19 @@ func (s *Server) readAccount(ctx context.Context, a mail.Account) (emailRead, er
 				s.st.SetEmailCursor(a.Name, sent, mail.Cursor{UIDValidity: cur.UIDValidity})
 			}
 		}
-		folders := append([]string{}, a.Folders...)
-		if sent != "" && !hasFold(folders, sent) {
+		// Sent first: a reply to your reply then finds your message already
+		// stored and joins its conversation.
+		var folders []string
+		if sent != "" {
 			folders = append(folders, sent)
 		}
+		for _, f := range a.Folders {
+			if !strings.EqualFold(f, sent) {
+				folders = append(folders, f)
+			}
+		}
 		for _, f := range folders {
-			isSent := f == sent
+			isSent := strings.EqualFold(f, sent)
 			got, err := c.Fetch(f, s.st.EmailCursor(a.Name, f), since, !isSent, s.cfg.Email.MaxPerPass)
 			if err != nil {
 				return err
@@ -89,6 +96,10 @@ func (s *Server) readAccount(ctx context.Context, a mail.Account) (emailRead, er
 			out.New = append(out.New, added...)
 			out.Skipped += got.Skipped
 			out.Dropped += got.Dropped
+		}
+		// A later folder's message may have moved an earlier one's thread.
+		for i := range out.New {
+			s.st.DB.QueryRow(`SELECT thread FROM email_messages WHERE id=?`, out.New[i].ID).Scan(&out.New[i].Thread)
 		}
 		return nil
 	}()

@@ -143,9 +143,43 @@ func (s *Store) AddEmail(account string, msgs []*mail.Message, me func(string) b
 		if err != nil {
 			return nil, fmt.Errorf("store email: %w", err)
 		}
+		// Replies that arrived before this message, and were filed under its
+		// id or one of its ancestors' (their client sent no full
+		// References), join its thread now.
+		if keys := ownKeys(m, thread); len(keys) > 0 {
+			args := []any{thread, account}
+			for _, k := range keys {
+				args = append(args, k)
+			}
+			if _, err := tx.Exec(`UPDATE email_messages SET thread=? WHERE account=? AND thread IN (?`+strings.Repeat(",?", len(keys)-1)+`)`, args...); err != nil {
+				return nil, err
+			}
+		}
 		added = append(added, e)
 	}
-	return added, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	// Re-read threads: a later message in this batch may have moved an
+	// earlier one.
+	for i := range added {
+		s.DB.QueryRow(`SELECT thread FROM email_messages WHERE id=?`, added[i].ID).Scan(&added[i].Thread)
+	}
+	return added, nil
+}
+
+// ownKeys are the thread keys a message's replies may have been filed
+// under before it arrived: its own id and its ancestors', except its thread.
+func ownKeys(m *mail.Message, thread string) []string {
+	var out []string
+	seen := map[string]bool{thread: true}
+	for _, k := range append(append([]string{m.MessageID}, m.InReplyTo...), m.References...) {
+		if k != "" && !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // threadOf files a message under the thread of any stored message it

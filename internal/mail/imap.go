@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
+	"mime/quotedprintable"
 	"net"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/emersion/go-message/charset"
 
 	"github.com/emersion/go-imap"
 	"github.com/emersion/go-imap/client"
@@ -72,7 +76,7 @@ func (a Account) Dial(ctx context.Context) (*Conn, error) {
 		c.Logout()
 		return nil, fmt.Errorf("%s: login: %w", a.Name, err)
 	}
-	c.Timeout = 2 * time.Minute
+	c.Timeout = 5 * time.Minute // per command; body fetches come in bounded batches
 	gm, _ := c.Support("X-GM-EXT-1")
 	return &Conn{acct: a, c: c, gmail: gm}, nil
 }
@@ -213,16 +217,23 @@ func (c *Conn) Fetch(folder string, cur Cursor, since time.Time, skip bool, max 
 	if len(keep) == 0 {
 		return out, nil
 	}
-	msgs, err := c.fetchUIDs(folder, st.UidValidity, keep)
+	// Choose before downloading: dates and sizes first, then bodies for the
+	// newest max only. Exchange's UIDs aren't in date order, so "newest"
+	// is by the server's arrival date.
+	metas, err := c.metadata(folder, keep)
 	if err != nil {
 		return out, err
 	}
-	// Exchange's UIDs aren't in date order: sort by date, keep the newest.
-	sort.Slice(msgs, func(i, j int) bool { return msgs[i].Date.Before(msgs[j].Date) })
-	if max > 0 && len(msgs) > max {
-		out.Dropped = len(msgs) - max
-		msgs = msgs[len(msgs)-max:]
+	sort.Slice(metas, func(i, j int) bool { return metas[i].date.Before(metas[j].date) })
+	if max > 0 && len(metas) > max {
+		out.Dropped = len(metas) - max
+		metas = metas[len(metas)-max:]
 	}
+	msgs, err := c.bodies(folder, st.UidValidity, metas)
+	if err != nil {
+		return out, err
+	}
+	sort.Slice(msgs, func(i, j int) bool { return msgs[i].Date.Before(msgs[j].Date) })
 	out.Messages = msgs
 	return out, nil
 }
@@ -240,82 +251,227 @@ func (c *Conn) rawSearch(args []interface{}) ([]uint32, error) {
 	return res.Ids, nil
 }
 
-// fetchUIDs fetches size first, then full bodies for ordinary messages and
-// headers plus the first text part for very large ones.
-func (c *Conn) fetchUIDs(folder string, validity uint32, uids []uint32) ([]*Message, error) {
-	set := new(imap.SeqSet)
-	set.AddNum(uids...)
-	sizes := map[uint32]uint32{}
-	flags := map[uint32][]string{}
-	if err := c.each(set, []imap.FetchItem{imap.FetchUid, imap.FetchRFC822Size, imap.FetchFlags}, func(m *imap.Message) {
-		sizes[m.Uid] = m.Size
-		flags[m.Uid] = m.Flags
-	}); err != nil {
-		return nil, fmt.Errorf("%s: fetch sizes in %s: %w", c.acct.Name, folder, err)
-	}
-	small, big := new(imap.SeqSet), new(imap.SeqSet)
-	var nSmall, nBig int
-	for u, sz := range sizes {
-		if sz <= maxBody {
-			small.AddNum(u)
-			nSmall++
-		} else {
-			big.AddNum(u)
-			nBig++
+type meta struct {
+	uid  uint32
+	date time.Time
+	size uint32
+	seen bool
+}
+
+// metadata reads arrival dates, sizes and flags, 500 messages per command.
+func (c *Conn) metadata(folder string, uids []uint32) ([]meta, error) {
+	var out []meta
+	for i := 0; i < len(uids); i += 500 {
+		j := i + 500
+		if j > len(uids) {
+			j = len(uids)
 		}
-	}
-	var out []*Message
-	add := func(m *imap.Message, sec *imap.BodySectionName) {
-		lit := m.GetBody(sec)
-		if lit == nil {
-			return
-		}
-		raw, err := io.ReadAll(lit)
-		if err != nil {
-			return
-		}
-		msg, _ := Parse(raw)
-		if msg == nil {
-			return
-		}
-		msg.Folder, msg.UID, msg.UIDValidity = folder, m.Uid, validity
-		msg.Size = int(sizes[m.Uid])
-		for _, f := range flags[m.Uid] {
-			if f == imap.SeenFlag {
-				msg.Seen = true
+		set := new(imap.SeqSet)
+		set.AddNum(uids[i:j]...)
+		if err := c.each(set, []imap.FetchItem{imap.FetchUid, imap.FetchInternalDate, imap.FetchRFC822Size, imap.FetchFlags}, func(m *imap.Message) {
+			mt := meta{uid: m.Uid, date: m.InternalDate, size: m.Size}
+			for _, f := range m.Flags {
+				if f == imap.SeenFlag {
+					mt.seen = true
+				}
 			}
-		}
-		if msg.Date.IsZero() {
-			msg.Date = m.InternalDate
-		}
-		out = append(out, msg)
-	}
-	if nSmall > 0 {
-		sec := &imap.BodySectionName{Peek: true}
-		if err := c.each(small, []imap.FetchItem{imap.FetchUid, imap.FetchInternalDate, sec.FetchItem()}, func(m *imap.Message) { add(m, sec) }); err != nil {
-			return nil, fmt.Errorf("%s: fetch %s: %w", c.acct.Name, folder, err)
-		}
-	}
-	if nBig > 0 {
-		hdr := &imap.BodySectionName{Peek: true, BodyPartName: imap.BodyPartName{Specifier: imap.HeaderSpecifier}}
-		txt := &imap.BodySectionName{Peek: true, BodyPartName: imap.BodyPartName{Path: []int{1}}, Partial: []int{0, maxText}}
-		if err := c.each(big, []imap.FetchItem{imap.FetchUid, imap.FetchInternalDate, hdr.FetchItem(), txt.FetchItem()}, func(m *imap.Message) {
-			h, b := m.GetBody(hdr), m.GetBody(txt)
-			if h == nil {
-				return
-			}
-			hb, _ := io.ReadAll(h)
-			var tb []byte
-			if b != nil {
-				tb, _ = io.ReadAll(b)
-			}
-			m.Body = map[*imap.BodySectionName]imap.Literal{{}: bytes.NewReader(append(append(stripCT(hb), "Content-Type: text/plain; charset=utf-8\r\n\r\n"...), tb...))}
-			add(m, &imap.BodySectionName{})
+			out = append(out, mt)
 		}); err != nil {
-			return nil, fmt.Errorf("%s: fetch large messages in %s: %w", c.acct.Name, folder, err)
+			return nil, fmt.Errorf("%s: read %s: %w", c.acct.Name, folder, err)
 		}
 	}
 	return out, nil
+}
+
+// Body fetches come in batches of at most bodyBatch messages or
+// bodyBatchBytes, each its own command, so every batch gets its own
+// deadline and a big backlog can't run one command past it.
+const (
+	bodyBatch      = 25
+	bodyBatchBytes = 20 << 20
+)
+
+// bodies fetches full messages for ordinary sizes and the text part plus
+// the structure for very large ones. Parsing happens after a batch has
+// arrived, never while the server is still sending.
+func (c *Conn) bodies(folder string, validity uint32, metas []meta) ([]*Message, error) {
+	var out []*Message
+	var batch []meta
+	var batchBytes uint32
+	var big []meta
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		set := new(imap.SeqSet)
+		by := map[uint32]meta{}
+		for _, m := range batch {
+			set.AddNum(m.uid)
+			by[m.uid] = m
+		}
+		raws := map[uint32][]byte{}
+		sec := &imap.BodySectionName{Peek: true}
+		if err := c.each(set, []imap.FetchItem{imap.FetchUid, sec.FetchItem()}, func(m *imap.Message) {
+			if lit := m.GetBody(sec); lit != nil {
+				if b, err := io.ReadAll(lit); err == nil {
+					raws[m.Uid] = b
+				}
+			}
+		}); err != nil {
+			return fmt.Errorf("%s: fetch %s: %w", c.acct.Name, folder, err)
+		}
+		for uid, raw := range raws {
+			msg, _ := Parse(raw)
+			if msg == nil {
+				continue
+			}
+			out = append(out, finish(msg, folder, validity, by[uid]))
+		}
+		batch, batchBytes = nil, 0
+		return nil
+	}
+	for _, m := range metas {
+		if m.size > maxBody {
+			big = append(big, m)
+			continue
+		}
+		if len(batch) > 0 && (len(batch) >= bodyBatch || batchBytes+m.size > bodyBatchBytes) {
+			if err := flush(); err != nil {
+				return nil, err
+			}
+		}
+		batch = append(batch, m)
+		batchBytes += m.size
+	}
+	if err := flush(); err != nil {
+		return nil, err
+	}
+	for _, m := range big {
+		msg, err := c.bigMessage(folder, m)
+		if err != nil {
+			return nil, err
+		}
+		if msg != nil {
+			out = append(out, finish(msg, folder, validity, m))
+		}
+	}
+	return out, nil
+}
+
+func finish(msg *Message, folder string, validity uint32, m meta) *Message {
+	msg.Folder, msg.UID, msg.UIDValidity = folder, m.uid, validity
+	msg.Size, msg.Seen = int(m.size), m.seen
+	if msg.Date.IsZero() {
+		msg.Date = m.date
+	}
+	return msg
+}
+
+// bigMessage reads a message too large to download whole: its headers, its
+// structure (for the attachments), and the start of its first text part,
+// decoded with that part's own encoding and charset.
+func (c *Conn) bigMessage(folder string, m meta) (*Message, error) {
+	set := new(imap.SeqSet)
+	set.AddNum(m.uid)
+	hdr := &imap.BodySectionName{Peek: true, BodyPartName: imap.BodyPartName{Specifier: imap.HeaderSpecifier}}
+	var header []byte
+	var bs *imap.BodyStructure
+	if err := c.each(set, []imap.FetchItem{imap.FetchUid, imap.FetchBodyStructure, hdr.FetchItem()}, func(im *imap.Message) {
+		if lit := im.GetBody(hdr); lit != nil {
+			header, _ = io.ReadAll(lit)
+		}
+		bs = im.BodyStructure
+	}); err != nil {
+		return nil, fmt.Errorf("%s: fetch a large message in %s: %w", c.acct.Name, folder, err)
+	}
+	if header == nil {
+		return nil, nil
+	}
+	msg, _ := Parse(append(stripCT(header), "Content-Type: text/plain; charset=utf-8\r\n\r\n"...))
+	if msg == nil {
+		return nil, nil
+	}
+	msg.Text, msg.HTML, msg.Attachments = "", "", nil
+	if bs == nil {
+		msg.Text = "(This message is too large for docket to show; open it in your mail.)"
+		return msg, nil
+	}
+	var textPath, htmlPath []int
+	var textPart, htmlPart *imap.BodyStructure
+	bs.Walk(func(path []int, part *imap.BodyStructure) bool {
+		if len(part.Parts) > 0 {
+			return true
+		}
+		mt := strings.ToLower(part.MIMEType + "/" + part.MIMESubType)
+		attached := strings.EqualFold(part.Disposition, "attachment")
+		name := part.DispositionParams["filename"]
+		if name == "" {
+			name = part.Params["name"]
+		}
+		switch {
+		case !attached && mt == "text/plain" && textPart == nil:
+			textPath, textPart = append([]int{}, path...), part
+		case !attached && mt == "text/html" && htmlPart == nil:
+			htmlPath, htmlPart = append([]int{}, path...), part
+		case attached || name != "" || !strings.EqualFold(part.MIMEType, "text"):
+			if name == "" {
+				name = "attachment"
+			}
+			msg.Attachments = append(msg.Attachments, Attachment{Name: name, Type: mt, Size: int(part.Size)})
+		}
+		return true
+	})
+	path, part := textPath, textPart
+	if part == nil {
+		path, part = htmlPath, htmlPart
+	}
+	if part == nil {
+		msg.Text = "(This message is too large for docket to show; open it in your mail.)"
+		return msg, nil
+	}
+	sec := &imap.BodySectionName{Peek: true, BodyPartName: imap.BodyPartName{Path: path}, Partial: []int{0, 2 * maxText}}
+	var raw []byte
+	if err := c.each(set, []imap.FetchItem{imap.FetchUid, sec.FetchItem()}, func(im *imap.Message) {
+		if lit := im.GetBody(sec); lit != nil {
+			raw, _ = io.ReadAll(lit)
+		}
+	}); err != nil {
+		return nil, fmt.Errorf("%s: fetch a large message in %s: %w", c.acct.Name, folder, err)
+	}
+	text := decodePart(raw, part.Encoding, part.Params["charset"])
+	if strings.EqualFold(part.MIMESubType, "html") {
+		msg.HTML = clip(text, maxHTML)
+		text = HTMLText(text)
+	}
+	msg.Text, _ = StripInvisible(clip(strings.TrimSpace(text), maxText))
+	return msg, nil
+}
+
+// decodePart decodes the start of a part body (possibly cut mid-way).
+func decodePart(raw []byte, encoding, cs string) string {
+	var r io.Reader = bytes.NewReader(raw)
+	switch strings.ToLower(encoding) {
+	case "base64":
+		clean := make([]byte, 0, len(raw))
+		for _, b := range raw {
+			if b != '\r' && b != '\n' && b != ' ' && b != '\t' {
+				clean = append(clean, b)
+			}
+		}
+		clean = clean[:len(clean)/4*4] // a cut-off fetch ends mid-quantum
+		dec := make([]byte, base64.StdEncoding.DecodedLen(len(clean)))
+		n, _ := base64.StdEncoding.Decode(dec, clean)
+		r = bytes.NewReader(dec[:n])
+	case "quoted-printable":
+		r = quotedprintable.NewReader(r)
+	}
+	if cs != "" && !strings.EqualFold(cs, "utf-8") && !strings.EqualFold(cs, "us-ascii") {
+		if cr, err := charset.Reader(cs, r); err == nil {
+			r = cr
+		}
+	}
+	b, _ := io.ReadAll(io.LimitReader(r, 4*maxText))
+	return strings.ToValidUTF8(string(b), "")
 }
 
 // stripCT drops a header block's Content-* fields and its blank line, so a

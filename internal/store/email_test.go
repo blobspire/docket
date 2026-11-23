@@ -95,3 +95,25 @@ func TestEmailCursorsAndAccountState(t *testing.T) {
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+// They answer your reply, and their client sends only In-Reply-To (or
+// References with just your message): when your message is stored after
+// theirs, their reply still joins the conversation.
+func TestAReplyThatArrivesBeforeItsParentJoinsTheThread(t *testing.T) {
+	s := open(t)
+	now := time.Now()
+	a := &mail.Message{Folder: "INBOX", UID: 1, UIDValidity: 1, MessageID: "A@x", From: mail.Addr{Email: "nancy@x.org"}, Date: now.Add(-3 * time.Hour)}
+	b := &mail.Message{Folder: "Sent", UID: 1, UIDValidity: 1, MessageID: "B@x", InReplyTo: []string{"A@x"}, References: []string{"A@x"},
+		From: mail.Addr{Email: "me@example.com"}, Date: now.Add(-2 * time.Hour)}
+	c := &mail.Message{Folder: "INBOX", UID: 2, UIDValidity: 1, MessageID: "C@x", InReplyTo: []string{"B@x"},
+		From: mail.Addr{Email: "nancy@x.org"}, Date: now.Add(-time.Hour)}
+	s.AddEmail("gmail", []*mail.Message{a}, me)
+	got, _ := s.AddEmail("gmail", []*mail.Message{c, b}, me)
+	if len(got) != 2 || got[0].Thread != "A@x" || got[1].Thread != "A@x" {
+		t.Fatalf("returned threads: %+v", got)
+	}
+	msgs, _ := s.ThreadMessages("gmail", "A@x")
+	if len(msgs) != 3 {
+		t.Fatalf("thread A holds %d messages, want 3", len(msgs))
+	}
+}

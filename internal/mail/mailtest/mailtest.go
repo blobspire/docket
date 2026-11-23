@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/emersion/go-imap"
 	"github.com/emersion/go-imap/backend/memory"
 	"github.com/emersion/go-imap/client"
 	"github.com/emersion/go-imap/server"
@@ -28,6 +29,27 @@ func IMAP(t testing.TB) string {
 	}
 	go s.Serve(l)
 	t.Cleanup(func() { s.Close() })
+	// The in-memory backend starts with a sample message in INBOX: remove
+	// it, so a test's mailbox holds only what the test put there.
+	c, err := client.Dial(l.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Logout()
+	if err := c.Login("username", "password"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Select("INBOX", false); err != nil {
+		t.Fatal(err)
+	}
+	all := new(imap.SeqSet)
+	all.AddRange(1, 0)
+	if err := c.Store(all, imap.FormatFlagsOp(imap.AddFlags, true), []interface{}{imap.DeletedFlag}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Expunge(nil); err != nil {
+		t.Fatal(err)
+	}
 	return l.Addr().String()
 }
 

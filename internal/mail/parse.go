@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"mime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,14 +44,26 @@ type Attachment struct {
 }
 
 const (
-	maxText = 100_000
-	maxHTML = 500_000
+	maxText  = 100_000
+	maxHTML  = 500_000
+	maxParts = 64 // nested multiparts docket will read
 )
 
 // Parse reads a raw RFC 5322 message. It never fails outright on a broken
 // message: whatever headers and text it could read are returned.
 func Parse(raw []byte) (*Message, error) {
 	m := &Message{Size: len(raw)}
+	// Each level of nesting wraps every byte in another reader, so parsing
+	// time grows with depth squared: a hostile message nested thousands deep
+	// would take minutes. Read only the headers of one nested past maxParts.
+	tooDeep := bytes.Count(bytes.ToLower(raw), []byte("multipart/")) > maxParts
+	if tooDeep {
+		if i := bytes.Index(raw, []byte("\r\n\r\n")); i >= 0 {
+			raw = append(stripCT(raw[:i+2]), "Content-Type: text/plain; charset=utf-8\r\n\r\n"...)
+		} else if i := bytes.Index(raw, []byte("\n\n")); i >= 0 {
+			raw = append(stripCT([]byte(strings.ReplaceAll(string(raw[:i+1]), "\n", "\r\n"))), "Content-Type: text/plain; charset=utf-8\r\n\r\n"...)
+		}
+	}
 	r, err := gomail.CreateReader(bytes.NewReader(raw))
 	if err != nil && r == nil {
 		return m, err
@@ -127,6 +140,9 @@ func Parse(raw []byte) (*Message, error) {
 	}
 	m.HTML = clip(htmlBody.String(), maxHTML)
 	m.Text = strings.TrimSpace(text.String())
+	if tooDeep {
+		m.Text = "(This message has an unusual structure, so docket shows only its headers; open it in your mail.)"
+	}
 	if m.Text == "" && m.HTML != "" {
 		m.Text = HTMLText(m.HTML)
 	}
@@ -238,14 +254,83 @@ func hiddenStyle(n *html.Node) bool {
 		if k == "hidden" || (k == "aria-hidden" && a.Val == "true") {
 			return true
 		}
-		if k == "style" {
-			v := strings.ToLower(strings.ReplaceAll(a.Val, " ", ""))
-			for _, h := range []string{"display:none", "visibility:hidden", "font-size:0", "max-height:0", "opacity:0", "mso-hide:all"} {
-				if strings.Contains(v, h) {
+		if k == "style" && hiddenCSS(a.Val) {
+			return true
+		}
+	}
+	return false
+}
+
+// hiddenCSS reads a style attribute's declarations and reports text that
+// renders invisibly: display:none, visibility:hidden, mso-hide:all, a zero
+// opacity, a zero max-height, or a font smaller than 2px. Values are read
+// as numbers, so 0.9em or opacity .8 stay visible.
+func hiddenCSS(style string) bool {
+	for _, decl := range strings.Split(style, ";") {
+		k, v, ok := strings.Cut(decl, ":")
+		if !ok {
+			continue
+		}
+		k = strings.ToLower(strings.TrimSpace(k))
+		v = strings.ToLower(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(v), "!important")))
+		v = strings.TrimSpace(v)
+		switch k {
+		case "display":
+			if v == "none" {
+				return true
+			}
+		case "visibility":
+			if v == "hidden" || v == "collapse" {
+				return true
+			}
+		case "mso-hide":
+			if v == "all" {
+				return true
+			}
+		case "opacity":
+			if n, ok := cssNumber(v); ok && n <= 0.01 {
+				return true
+			}
+		case "max-height", "height":
+			if n, ok := cssNumber(v); ok && n == 0 && k == "max-height" {
+				return true
+			}
+		case "font-size":
+			if n, unit, ok := cssLength(v); ok {
+				px := n
+				switch unit {
+				case "em", "rem":
+					px = n * 16
+				case "%":
+					px = n * 16 / 100
+				case "pt":
+					px = n * 4 / 3
+				}
+				if px < 2 {
 					return true
 				}
 			}
 		}
 	}
 	return false
+}
+
+func cssNumber(v string) (float64, bool) {
+	n, _, ok := cssLength(v)
+	return n, ok
+}
+
+func cssLength(v string) (float64, string, bool) {
+	i := 0
+	for i < len(v) && (v[i] >= '0' && v[i] <= '9' || v[i] == '.' || v[i] == '-' || v[i] == '+') {
+		i++
+	}
+	if i == 0 {
+		return 0, "", false
+	}
+	n, err := strconv.ParseFloat(v[:i], 64)
+	if err != nil {
+		return 0, "", false
+	}
+	return n, strings.TrimSpace(v[i:]), true
 }
