@@ -1323,3 +1323,21 @@ func TestTheNewestAsksAreKept(t *testing.T) {
 		t.Fatalf("the note must keep the newest asks:\n%s", p)
 	}
 }
+
+// The drafting agent sees your forward marked as one, and a reply is
+// never titled as a forward.
+func TestADraftSeesAForwardAndNeverSendsOne(t *testing.T) {
+	e, f, _, th := replyEnv(t)
+	mailtest.Append(t, e.s.cfg.Email.Accounts[0].IMAP, "Sent", msg("fw1@x", "Cole <me@example.com>", "bob@example.org", "Fwd: Undo a removed resident?",
+		"Bob, can we?", "In-Reply-To: <n1@x>", "References: <n1@x>"), time.Now())
+	f.answer(`{"structured_output":{"threads":[]}}`)
+	e.s.readAccount(e.ctx, e.s.cfg.Email.Accounts[0])
+	f.answer(strings.Replace(draftAnswer("AGENT-V1"), `"subject":"Re: Undo a removed resident?"`, `"subject":"Fwd: Undo a removed resident?"`, 1))
+	e.runDrafts()
+	if p := f.prompt(); !strings.Contains(p, "(you, forwarding it on; not an answer)") {
+		t.Fatalf("the forward isn't marked:\n%s", p)
+	}
+	if d, _ := e.s.st.LatestDraft(th.ID); d.Subject != "Re: Undo a removed resident?" {
+		t.Fatalf("subject %q", d.Subject)
+	}
+}

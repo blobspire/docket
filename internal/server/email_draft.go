@@ -207,8 +207,9 @@ func (s *Server) draftFrom(t store.EmailThread, a mail.Account, out draftOut, j 
 	removed := append(notes1, notes2...)
 	to, cc := s.replyRecipients(t, a, out.ReplyAll)
 	subject := oneLine(out.Subject, 200)
-	if subject == "" || !strings.EqualFold(strings.TrimSpace(trimRe(subject)), strings.TrimSpace(trimRe(t.Subject))) {
-		// A reply keeps the thread's subject, so it threads for everyone.
+	if subject == "" || store.IsForward(subject) || !strings.EqualFold(strings.TrimSpace(trimRe(subject)), strings.TrimSpace(trimRe(t.Subject))) {
+		// A reply keeps the thread's subject, so it threads for everyone
+		// (and is titled as a reply, never a forward).
 		subject = mail.ReplySubject(t.Subject)
 	}
 	var qs []string
@@ -432,7 +433,7 @@ Follow this guide to %[1]s's writing voice and formatting exactly. Ignore its pa
 	for i, m := range msgs {
 		who := m.From.Display() + " <" + m.From.Email + ">"
 		if m.FromMe {
-			who = person + " (you)"
+			who = youWrote(person, m)
 		}
 		fmt.Fprintf(&b, "\n--- %s · %s ---\nTo: %s\n", who, time.Unix(m.Date, 0).In(s.cfg.loc).Format("Mon Jan 2 2006 15:04"), addrLine(m.To, a))
 		if len(m.Cc) > 0 {
@@ -450,7 +451,7 @@ Follow this guide to %[1]s's writing voice and formatting exactly. Ignore its pa
 		for _, m := range hist {
 			who := m.From.Display()
 			if m.FromMe {
-				who = person + " (you)"
+				who = youWrote(person, m)
 			}
 			fmt.Fprintf(&b, "\n--- %s · %s · %s ---\n%s\n", who, time.Unix(m.Date, 0).In(s.cfg.loc).Format("Jan 2 2006"), oneLine(m.Subject, 120),
 				strings.ReplaceAll(clipRunes(stripQuoted(m.Text), 1200), nonce, ""))

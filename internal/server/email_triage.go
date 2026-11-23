@@ -471,7 +471,7 @@ func (s *Server) triageInput(t store.EmailThread, n int) triageThread {
 		m := msgs[i]
 		who := m.From.Display()
 		if m.FromMe {
-			who = s.cfg.Person + " (you)"
+			who = youWrote(s.cfg.Person, m)
 		}
 		fmt.Fprintf(&b, "\n--- %s · %s ---\n", who, time.Unix(m.Date, 0).In(s.cfg.loc).Format("Mon Jan 2 15:04"))
 		fmt.Fprintf(&b, "To: %s\n", addrLine(m.To, a))
@@ -627,6 +627,15 @@ func describeShould(should string) string {
 
 // bumpEmail tells open pages the Email sections changed.
 func (s *Server) bumpEmail() { s.st.Set("email:bump", ulid.New(time.Now())) }
+
+// youWrote names your own message in a prompt. A forward is marked as
+// one: passing an email on isn't answering it.
+func youWrote(person string, m store.EmailMessage) string {
+	if store.IsForward(m.Subject) {
+		return person + " (you, forwarding it on; not an answer)"
+	}
+	return person + " (you)"
+}
 
 func oneLine(s string, n int) string {
 	s, _ = mail.StripInvisible(s)

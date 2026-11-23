@@ -632,3 +632,15 @@ func TestAForwardDoesntCloseTheReplyItem(t *testing.T) {
 		t.Fatalf("a forward closed the reply item: pass %+v item %s %q", p, it.Status, it.Resolution)
 	}
 }
+
+// The sorting model sees your forward marked as one, not as an answer.
+func TestTriageSeesAForwardAsOne(t *testing.T) {
+	e, addr, f := triageEnv(t)
+	mailtest.Append(t, addr, "INBOX", msg("q1@x", "Ann <ann@example.org>", "me@example.com", "Question", "Can you send the file?"), at(time.Hour))
+	mailtest.Append(t, addr, "Sent", msg("fw1@x", "Cole <me@example.com>", "bob@example.org", "Fwd: Question", "Bob, do we have this?", "In-Reply-To: <q1@x>", "References: <q1@x>"), time.Now())
+	f.answer(`{"structured_output":{"threads":[{"key":"T1","verdict":"reply","line":"Reply to Ann: send the file","why":"asked","project":"","work":""}]}}`)
+	e.s.emailPass(e.ctx, "test")
+	if p := f.prompt(); !strings.Contains(p, "(you, forwarding it on; not an answer)") {
+		t.Fatalf("the forward isn't marked:\n%s", p)
+	}
+}
