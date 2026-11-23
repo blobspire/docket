@@ -1,10 +1,14 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"html/template"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -220,6 +224,29 @@ func (s *Server) emailAct(w http.ResponseWriter, r *http.Request) {
 	note := strings.TrimSpace(r.FormValue("note"))
 	var itemID string
 	var err error
+	if extra, rerr := s.replyAct(w, r, t, action); rerr != errUnknownAction {
+		s.bumpEmail()
+		if r.Header.Get("X-Requested-With") == "fetch" {
+			w.Header().Set("Content-Type", "application/json")
+			if rerr != nil {
+				w.WriteHeader(http.StatusConflict)
+				json.NewEncoder(w).Encode(map[string]string{"error": rerr.Error()})
+				return
+			}
+			if extra == nil {
+				extra = map[string]any{}
+			}
+			extra["ok"] = "1"
+			json.NewEncoder(w).Encode(extra)
+			return
+		}
+		back := "/item/" + t.ItemID
+		if rerr != nil {
+			back += "?err=" + url.QueryEscape(rerr.Error())
+		}
+		http.Redirect(w, r, back, http.StatusSeeOther)
+		return
+	}
 	switch action {
 	case "read":
 		err = s.st.MarkRead(t.ID, true)
@@ -348,7 +375,7 @@ func (s *Server) emailDecided(it store.Item, a Action) {
 	s.bumpEmail()
 }
 
-// emailItem is what a reply item's sheet shows of its email.
+// emailItem is what a reply item's sheet shows: the draft and its email.
 type emailItem struct {
 	Thread   store.EmailThread
 	Label    string
@@ -356,6 +383,25 @@ type emailItem struct {
 	Earlier  int
 	OpenURL  string
 	OpenName string
+
+	Draft     *store.Draft
+	To, Cc    []recipient
+	Outsider  bool          // a recipient isn't in the thread
+	Preview   template.HTML // the draft as it will look, links annotated
+	Holding   template.HTML
+	EditHTML  string        // the draft for the editor (styled, no annotations)
+	Signature template.HTML // the account's signature, for the preview
+	Job       *store.EmailJob
+	Writing   bool // a draft is being written
+	Pending   *store.Outgoing
+	PendingMs int64 // left of its Undo window
+	Failed    string
+	SaveName  string // "Save to Gmail drafts"
+}
+
+type recipient struct {
+	mail.Addr
+	Outside bool // not anyone in this thread
 }
 
 func (s *Server) emailItem(it store.Item) *emailItem {
@@ -364,5 +410,150 @@ func (s *Server) emailItem(it store.Item) *emailItem {
 		return nil
 	}
 	v := s.readerFor(t)
-	return &emailItem{Thread: t, Label: v.Label, Latest: v.Latest, Earlier: len(v.Messages), OpenURL: v.OpenURL, OpenName: v.OpenName}
+	e := &emailItem{Thread: t, Label: v.Label, Latest: v.Latest, Earlier: len(v.Messages), OpenURL: v.OpenURL, OpenName: v.OpenName,
+		SaveName: "Save to " + v.Label + " drafts"}
+	if j, ok := s.st.Job(t.ID); ok {
+		e.Job = &j
+		e.Writing = j.Status == "queued" || j.Status == "running"
+	}
+	if d, ok := s.st.LatestDraft(t.ID); ok {
+		e.Draft = &d
+		people := s.threadPeople(t)
+		for _, x := range d.To {
+			r := recipient{Addr: x, Outside: !people[strings.ToLower(x.Email)]}
+			e.Outsider = e.Outsider || r.Outside
+			e.To = append(e.To, r)
+		}
+		for _, x := range d.Cc {
+			r := recipient{Addr: x, Outside: !people[strings.ToLower(x.Email)]}
+			e.Outsider = e.Outsider || r.Outside
+			e.Cc = append(e.Cc, r)
+		}
+		// Safe to put in the page as is: Clean left only plain tags and
+		// http/https/mailto links, and Preview adds docket's own styles.
+		e.Preview = template.HTML(mail.Preview(d.HTML))
+		if d.Holding != "" {
+			e.Holding = template.HTML(mail.Preview(d.Holding))
+		}
+		e.EditHTML = mail.Style(d.HTML)
+		if a, ok := s.cfg.Email.Account(t.Account); ok {
+			if sig, err := a.LoadSignature(true); err == nil {
+				switch {
+				case sig.HTML != "":
+					e.Signature = template.HTML(sig.HTML) // the account owner's own file
+				case sig.Text != "":
+					e.Signature = template.HTML(strings.ReplaceAll(template.HTMLEscapeString(sig.Text), "\n", "<br>"))
+				}
+			}
+		}
+	}
+	if o, ok := s.st.PendingSend(t.ID); ok {
+		e.Pending = &o
+		if left := o.HoldUntil - time.Now().UnixMilli(); left > 0 {
+			e.PendingMs = left
+		}
+	} else if o, ok := s.st.LastSend(t.ID); ok && o.Status == "failed" {
+		e.Failed = o.Error
+	}
+	return e
 }
+
+// replyAct handles a reply item's email buttons.
+//
+//	send / holding   hold the shown version for the Undo window, then send it
+//	undo-send        withdraw it
+//	revise           ask the drafting agent for changes, in your words
+//	redraft          write the draft again from scratch
+//	edit             save your own edit of the draft (and recipients)
+//	save-draft       put the draft in the account's Drafts folder
+func (s *Server) replyAct(w http.ResponseWriter, r *http.Request, t store.EmailThread, action string) (map[string]any, error) {
+	version, _ := strconv.Atoi(r.FormValue("version"))
+	switch action {
+	case "send", "holding":
+		kind := "reply"
+		if action == "holding" {
+			kind = "holding"
+		}
+		o, err := s.QueueSend(t.ID, version, kind)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"outbox": o.ID, "hold_ms": o.HoldUntil - time.Now().UnixMilli()}, nil
+	case "undo-send":
+		return nil, s.UndoSend(t.ID, r.FormValue("outbox"))
+	case "revise":
+		text := strings.TrimSpace(r.FormValue("text"))
+		if text == "" {
+			return nil, errors.New("say what to change")
+		}
+		if err := s.st.QueueDraft(t.ID, "revise", clipRunes(text, 4000)); err != nil {
+			return nil, err
+		}
+		kick(s.emailOutKick)
+		return nil, nil
+	case "redraft":
+		if err := s.st.QueueDraft(t.ID, "draft", ""); err != nil {
+			return nil, err
+		}
+		kick(s.emailOutKick)
+		return nil, nil
+	case "edit":
+		d, ok := s.st.LatestDraft(t.ID)
+		if !ok {
+			return nil, errors.New("there's no draft to edit")
+		}
+		if d.Version != version {
+			return nil, fmt.Errorf("the draft changed while you were editing (now version %d); copy your text, reopen it and edit again", d.Version)
+		}
+		if j, ok := s.st.Job(t.ID); ok && (j.Status == "queued" || j.Status == "running") {
+			return nil, errors.New("a new version is being written; wait for it, then edit")
+		}
+		body, removed := mail.Clean(r.FormValue("html"))
+		if strings.TrimSpace(mail.Text(body)) == "" {
+			return nil, errors.New("the draft can't be empty")
+		}
+		to, cc := mail.ParseAddrs(r.FormValue("to")), mail.ParseAddrs(r.FormValue("cc"))
+		if len(to) == 0 {
+			return nil, errors.New("who should it go to? Write at least one address in To")
+		}
+		_ = removed // your own edit: formatting the editor added is simply dropped
+		nd := d
+		nd.HTML, nd.To, nd.Cc, nd.Source, nd.Instruction, nd.Removed = body, to, cc, "edit", "", nil
+		v, err := s.st.AddDraft(nd)
+		if err != nil {
+			return nil, err
+		}
+		s.st.TouchItem(t.ItemID)
+		return map[string]any{"version": v}, nil
+	case "save-draft":
+		d, ok := s.st.DraftVersion(t.ID, version)
+		if !ok {
+			return nil, errors.New("no such draft")
+		}
+		a, _ := s.cfg.Email.Account(t.Account)
+		sig, err := a.LoadSignature(false)
+		if err != nil {
+			return nil, err
+		}
+		b, a, err := s.builtReply(t, d, "reply", sig)
+		if err != nil {
+			return nil, err
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+		defer cancel()
+		c, err := a.Dial(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer c.Close()
+		drafts := s.st.EmailAccountState(a.Name).DraftsFolder
+		if err := c.Append(drafts, b.Raw, true); err != nil {
+			return nil, err
+		}
+		s.st.AppendToItem(t.ItemID, "_Saved draft "+strconv.Itoa(d.Version)+" to your "+a.Label+" drafts "+time.Now().In(s.cfg.loc).Format("Mon 15:04")+"._")
+		return nil, nil
+	}
+	return nil, errUnknownAction
+}
+
+var errUnknownAction = errors.New("unknown action")

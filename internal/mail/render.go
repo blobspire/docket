@@ -40,7 +40,14 @@ func parseClean(clean string) []*xhtml.Node {
 
 // Style adds docket's inline styles to a fragment from Clean. Its input
 // must come from Clean: it writes back only the tags Clean allows.
-func Style(clean string) string {
+func Style(clean string) string { return style(clean, false) }
+
+// Preview is Style for showing a draft before it's sent: every link also
+// shows where it really goes (an annotation docket's page draws, never part
+// of the email), and opens in a new tab.
+func Preview(clean string) string { return style(clean, true) }
+
+func style(clean string, annotate bool) string {
 	var b strings.Builder
 	var walk func(n *xhtml.Node)
 	walk = func(n *xhtml.Node) {
@@ -73,6 +80,9 @@ func Style(clean string) string {
 		b.WriteString("<" + name)
 		if n.DataAtom == atom.A {
 			b.WriteString(` href="` + html.EscapeString(attr(n, "href")) + `"`)
+			if annotate {
+				b.WriteString(` target="_blank" rel="noopener noreferrer"`)
+			}
 		}
 		if css != "" {
 			b.WriteString(` style="` + css + `"`)
@@ -82,6 +92,9 @@ func Style(clean string) string {
 			walk(c)
 		}
 		b.WriteString("</" + name + ">")
+		if annotate && n.DataAtom == atom.A {
+			b.WriteString(`<span class="lk" title="Where this link really goes">` + html.EscapeString(strings.TrimPrefix(attr(n, "href"), "mailto:")) + `</span>`)
+		}
 	}
 	for _, n := range parseClean(clean) {
 		walk(n)

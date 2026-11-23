@@ -289,6 +289,13 @@ func (s *Server) fileReply(threadID string) (string, error) {
 	if id != t.ItemID {
 		s.st.SetThreadItem(t.ID, id)
 	}
+	// A new reply, or a new message in the thread since the last draft:
+	// write a draft (a thread being drafted right now keeps its job).
+	if d, ok := s.st.LatestDraft(t.ID); !ok || d.CreatedAt < t.InboundAt {
+		if err := s.st.QueueDraft(t.ID, "draft", ""); err == nil {
+			kick(s.emailOutKick)
+		}
+	}
 	return id, nil
 }
 
