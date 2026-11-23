@@ -215,7 +215,9 @@ func (s *Store) AddEmail(account string, msgs []*mail.Message, me func(string) b
 			}
 			// Best effort: a failure here leaves a reply in its own thread,
 			// never the message unstored.
-			tx.Exec(`UPDATE email_messages SET thread=? WHERE account=? AND thread IN (?`+strings.Repeat(",?", len(keys)-1)+`)`, args...)
+			// They're new to this thread (a draft of it never saw them), so
+			// they're numbered as stored into it now.
+			tx.Exec(`UPDATE email_messages SET thread=?, seq=(SELECT MAX(seq) FROM email_messages)+1 WHERE account=? AND thread IN (?`+strings.Repeat(",?", len(keys)-1)+`)`, args...)
 			mergeThreads(tx, account, keys, thread)
 		}
 		added = append(added, e)
@@ -566,8 +568,8 @@ func (s *Store) NoteMessages(account string, msgs []EmailMessage, inbound func(f
 			order = append(order, m.Thread)
 		}
 		if m.FromMe {
-			if holding[i] {
-				continue
+			if holding[i] || IsForward(m.Subject) {
+				continue // a holding reply or a forward isn't an answer
 			}
 			if m.Date > a.repl {
 				a.repl = m.Date

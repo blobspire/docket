@@ -345,3 +345,134 @@ func TestSeqIsIndexed(t *testing.T) {
 		t.Fatalf("the old message's seq: %d", n)
 	}
 }
+
+// A repeat of several asks at once is still said once, a new one among
+// them is added, and docket's newest note about the work replaces its
+// earlier one.
+func TestCombineAsks(t *testing.T) {
+	two := "Fix the greeting\n\nAlso: add the price"
+	if got := CombineAsks(two, two); got != two {
+		t.Fatalf("a repeat of two asks: %q", got)
+	}
+	if got, want := CombineAsks(two, "add the price\n\nAlso: sign off warmly"), two+"\n\nAlso: sign off warmly"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	built, dropped := WorkNote+"it's done and shipped.", WorkNote+"Cole decided not to do it."
+	if got, want := CombineAsks("mention Friday\n\nAlso: "+built, dropped), "mention Friday\n\nAlso: "+dropped; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// A failed job's ask never made it into a version, so the next request
+// (a Redraft, a new message) carries it, unless you saved a version since.
+func TestAFailedAskCarriesIntoTheNextRequest(t *testing.T) {
+	s := open(t)
+	s.AddDraft(Draft{ThreadID: "t1", HTML: "<p>v1</p>", Source: "agent"})
+	s.DB.Exec(`UPDATE email_drafts SET created_at=created_at-60`) // written a minute ago
+	fail := func() {
+		t.Helper()
+		if js, _ := s.NextJobs(1); len(js) != 1 {
+			t.Fatalf("claimed %d", len(js))
+		}
+		s.EndJob("t1", "failed", "", "the model is down")
+	}
+	s.QueueDraft("t1", "revise", "make it shorter")
+	fail()
+	s.QueueDraft("t1", "draft", "") // Redraft
+	if j, _ := s.Job("t1"); j.Status != "queued" || j.Kind != "revise" || j.Instruction != "make it shorter" {
+		t.Fatalf("a Redraft after a failed change dropped it: %+v", j)
+	}
+	fail()
+	s.AddDraft(Draft{ThreadID: "t1", HTML: "<p>mine</p>", Source: "edit"}) // you wrote it yourself instead
+	s.QueueDraft("t1", "draft", "")
+	if j, _ := s.Job("t1"); j.Status != "queued" || j.Kind != "draft" || j.Instruction != "" {
+		t.Fatalf("after your edit the failed ask should be gone: %+v", j)
+	}
+}
+
+// An edit is saved only onto the version it was made from, and never while
+// a new version is being written (checked as it's saved).
+func TestAnEditWaitsForTheVersionBeingWritten(t *testing.T) {
+	s := open(t)
+	s.AddDraft(Draft{ThreadID: "t1", HTML: "<p>v1</p>", Source: "agent"})
+	edit := Draft{ThreadID: "t1", HTML: "<p>mine</p>", Source: "edit"}
+	s.QueueDraft("t1", "draft", "")
+	if _, err := s.AddEdit(edit, 1); err == nil {
+		t.Fatal("saved while a version was queued")
+	}
+	s.NextJobs(1)
+	if _, err := s.AddEdit(edit, 1); err == nil {
+		t.Fatal("saved while a version was being written")
+	}
+	s.EndJob("t1", "failed", "", "x")
+	if _, err := s.AddEdit(edit, 0); err == nil {
+		t.Fatal("saved onto a version it wasn't made from")
+	}
+	if v, err := s.AddEdit(edit, 1); err != nil || v != 2 {
+		t.Fatalf("v%d %v", v, err)
+	}
+}
+
+// Passing an email on isn't answering it.
+func TestAForwardIsntAReply(t *testing.T) {
+	for subj, fwd := range map[string]bool{"Fwd: Q": true, " FW: Q": true, "fw:Q": true, "Re: Fwd: Q": false, "Re: Q": false, "Fwiw": false} {
+		if IsForward(subj) != fwd {
+			t.Errorf("IsForward(%q) = %v", subj, !fwd)
+		}
+	}
+	s := open(t)
+	s.AddEmail("gmail", []*mail.Message{{Folder: "INBOX", UID: 1, UIDValidity: 1, MessageID: "m1@x", From: mail.Addr{Email: "n@x.org"}, Subject: "Question", Date: time.Now()}}, me)
+	basis := s.LastMessageRow()
+	for i, subj := range []string{"Fwd: Question", " FW: Question"} {
+		s.AddEmail("gmail", []*mail.Message{{Folder: "Sent", UID: uint32(10 + i), UIDValidity: 1, MessageID: fmt.Sprintf("f%d@x", i), InReplyTo: []string{"m1@x"},
+			From: mail.Addr{Email: "me@example.com"}, To: []mail.Addr{{Email: "colleague@x.org"}}, Subject: subj, Date: time.Now()}}, me)
+	}
+	if s.RepliedSince("gmail", "m1@x", basis) {
+		t.Fatal("a forward counted as your reply")
+	}
+	s.AddEmail("gmail", []*mail.Message{{Folder: "Sent", UID: 20, UIDValidity: 1, MessageID: "r1@x", InReplyTo: []string{"m1@x"},
+		From: mail.Addr{Email: "me@example.com"}, To: []mail.Addr{{Email: "n@x.org"}}, Subject: "Re: Question", Date: time.Now()}}, me)
+	if !s.RepliedSince("gmail", "m1@x", basis) {
+		t.Fatal("your reply must count")
+	}
+}
+
+// A message that joins a thread later (it came without References, so it
+// started a thread of its own) is new to that thread: a draft of it never
+// saw the message, however long ago it was stored.
+func TestAMessageMergedIntoAThreadIsNewToIt(t *testing.T) {
+	s := open(t)
+	inbound := []string{"INBOX"}
+	now := time.Now()
+	s.AddEmail("gmail", []*mail.Message{{Folder: "INBOX", UID: 1, UIDValidity: 1, MessageID: "o1@x", From: mail.Addr{Email: "n@x.org"}, Date: now.Add(-2 * time.Hour)}}, me)
+	s.AddEmail("gmail", []*mail.Message{{Folder: "INBOX", UID: 2, UIDValidity: 1, MessageID: "r2@x", From: mail.Addr{Email: "n@x.org"}, Date: now.Add(-time.Hour)}}, me)
+	basis := s.LastMessageRow() // a draft of o1's thread, written now, saw only o1
+	if s.WroteSince("gmail", "o1@x", basis, inbound) {
+		t.Fatal("nothing new yet")
+	}
+	// Your reply to both links them: her follow-up joins o1's thread.
+	s.AddEmail("gmail", []*mail.Message{{Folder: "Sent", UID: 3, UIDValidity: 1, MessageID: "y3@x", InReplyTo: []string{"r2@x"}, References: []string{"o1@x", "r2@x"},
+		From: mail.Addr{Email: "me@example.com"}, Date: now}}, me)
+	if msgs, _ := s.ThreadMessages("gmail", "o1@x"); len(msgs) != 3 {
+		t.Fatalf("not merged: %d messages", len(msgs))
+	}
+	if !s.WroteSince("gmail", "o1@x", basis, inbound) {
+		t.Fatal("the follow-up the draft never saw doesn't count as new")
+	}
+}
+
+// docket's own rewrite can fail within the second the version it was
+// asked on was written: its ask still carries (only your edit, which can
+// only come after the failure, replaces it).
+func TestASameSecondFailureStillCarries(t *testing.T) {
+	s := open(t)
+	s.AddDraft(Draft{ThreadID: "t1", HTML: "<p>v1</p>", Source: "agent"})
+	s.QueueDraft("t1", "revise", WorkNote+"it's done and shipped.")
+	s.NextJobs(1)
+	s.EndJob("t1", "failed", "", "overloaded")
+	s.DB.Exec(`UPDATE email_jobs SET ended_at=(SELECT created_at FROM email_drafts WHERE thread_id='t1')`) // the same second
+	s.QueueDraft("t1", "draft", "")
+	if j, _ := s.Job("t1"); j.Kind != "revise" || !strings.Contains(j.Instruction, "done and shipped") {
+		t.Fatalf("docket's note was lost: %+v", j)
+	}
+}

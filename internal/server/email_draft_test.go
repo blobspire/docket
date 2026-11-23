@@ -647,7 +647,7 @@ func TestARedraftKeepsYourEdit(t *testing.T) {
 	e.s.staleDrafts()
 	f.answer(draftAnswer("v4"))
 	e.runDrafts()
-	if p := f.prompt(); !strings.Contains(p, "MY-OWN-WORDS and the form is B") || !strings.Contains(p, "keep them") {
+	if p := f.prompt(); !strings.Contains(p, "MY-OWN-WORDS and the form is B") || !strings.Contains(p, "edited it by hand: keep their edits") {
 		t.Fatalf("the next redraft must build on the version that kept your edit:\n%s", p)
 	}
 }
@@ -1054,6 +1054,46 @@ func TestAWaitingRequestIsntLost(t *testing.T) {
 			t.Fatalf("both asks, once each:\n%s", p)
 		}
 	})
+	t.Run("the work changes twice while it waits: only the latest holds", func(t *testing.T) {
+		e, f, th := workEnv(t, true)
+		busy(e)
+		ideaID, _ := e.s.st.ThreadIdea(th.ID)
+		e.s.st.EditIdea(ideaID, func(x *store.Idea) error { x.Status, x.Note = store.IdeaBuilt, "Restore button"; return nil })
+		e.s.followIdeas()
+		e.s.st.EditIdea(ideaID, func(x *store.Idea) error { x.Status = store.IdeaDismissed; return nil })
+		e.s.followIdeas()
+		free(e)
+		f.answer(workDraft)
+		e.runDrafts()
+		if p := f.prompt(); !strings.Contains(p, "decided not to do") || strings.Contains(p, "done and shipped") {
+			t.Fatalf("contradicting notes about the work:\n%s", p)
+		}
+		rec := httptest.NewRecorder()
+		e.s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/item/"+th.ItemID, nil))
+		if !strings.Contains(rec.Body.String(), "updated for the requested work") {
+			t.Fatal("docket's rewrite isn't labelled as changes you asked for")
+		}
+	})
+	t.Run("several long asks all reach the drafting agent", func(t *testing.T) {
+		e, f, _, th := replyEnv(t)
+		f.answer(draftAnswer("AGENT-V1"))
+		e.runDrafts()
+		busy(e)
+		for i := 0; i < 3; i++ {
+			ask := strings.Repeat("Please keep it plain. ", 170) + fmt.Sprintf("ASK-END-%d", i) // about 3,750 characters
+			if rec := postForm(e, "/email/"+th.ID+"/revise", url.Values{"text": {ask}}); rec.Code != 200 {
+				t.Fatalf("revise: %d", rec.Code)
+			}
+		}
+		free(e)
+		f.answer(draftAnswer("V2"))
+		e.runDrafts()
+		for i := 0; i < 3; i++ {
+			if p := f.prompt(); !strings.Contains(p, fmt.Sprintf("ASK-END-%d", i)) {
+				t.Fatalf("ask %d was cut from the prompt", i)
+			}
+		}
+	})
 	t.Run("your ask, then a new message", func(t *testing.T) {
 		e, f, _, th := replyEnv(t)
 		f.answer(draftAnswer("AGENT-V1"))
@@ -1076,4 +1116,228 @@ func TestAWaitingRequestIsntLost(t *testing.T) {
 			t.Fatalf("your ask and the new message:\n%s", p)
 		}
 	})
+}
+
+// Every change you asked for in this reply is carried, not just the
+// newest, and the version says what it is.
+func TestEveryAskInAReplyIsCarried(t *testing.T) {
+	e, f, _, th := replyEnv(t)
+	f.answer(draftAnswer("AGENT-V1"))
+	e.runDrafts()
+	for i, ask := range []string{"mention FRIDAY-PICKUP", "sign off WARMLY"} {
+		if rec := postForm(e, "/email/"+th.ID+"/revise", url.Values{"text": {ask}}); rec.Code != 200 {
+			t.Fatalf("revise: %d %s", rec.Code, rec.Body.String())
+		}
+		f.answer(draftAnswer(fmt.Sprintf("V%d", i+2)))
+		e.runDrafts()
+	}
+	nancyWrites(t, e, f, "n2@x", "Also, which form do I use?")
+	e.s.staleDrafts()
+	f.answer(draftAnswer("v4"))
+	e.runDrafts()
+	if p := f.prompt(); !strings.Contains(p, "mention FRIDAY-PICKUP") || !strings.Contains(p, "sign off WARMLY") {
+		t.Fatalf("the redraft must be told both changes you asked for:\n%s", p)
+	}
+	rec := httptest.NewRecorder()
+	e.s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/item/"+th.ItemID, nil))
+	if !strings.Contains(rec.Body.String(), "version 4, with the changes you asked for") {
+		t.Fatal("the label should say it has the changes you asked for")
+	}
+}
+
+// A version written from your edit says so.
+func TestARedraftOfYourEditSaysItKeepsIt(t *testing.T) {
+	e, f, _, th := replyEnv(t)
+	f.answer(draftAnswer("AGENT-V1"))
+	e.runDrafts()
+	if rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {"1"}, "seen": {sheetSeen(t, e, th)}, "html": {"<p>MINE</p>"}, "to": {"nancy@example.org"}}); rec.Code != 200 {
+		t.Fatalf("edit: %d %s", rec.Code, rec.Body.String())
+	}
+	nancyWrites(t, e, f, "n2@x", "Also, which form do I use?")
+	e.s.staleDrafts()
+	f.answer(draftAnswer("MINE and form B"))
+	e.runDrafts()
+	rec := httptest.NewRecorder()
+	e.s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/item/"+th.ItemID, nil))
+	if !strings.Contains(rec.Body.String(), "version 3, keeps your edit") {
+		t.Fatal("the label should say it keeps your edit")
+	}
+}
+
+// An edit isn't saved while a new version waits to be written: that
+// version would be written without it and replace it.
+func TestAnEditWaitsForTheQueuedVersion(t *testing.T) {
+	e, f, _, th := replyEnv(t)
+	f.answer(draftAnswer("AGENT-V1"))
+	e.runDrafts()
+	e.s.cfg.Email.MaxRunning = 1
+	e.s.st.DB.Exec(`INSERT INTO email_jobs(thread_id, status, kind, instruction, queued_at, started_at) VALUES ('busy','running','draft','',1,?)`, time.Now().Unix())
+	if rec := postForm(e, "/email/"+th.ID+"/redraft", nil); rec.Code != 200 {
+		t.Fatalf("redraft: %d", rec.Code)
+	}
+	rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {"1"}, "seen": {sheetSeen(t, e, th)}, "html": {"<p>MINE</p>"}, "to": {"nancy@example.org"}})
+	if d, _ := e.s.st.LatestDraft(th.ID); rec.Code == 200 || d.Version != 1 || !strings.Contains(rec.Body.String(), "being written") {
+		t.Fatalf("edit saved while a version was queued: %d %s (v%d)", rec.Code, rec.Body.String(), d.Version)
+	}
+}
+
+// A change that failed belongs to the reply it was asked in: once you've
+// replied (from your own mail, or through docket), the next draft is
+// fresh and never told it.
+func TestAFailedAskEndsWithYourReply(t *testing.T) {
+	failedAsk := func(t *testing.T) (*env, *fakeModel, *mailtest.SMTP, store.EmailThread) {
+		e, f, smtp, th := replyEnv(t)
+		f.answer(draftAnswer("AGENT-V1"))
+		e.runDrafts()
+		e.s.st.DB.Exec(`UPDATE email_drafts SET created_at=created_at-100`)
+		if rec := postForm(e, "/email/"+th.ID+"/revise", url.Values{"text": {"mention OLD-ASK"}}); rec.Code != 200 {
+			t.Fatalf("revise: %d", rec.Code)
+		}
+		f.answer(`{"is_error":true,"result":"overloaded"}`)
+		e.runDrafts()
+		if j, _ := e.s.st.Job(th.ID); j.Status != "failed" {
+			t.Fatalf("job: %+v", j)
+		}
+		return e, f, smtp, th
+	}
+	nancyAsksAgain := func(t *testing.T, e *env, f *fakeModel, th store.EmailThread) {
+		mailtest.Append(t, e.s.cfg.Email.Accounts[0].IMAP, "INBOX", msg("n9@x", "Nancy Smith <nancy@example.org>", "me@example.com", "Re: Undo a removed resident?",
+			"Thanks! New question: can I add a second resident?", "In-Reply-To: <n1@x>", "References: <n1@x>", dated(time.Now().Add(2*time.Hour))), time.Now().Add(2*time.Hour))
+		f.answer(`{"structured_output":{"threads":[{"key":"T1","verdict":"reply","line":"Reply to Nancy: second resident?","why":"asked","project":"","work":""}]}}`)
+		e.s.emailPass(e.ctx, "test")
+		f.answer(draftAnswer("NEW"))
+		e.runDrafts()
+		if p := f.prompt(); strings.Contains(p, "OLD-ASK") {
+			t.Fatalf("the first draft after your reply was told the change you asked for before it:\n%s", p)
+		}
+		// In the new reply you ask for a change: the old one doesn't ride along.
+		if rec := postForm(e, "/email/"+th.ID+"/revise", url.Values{"text": {"mention NEW-ASK"}}); rec.Code != 200 {
+			t.Fatalf("revise: %d", rec.Code)
+		}
+		f.answer(draftAnswer("V3"))
+		e.runDrafts()
+		if d, _ := e.s.st.LatestDraft(th.ID); strings.Contains(d.Instruction, "OLD-ASK") || !strings.Contains(d.Instruction, "NEW-ASK") {
+			t.Fatalf("asks carried in the new reply: %q", d.Instruction)
+		}
+	}
+	t.Run("you replied from your own mail", func(t *testing.T) {
+		e, f, _, th := failedAsk(t)
+		mailtest.Append(t, e.s.cfg.Email.Accounts[0].IMAP, "Sent", msg("mine@x", "Cole <me@example.com>", "Nancy Smith <nancy@example.org>", "Re: Undo a removed resident?",
+			"Yes, done.", "In-Reply-To: <n1@x>", "References: <n1@x>", dated(time.Now().Add(time.Hour))), time.Now().Add(time.Hour))
+		nancyAsksAgain(t, e, f, th)
+	})
+	t.Run("you replied through docket", func(t *testing.T) {
+		e, f, smtp, th := failedAsk(t)
+		e.s.cfg.Email.SendHold.Duration = 0
+		if _, err := e.s.QueueSend(th.ID, 1, "reply"); err != nil {
+			t.Fatal(err)
+		}
+		e.s.sendDue(e.ctx)
+		mailtest.Append(t, e.s.cfg.Email.Accounts[0].IMAP, "Sent", strings.ReplaceAll(smtp.Messages()[0].Data, "\r\n", "\n"), time.Now())
+		nancyAsksAgain(t, e, f, th)
+	})
+}
+
+// docket's note about the work is replaced by a newer one across versions
+// too, and is never passed off as something you asked for.
+func TestANewerWorkNoteReplacesTheOlderOne(t *testing.T) {
+	e, f, th := workEnv(t, true)
+	ideaID, _ := e.s.st.ThreadIdea(th.ID)
+	e.s.st.EditIdea(ideaID, func(x *store.Idea) error { x.Status = store.IdeaSaved; return nil })
+	e.s.followIdeas()
+	f.answer(workDraft)
+	e.runDrafts()
+	e.s.st.EditIdea(ideaID, func(x *store.Idea) error { x.Status, x.Note = store.IdeaBuilt, "Restore button"; return nil })
+	e.s.followIdeas()
+	f.answer(workDraft)
+	e.runDrafts()
+	p := f.prompt()
+	if strings.Contains(p, "saved it for later") || !strings.Contains(p, "done and shipped") || !strings.Contains(p, "docket's newer note below replaces that") {
+		t.Fatalf("both notes about the work, or not the newest:\n%s", p)
+	}
+	// Cole neither edited nor asked for anything here: nothing says so.
+	for _, bad := range []string{"edited it by hand", "Cole asked for", "made or asked for", "What Cole asks now"} {
+		if strings.Contains(p, bad) {
+			t.Fatalf("docket's note passed off as Cole's (%q):\n%s", bad, p)
+		}
+	}
+	// Then she writes again: the note still holds, as docket's.
+	nancyWrites(t, e, f, "n2@x", "Also, which form do I use?")
+	e.s.staleDrafts()
+	f.answer(workDraft)
+	e.runDrafts()
+	p = f.prompt()
+	if !strings.Contains(p, "which still holds") || !strings.Contains(p, "done and shipped") || strings.Contains(p, "edited it by hand") || strings.Contains(p, "Cole asked for") {
+		t.Fatalf("the redraft must keep docket's note about the work, as docket's:\n%s", p)
+	}
+}
+
+// After your edit, docket's note about the work and the next redraft still
+// say the reply holds your edit (it's built on it), and your asks and
+// docket's note each go under their own heading.
+func TestYourEditUnderDocketsWorkNoteIsStillYours(t *testing.T) {
+	e, f, th := workEnv(t, true)
+	if rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {"1"}, "seen": {sheetSeen(t, e, th)}, "html": {"<p>MINE</p>"}, "to": {"nancy@example.org"}}); rec.Code != 200 {
+		t.Fatalf("edit: %d %s", rec.Code, rec.Body.String())
+	}
+	ideaID, _ := e.s.st.ThreadIdea(th.ID)
+	e.s.st.EditIdea(ideaID, func(x *store.Idea) error { x.Status = store.IdeaSaved; return nil })
+	e.s.followIdeas()
+	if rec := postForm(e, "/email/"+th.ID+"/revise", url.Values{"text": {"say THANKS"}}); rec.Code != 200 {
+		t.Fatalf("revise: %d", rec.Code)
+	}
+	f.answer(workDraft)
+	e.runDrafts()
+	p := f.prompt()
+	if !strings.Contains(p, "edited it by hand") || !strings.Contains(p, "## What Cole asks now\n\nsay THANKS") || !strings.Contains(p, "## docket's note about the work this email asked for\n\n"+store.WorkNote+"Cole saved it") {
+		t.Fatalf("your edit, your ask and docket's note, each as what it is:\n%s", p)
+	}
+	nancyWrites(t, e, f, "n2@x", "Also, which form do I use?")
+	e.s.staleDrafts()
+	f.answer(workDraft)
+	e.runDrafts()
+	if p := f.prompt(); !strings.Contains(p, "edited it by hand") || !strings.Contains(p, `Cole asked for: "say THANKS"`) || !strings.Contains(p, "which still holds") {
+		t.Fatalf("the redraft must still know all three:\n%s", p)
+	}
+}
+
+// When your asks in a reply don't all fit in the note, the newest are kept.
+func TestTheNewestAsksAreKept(t *testing.T) {
+	e, f, _, th := replyEnv(t)
+	f.answer(draftAnswer("AGENT-V1"))
+	e.runDrafts()
+	for i := 0; i < 6; i++ {
+		ask := fmt.Sprintf("ASK-%d ", i) + strings.Repeat("keep it plain and short please ", 22) // about 700 characters
+		if rec := postForm(e, "/email/"+th.ID+"/revise", url.Values{"text": {ask}}); rec.Code != 200 {
+			t.Fatalf("revise: %d", rec.Code)
+		}
+		f.answer(draftAnswer(fmt.Sprintf("V%d", i+2)))
+		e.runDrafts()
+	}
+	nancyWrites(t, e, f, "n2@x", "Also, which form do I use?")
+	e.s.staleDrafts()
+	f.answer(draftAnswer("v8"))
+	e.runDrafts()
+	p := f.prompt()
+	if !strings.Contains(p, "ASK-5 ") || !strings.Contains(p, "ASK-4 ") || strings.Contains(p, "ASK-0 ") || !strings.Contains(p, "(and earlier ones)") {
+		t.Fatalf("the note must keep the newest asks:\n%s", p)
+	}
+}
+
+// The drafting agent sees your forward marked as one, and a reply is
+// never titled as a forward.
+func TestADraftSeesAForwardAndNeverSendsOne(t *testing.T) {
+	e, f, _, th := replyEnv(t)
+	mailtest.Append(t, e.s.cfg.Email.Accounts[0].IMAP, "Sent", msg("fw1@x", "Cole <me@example.com>", "bob@example.org", "Fwd: Undo a removed resident?",
+		"Bob, can we?", "In-Reply-To: <n1@x>", "References: <n1@x>"), time.Now())
+	f.answer(`{"structured_output":{"threads":[]}}`)
+	e.s.readAccount(e.ctx, e.s.cfg.Email.Accounts[0])
+	f.answer(strings.Replace(draftAnswer("AGENT-V1"), `"subject":"Re: Undo a removed resident?"`, `"subject":"Fwd: Undo a removed resident?"`, 1))
+	e.runDrafts()
+	if p := f.prompt(); !strings.Contains(p, "(you, forwarding it on; not an answer)") {
+		t.Fatalf("the forward isn't marked:\n%s", p)
+	}
+	if d, _ := e.s.st.LatestDraft(th.ID); d.Subject != "Re: Undo a removed resident?" {
+		t.Fatalf("subject %q", d.Subject)
+	}
 }

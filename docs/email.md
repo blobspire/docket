@@ -4,7 +4,7 @@ Three times a day docket reads the mail accounts you connect and sorts what's ne
 
 - **Email · needs you.** Each email you should answer becomes an item at the bottom of your docket, with a reply already drafted. An agent wrote it in your voice after checking the facts: the whole thread, your earlier mail with that person, and, when the email is about one of your projects, that project's code. You can:
   - **Send** it. It goes out after an Undo window (30 seconds by default), from your own account, threaded into the conversation, with your signature.
-  - **Ask for changes** in your own words ("shorter, and mention Friday"). The agent revises it and the new version replaces the old one.
+  - **Ask for changes** in your own words ("shorter, and mention Friday"). The agent revises it and the new version replaces the old one. Ask again while it's still waiting its turn and both asks are kept; if writing it fails, a Redraft still carries what you asked for.
   - **Edit** it yourself.
   - **Save to drafts**, to finish it in your mail app.
   - **Send a holding reply** ("good idea, we'll add it this week"), when the real answer needs work first.
@@ -14,7 +14,7 @@ Three times a day docket reads the mail accounts you connect and sorts what's ne
 - **Email · worth reading.** One line per email that matters but needs no reply: a meeting moved, a deadline, a result posted. Each line is written so you don't have to open the email ("Lab meeting moved Thu → Fri 2pm"). Lines you've scrolled past fold into Earlier when the next check brings new ones, tick one off with **Read**, and they fade after three days, so there's nothing to clear. Tap a line to open the whole email, with a link to it in Gmail or Outlook.
 - **Skipped.** Everything else: newsletters, receipts, notifications. The Email header links to what the last check skipped, so you can see what it left out.
 
-If you've already answered an email from your phone or laptop, its reply item closes on the next check.
+If you've already answered an email from your phone or laptop, its reply item closes on the next check. Forwarding it to someone (Fwd:, FW:) doesn't count as answering it.
 
 **Work an email asks for.** When answering well needs work in one of your projects first (say, a neighbor asks for a feature on the site you run), the drafting agent checks the code. If the feature doesn't exist, it writes a plan, and docket files it as an ordinary proposal in that project's section, linked to the reply both ways. The draft is written as the reply to send once it's done, with a holding reply to send now. Tap **Build it** and a session builds, tests, merges and releases it; when it ships, the reply is revised to say so and comes back to the top of Email for you to send. Save it for later or dismiss it, and the reply is revised to match. Only people you've written to before can put work in front of you this way.
 
@@ -139,7 +139,7 @@ Per account (`[[email.account]]`): `folders` (default `["INBOX"]`), `sent_folder
 ## How it works
 
 1. **Read.** Each check opens the configured folders and Sent read-only and fetches new messages by UID, newest first, in bounded batches. Threads come from `References` and `In-Reply-To`. The first check also reads a year of your Sent envelopes (addresses only) to learn who you've written to.
-2. **Answered already?** A thread whose newest message is yours closes its reply item.
+2. **Answered already?** A thread whose newest message is yours closes its reply item (a forward or a holding reply isn't an answer).
 3. **Sort.** New threads go to the triage model in batches, with your projects, your recent corrections, and for each thread who sent it (and whether you've written to them), who it went to, list and bulk markers, and the text. It returns reply, digest or skip and a one-line summary.
 4. **Draft.** Each reply gets a drafting session ([SECURITY.md](../SECURITY.md#email) lists what it can and can't do). docket cleans what comes back, chooses the recipients from the thread, and stores each version. Every version, revisions too, is written from a full prompt (the whole thread as stored then, the version it builds on, your words); no session or transcript is kept.
 5. **Send.** Your tap holds the shown version for the Undo window, then docket builds the message (styled HTML and a matching plain-text part, your signature, the quoted original, threading headers) and sends it over the account's SMTP. Gmail and DavMail put it in your Sent folder.

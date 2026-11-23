@@ -569,9 +569,6 @@ func (s *Server) replyAct(w http.ResponseWriter, r *http.Request, t store.EmailT
 		if d.Version != version {
 			return nil, fmt.Errorf("the draft changed while you were editing (now version %d); copy your text, reopen it and edit again", d.Version)
 		}
-		if j, ok := s.st.Job(t.ID); ok && (j.Status == "queued" || j.Status == "running") {
-			return nil, errors.New("a new version is being written; wait for it, then edit")
-		}
 		body, removed := mail.Clean(r.FormValue("html"))
 		if strings.TrimSpace(mail.Text(body)) == "" {
 			return nil, errors.New("the draft can't be empty")
@@ -597,7 +594,7 @@ func (s *Server) replyAct(w http.ResponseWriter, r *http.Request, t store.EmailT
 		if seen, err := strconv.ParseInt(r.FormValue("seen"), 10, 64); err == nil && seen > d.Basis {
 			nd.Basis = min(seen, s.st.LastMessageRow())
 		}
-		v, err := s.st.AddDraft(nd)
+		v, err := s.st.AddEdit(nd, version) // refused if a new version is being written
 		if err != nil {
 			return nil, err
 		}
