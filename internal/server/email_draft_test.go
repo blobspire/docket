@@ -1054,6 +1054,46 @@ func TestAWaitingRequestIsntLost(t *testing.T) {
 			t.Fatalf("both asks, once each:\n%s", p)
 		}
 	})
+	t.Run("the work changes twice while it waits: only the latest holds", func(t *testing.T) {
+		e, f, th := workEnv(t, true)
+		busy(e)
+		ideaID, _ := e.s.st.ThreadIdea(th.ID)
+		e.s.st.EditIdea(ideaID, func(x *store.Idea) error { x.Status, x.Note = store.IdeaBuilt, "Restore button"; return nil })
+		e.s.followIdeas()
+		e.s.st.EditIdea(ideaID, func(x *store.Idea) error { x.Status = store.IdeaDismissed; return nil })
+		e.s.followIdeas()
+		free(e)
+		f.answer(workDraft)
+		e.runDrafts()
+		if p := f.prompt(); !strings.Contains(p, "decided not to do") || strings.Contains(p, "done and shipped") {
+			t.Fatalf("contradicting notes about the work:\n%s", p)
+		}
+		rec := httptest.NewRecorder()
+		e.s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/item/"+th.ItemID, nil))
+		if !strings.Contains(rec.Body.String(), "updated for the requested work") {
+			t.Fatal("docket's rewrite isn't labelled as changes you asked for")
+		}
+	})
+	t.Run("several long asks all reach the drafting agent", func(t *testing.T) {
+		e, f, _, th := replyEnv(t)
+		f.answer(draftAnswer("AGENT-V1"))
+		e.runDrafts()
+		busy(e)
+		for i := 0; i < 3; i++ {
+			ask := strings.Repeat("Please keep it plain. ", 170) + fmt.Sprintf("ASK-END-%d", i) // about 3,750 characters
+			if rec := postForm(e, "/email/"+th.ID+"/revise", url.Values{"text": {ask}}); rec.Code != 200 {
+				t.Fatalf("revise: %d", rec.Code)
+			}
+		}
+		free(e)
+		f.answer(draftAnswer("V2"))
+		e.runDrafts()
+		for i := 0; i < 3; i++ {
+			if p := f.prompt(); !strings.Contains(p, fmt.Sprintf("ASK-END-%d", i)) {
+				t.Fatalf("ask %d was cut from the prompt", i)
+			}
+		}
+	})
 	t.Run("your ask, then a new message", func(t *testing.T) {
 		e, f, _, th := replyEnv(t)
 		f.answer(draftAnswer("AGENT-V1"))
@@ -1076,4 +1116,67 @@ func TestAWaitingRequestIsntLost(t *testing.T) {
 			t.Fatalf("your ask and the new message:\n%s", p)
 		}
 	})
+}
+
+// Every change you asked for in this reply is carried, not just the
+// newest, and the version says what it is.
+func TestEveryAskInAReplyIsCarried(t *testing.T) {
+	e, f, _, th := replyEnv(t)
+	f.answer(draftAnswer("AGENT-V1"))
+	e.runDrafts()
+	for i, ask := range []string{"mention FRIDAY-PICKUP", "sign off WARMLY"} {
+		if rec := postForm(e, "/email/"+th.ID+"/revise", url.Values{"text": {ask}}); rec.Code != 200 {
+			t.Fatalf("revise: %d %s", rec.Code, rec.Body.String())
+		}
+		f.answer(draftAnswer(fmt.Sprintf("V%d", i+2)))
+		e.runDrafts()
+	}
+	nancyWrites(t, e, f, "n2@x", "Also, which form do I use?")
+	e.s.staleDrafts()
+	f.answer(draftAnswer("v4"))
+	e.runDrafts()
+	if p := f.prompt(); !strings.Contains(p, "mention FRIDAY-PICKUP") || !strings.Contains(p, "sign off WARMLY") {
+		t.Fatalf("the redraft must be told both changes you asked for:\n%s", p)
+	}
+	rec := httptest.NewRecorder()
+	e.s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/item/"+th.ItemID, nil))
+	if !strings.Contains(rec.Body.String(), "version 4, with the changes you asked for") {
+		t.Fatal("the label should say it has the changes you asked for")
+	}
+}
+
+// A version written from your edit says so.
+func TestARedraftOfYourEditSaysItKeepsIt(t *testing.T) {
+	e, f, _, th := replyEnv(t)
+	f.answer(draftAnswer("AGENT-V1"))
+	e.runDrafts()
+	if rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {"1"}, "seen": {sheetSeen(t, e, th)}, "html": {"<p>MINE</p>"}, "to": {"nancy@example.org"}}); rec.Code != 200 {
+		t.Fatalf("edit: %d %s", rec.Code, rec.Body.String())
+	}
+	nancyWrites(t, e, f, "n2@x", "Also, which form do I use?")
+	e.s.staleDrafts()
+	f.answer(draftAnswer("MINE and form B"))
+	e.runDrafts()
+	rec := httptest.NewRecorder()
+	e.s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/item/"+th.ItemID, nil))
+	if !strings.Contains(rec.Body.String(), "version 3, keeps your edit") {
+		t.Fatal("the label should say it keeps your edit")
+	}
+}
+
+// An edit isn't saved while a new version waits to be written: that
+// version would be written without it and replace it.
+func TestAnEditWaitsForTheQueuedVersion(t *testing.T) {
+	e, f, _, th := replyEnv(t)
+	f.answer(draftAnswer("AGENT-V1"))
+	e.runDrafts()
+	e.s.cfg.Email.MaxRunning = 1
+	e.s.st.DB.Exec(`INSERT INTO email_jobs(thread_id, status, kind, instruction, queued_at, started_at) VALUES ('busy','running','draft','',1,?)`, time.Now().Unix())
+	if rec := postForm(e, "/email/"+th.ID+"/redraft", nil); rec.Code != 200 {
+		t.Fatalf("redraft: %d", rec.Code)
+	}
+	rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {"1"}, "seen": {sheetSeen(t, e, th)}, "html": {"<p>MINE</p>"}, "to": {"nancy@example.org"}})
+	if d, _ := e.s.st.LatestDraft(th.ID); rec.Code == 200 || d.Version != 1 || !strings.Contains(rec.Body.String(), "being written") {
+		t.Fatalf("edit saved while a version was queued: %d %s (v%d)", rec.Code, rec.Body.String(), d.Version)
+	}
 }
