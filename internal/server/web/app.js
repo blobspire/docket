@@ -923,7 +923,7 @@
         await emailPost(thread, "revise", { text });
         toast("Asked for the changes. The new version appears here.");
       } else {
-        await emailPost(thread, "edit", { version: d.dataset.version, html: $(".dr-ed", f).innerHTML, to: f.to.value, cc: f.cc.value });
+        await emailPost(thread, "edit", { version: d.dataset.version, seen: d.dataset.seen, html: $(".dr-ed", f).innerHTML, to: f.to.value, cc: f.cc.value });
         toast("Saved your edit");
       }
       reloadSheet();

@@ -258,20 +258,18 @@ func (s *Server) triage(ctx context.Context, todo []store.EmailThread, p *store.
 			ok++
 			p.Triaged++
 		}
-		// Counted only with evidence the model was working for other mail
-		// (or the email was alone): if every one failed, the model went
-		// down after the test email passed.
-		// An email that already failed alone while the model worked counts
-		// again, so two bad emails left on their own still reach you.
-		counted := 0
-		for _, tt := range failed {
-			if ok > 0 || len(batch) == 1 || s.st.TriageFails(tt.thread.ID) > 0 {
-				fail(tt)
-				counted++
+		// Counted only with evidence the model works: another email of the
+		// batch sorted, or, when none did, the test email still sorts now
+		// (if it doesn't, the model went down after the first test).
+		if ok == 0 && len(failed) > 0 {
+			works, c := s.modelWorks(ctx)
+			cost += c
+			if !works {
+				return decided, cost, err
 			}
 		}
-		if ok == 0 && counted == 0 && len(failed) > 0 {
-			return decided, cost, err
+		for _, tt := range failed {
+			fail(tt)
 		}
 	}
 	return decided, cost, nil

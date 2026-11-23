@@ -431,6 +431,7 @@ type emailItem struct {
 	PendingMs   int64 // left of its Undo window
 	Failed      string
 	Stale       bool   // they wrote again after this draft
+	Seen        int64  // the newest stored message this sheet shows (an edit made from it knows up to here)
 	Sent        bool   // this version's reply went out
 	SentAt      int64  // when
 	HoldingSent bool   // its holding reply went out
@@ -448,8 +449,9 @@ func (s *Server) emailItem(it store.Item) *emailItem {
 	if !ok {
 		return nil
 	}
+	seen := s.st.LastMessageRow() // read before the thread is, so it never overstates what the sheet shows
 	v := s.readerFor(t)
-	e := &emailItem{Thread: t, Label: v.Label, Latest: v.Latest, Earlier: len(v.Messages), OpenURL: v.OpenURL, OpenName: v.OpenName,
+	e := &emailItem{Seen: seen, Thread: t, Label: v.Label, Latest: v.Latest, Earlier: len(v.Messages), OpenURL: v.OpenURL, OpenName: v.OpenName,
 		SaveName: "Save to " + v.Label + " drafts", HoldSecs: int(s.cfg.Email.SendHold.Duration.Seconds())}
 	if j, ok := s.st.Job(t.ID); ok {
 		e.Job = &j
@@ -577,8 +579,11 @@ func (s *Server) replyAct(w http.ResponseWriter, r *http.Request, t store.EmailT
 		nd := d
 		nd.HTML, nd.To, nd.Cc, nd.Source, nd.Instruction, nd.Removed = body, to, cc, "edit", "", nil
 		// Your own edit is written with the thread in front of you: it
-		// knows everything stored so far.
-		nd.Basis = s.st.LastMessageRow()
+		// knows what the sheet you edited in showed (a message that came
+		// while you typed isn't in it), never more than is stored.
+		if seen, err := strconv.ParseInt(r.FormValue("seen"), 10, 64); err == nil && seen > d.Basis {
+			nd.Basis = min(seen, s.st.LastMessageRow())
+		}
 		v, err := s.st.AddDraft(nd)
 		if err != nil {
 			return nil, err

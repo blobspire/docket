@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -24,6 +25,8 @@ func newFakeModel(t *testing.T) *fakeModel {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "claude")
 	os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \""+dir+"/args\"\ncat > \""+dir+"/prompt\"\npwd > \""+dir+"/cwd\"\n"+
+		"n=$(( $(cat \""+dir+"/calls\" 2>/dev/null || echo 0) + 1 )); echo $n > \""+dir+"/calls\"\n"+
+		"if [ -s \""+dir+"/down-from\" ] && [ $n -ge $(cat \""+dir+"/down-from\") ]; then echo '{\"is_error\":true,\"result\":\"overloaded\"}'; exit 0; fi\n"+
 		"if [ -s \""+dir+"/fail-on\" ] && grep -qF -f \""+dir+"/fail-on\" \""+dir+"/prompt\"; then echo '{\"is_error\":true,\"result\":\"refused\"}'; exit 0; fi\n"+
 		"if [ -s \""+dir+"/prose-on\" ] && grep -qF -f \""+dir+"/prose-on\" \""+dir+"/prompt\"; then echo '{\"is_error\":false,\"result\":\"I would rather not sort these.\"}'; exit 0; fi\n"+
 		"if [ -s \""+dir+"/empty-on\" ] && grep -qF -f \""+dir+"/empty-on\" \""+dir+"/prompt\"; then echo '{\"structured_output\":{\"threads\":[]}}'; exit 0; fi\n"+
@@ -495,9 +498,11 @@ func TestAnOutageAfterTheTestEmailCountsNothing(t *testing.T) {
 	for _, id := range []string{"a@x", "b@x", "c@x"} {
 		mailtest.Append(t, addr, "INBOX", msg(id, "Ann <ann@x.org>", "me@example.com", "Q "+id, "question "+id), time.Now())
 	}
-	// Batches and singles about real mail fail; the test email ("Lunch on
-	// Friday?") passes.
+	// The batch fails, the test email ("Lunch on Friday?") passes, then
+	// the model goes down: every email alone fails, and so does the test
+	// email asked again.
 	os.WriteFile(filepath.Join(f.dir, "fail-on"), []byte("question "), 0o644)
+	os.WriteFile(filepath.Join(f.dir, "down-from"), []byte("3"), 0o644)
 	f.answer(`{"structured_output":{"threads":[{"key":"T1","verdict":"skip","line":"x","why":"x","project":"","work":""}]}}`)
 	for i := 0; i < 3; i++ {
 		e.s.emailPass(e.ctx, "test")
@@ -507,5 +512,29 @@ func TestAnOutageAfterTheTestEmailCountsNothing(t *testing.T) {
 		if th.Verdict != "" || e.s.st.TriageFails(th.ID) != 0 {
 			t.Fatalf("%s demoted by an outage: %+v", id, th)
 		}
+	}
+}
+
+// Bad emails enough to fill a whole batch don't block the mail behind
+// them: when every one fails alone and the test email still sorts, they're
+// counted, and the next batch is sorted in the same check.
+func TestABatchFullOfBadEmailsDoesntBlockTheRest(t *testing.T) {
+	e, addr, f := triageEnv(t)
+	long := strings.Repeat("blah blah blah ", 500)
+	for i := 0; i < 16; i++ {
+		mailtest.Append(t, addr, "INBOX", msg(fmt.Sprintf("p%d@x", i), "W <w@x.org>", "me@example.com", "W", "POISON-PILL "+long, dated(at(3*time.Hour))), at(3*time.Hour))
+	}
+	mailtest.Append(t, addr, "INBOX", msg("a1@x", "Ann <ann@x.org>", "me@example.com", "Question", "Can you send it?", dated(at(time.Hour))), at(time.Hour))
+	os.WriteFile(filepath.Join(f.dir, "fail-on"), []byte("POISON-PILL"), 0o644)
+	f.answer(`{"structured_output":{"threads":[{"key":"T1","verdict":"reply","line":"Reply to Ann: send it","why":"asked","project":"","work":""}]}}`)
+	if p := e.s.emailPass(e.ctx, "test"); p.Reply != 1 {
+		t.Fatalf("Ann should be sorted in the first check: %+v", p)
+	}
+	if th, _ := e.s.st.Thread(store.ThreadID("test", "a1@x")); th.Verdict != "reply" {
+		t.Fatalf("Ann: %+v", th)
+	}
+	e.s.emailPass(e.ctx, "test")
+	if todo, _ := e.s.st.ThreadsToTriage(100); len(todo) != 0 {
+		t.Fatalf("the bad emails should reach you after two checks: %d left", len(todo))
 	}
 }

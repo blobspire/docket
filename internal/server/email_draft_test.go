@@ -1,10 +1,12 @@
 package server
 
 import (
+	"fmt"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -527,10 +529,81 @@ func TestAHandEditOfAStaleDraftCanBeSent(t *testing.T) {
 	if _, err := e.s.QueueSend(th.ID, 1, "reply"); err == nil || !strings.Contains(err.Error(), "Redraft or Edit") {
 		t.Fatalf("the refusal must say what to do, not promise a new version: %v", err)
 	}
-	if rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {"1"}, "html": {"<p>Friday it is.</p>"}, "to": {"nancy@example.org"}}); rec.Code != 200 {
+	// You open the sheet (Nancy's new message is in it) and edit.
+	if rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {"1"}, "seen": {sheetSeen(t, e, th)}, "html": {"<p>Friday it is.</p>"}, "to": {"nancy@example.org"}}); rec.Code != 200 {
 		t.Fatalf("edit: %d %s", rec.Code, rec.Body.String())
 	}
 	if _, err := e.s.QueueSend(th.ID, 2, "reply"); err != nil {
 		t.Fatalf("your edit can be sent: %v", err)
+	}
+}
+
+// sheetSeen opens the reply's sheet as the browser does and reads what it
+// says it shows.
+func sheetSeen(t *testing.T, e *env, th store.EmailThread) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	e.s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/item/"+th.ItemID, nil))
+	m := regexp.MustCompile(`data-seen="(\d+)"`).FindStringSubmatch(rec.Body.String())
+	if m == nil {
+		t.Fatalf("the sheet doesn't say what it shows:\n%s", rec.Body.String())
+	}
+	return m[1]
+}
+
+// A message that arrives while you edit isn't in what you saw: the edit
+// saved from the older sheet can't be sent until you've seen it, even when
+// redrafting has failed (so no new version is coming).
+func TestAMessageWhileYouEditBlocksTheSend(t *testing.T) {
+	for _, redraftFailed := range []bool{false, true} {
+		e, f, smtp, th := replyEnv(t)
+		f.answer(strings.Replace(nancyDraft, "%s", "false", 1))
+		e.runDrafts()
+		if redraftFailed {
+			e.s.st.QueueDraft(th.ID, "draft", "")
+			e.s.st.DB.Exec(`UPDATE email_jobs SET status='failed', started_at=?, error='overloaded'`, time.Now().Unix()+1)
+		}
+		seen := sheetSeen(t, e, th)
+		addr := e.s.cfg.Email.Accounts[0].IMAP
+		mailtest.Append(t, addr, "INBOX", msg("n2@x", "Nancy Smith <nancy@example.org>", "me@example.com", "Re: Undo a removed resident?",
+			"Never mind, don't do it.", "In-Reply-To: <n1@x>", "References: <n1@x>"), time.Now())
+		f.answer(`{"structured_output":{"threads":[]}}`)
+		e.s.readAccount(e.ctx, e.s.cfg.Email.Accounts[0])
+		if redraftFailed {
+			e.s.staleDrafts() // skipped: the last redraft failed
+		}
+		if rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {"1"}, "seen": {seen}, "html": {"<p>Done, removing them now.</p>"}, "to": {"nancy@example.org"}}); rec.Code != 200 {
+			t.Fatalf("edit: %d %s", rec.Code, rec.Body.String())
+		}
+		if _, err := e.s.QueueSend(th.ID, 2, "reply"); err == nil || !strings.Contains(err.Error(), "wrote again") {
+			t.Fatalf("redraftFailed=%v: an edit made before Nancy's message must not send: %v", redraftFailed, err)
+		}
+		// Nor does an edit that claims to have seen more than is stored, or
+		// says nothing about what it saw.
+		for _, claim := range []string{"999999", ""} {
+			last, _ := e.s.st.LatestDraft(th.ID)
+			if rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {fmt.Sprint(last.Version)}, "seen": {claim}, "html": {"<p>x</p>"}, "to": {"nancy@example.org"}}); rec.Code != 200 {
+				t.Fatalf("edit: %d %s", rec.Code, rec.Body.String())
+			}
+			if claim == "999999" {
+				mailtest.Append(t, addr, "INBOX", msg("n3@x", "Nancy Smith <nancy@example.org>", "me@example.com", "Re: Undo a removed resident?",
+					"One more thing.", "In-Reply-To: <n2@x>", "References: <n1@x> <n2@x>"), time.Now())
+				e.s.readAccount(e.ctx, e.s.cfg.Email.Accounts[0])
+			}
+			if _, err := e.s.QueueSend(th.ID, last.Version+1, "reply"); err == nil {
+				t.Fatalf("seen=%q: sent without having seen Nancy's message", claim)
+			}
+		}
+		// Reopened, the sheet shows her message; an edit from it can be sent.
+		last, _ := e.s.st.LatestDraft(th.ID)
+		if rec := postForm(e, "/email/"+th.ID+"/edit", url.Values{"version": {fmt.Sprint(last.Version)}, "seen": {sheetSeen(t, e, th)}, "html": {"<p>OK, leaving them.</p>"}, "to": {"nancy@example.org"}}); rec.Code != 200 {
+			t.Fatalf("edit: %d %s", rec.Code, rec.Body.String())
+		}
+		if _, err := e.s.QueueSend(th.ID, last.Version+1, "reply"); err != nil {
+			t.Fatalf("an edit made with her message in front of you can be sent: %v", err)
+		}
+		if len(smtp.Messages()) != 0 {
+			t.Fatal("nothing should have gone out yet")
+		}
 	}
 }

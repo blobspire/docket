@@ -248,7 +248,7 @@
     {{if and (not .Draft) (not .Job)}}<p class="muted">No draft yet. <button type="button" class="lnk" data-email-do="redraft">Write one</button></p>{{end}}
     {{if and .Job (eq .Job.Status "failed") (not .Writing)}}<div class="banner stuck">{{template "i" "alert"}}<div><b>The draft couldn't be written.</b> {{.Job.Error}} <button type="button" class="lnk" data-email-do="redraft">Try again</button></div></div>{{end}}
     {{with .Draft}}
-    <div class="dr" data-email-draft data-thread="{{$e.Thread.ID}}" data-version="{{.Version}}">
+    <div class="dr" data-email-draft data-thread="{{$e.Thread.ID}}" data-version="{{.Version}}" data-seen="{{$e.Seen}}">
       <div class="dr-h">
         <div><span class="muted">To</span> {{range $i, $r := $e.To}}{{if $i}}, {{end}}<span class="addr{{if $r.Outside}} out{{end}}"{{if $r.Outside}} title="Not anyone who wrote in this conversation"{{end}}>{{with $r.Name}}{{.}} {{end}}&lt;{{$r.Email}}&gt;</span>{{end}}</div>
         {{if $e.Cc}}<div><span class="muted">Cc</span> {{range $i, $r := $e.Cc}}{{if $i}}, {{end}}<span class="addr{{if $r.Outside}} out{{end}}"{{if $r.Outside}} title="Not anyone who wrote in this conversation"{{end}}>{{with $r.Name}}{{.}} {{end}}&lt;{{$r.Email}}&gt;</span>{{end}}</div>{{end}}
