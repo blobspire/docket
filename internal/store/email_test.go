@@ -260,3 +260,22 @@ func TestWroteSinceIgnoresCopiesAndOtherFolders(t *testing.T) {
 		t.Fatal("nothing after the newest")
 	}
 }
+
+// A VACUUM (which may renumber rowids) doesn't change what a draft saw.
+func TestDraftBasisSurvivesVacuum(t *testing.T) {
+	s := open(t)
+	inbound := []string{"INBOX"}
+	for i := 0; i < 5; i++ {
+		s.AddEmail("gmail", []*mail.Message{{Folder: "INBOX", UID: uint32(i + 1), UIDValidity: 1, MessageID: fmt.Sprintf("m%d@x", i), From: mail.Addr{Email: "n@x.org"}, Date: time.Now()}}, me)
+	}
+	basis := s.LastMessageRow()
+	s.AddEmail("gmail", []*mail.Message{{Folder: "INBOX", UID: 9, UIDValidity: 1, MessageID: "late@x", InReplyTo: []string{"m4@x"}, From: mail.Addr{Email: "n@x.org"}, Date: time.Now()}}, me)
+	before := s.WroteSince("gmail", "m4@x", basis, inbound)
+	s.DB.Exec(`DELETE FROM email_messages WHERE message_id='m0@x'`) // give VACUUM something to renumber
+	if _, err := s.DB.Exec(`VACUUM`); err != nil {
+		t.Fatal(err)
+	}
+	if !before || s.WroteSince("gmail", "m4@x", basis, inbound) != before || s.LastMessageRow() != basis+1 {
+		t.Fatalf("before %v, after %v, last %d (basis %d)", before, s.WroteSince("gmail", "m4@x", basis, inbound), s.LastMessageRow(), basis)
+	}
+}

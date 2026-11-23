@@ -314,7 +314,8 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("store: migrate: %w", err)
 	}
-	db.Exec(`UPDATE email_drafts SET basis=(SELECT COALESCE(MAX(rowid),0) FROM email_messages) WHERE basis=0`) // drafts from before basis existed
+	db.Exec(`UPDATE email_messages SET seq=rowid WHERE seq=0`)                                               // messages from before seq existed
+	db.Exec(`UPDATE email_drafts SET basis=(SELECT COALESCE(MAX(seq),0) FROM email_messages) WHERE basis=0`) // drafts from before basis existed
 	// Databases created before search existed: index their items once.
 	var indexed, items int
 	db.QueryRow(`SELECT COUNT(*) FROM items_fts`).Scan(&indexed)
@@ -377,6 +378,7 @@ var added = []struct{ table, column, ddl string }{
 	{"email_threads", "triage_fails", "INTEGER NOT NULL DEFAULT 0"},
 	{"email_outbox", "answers", "TEXT NOT NULL DEFAULT ''"},
 	{"email_drafts", "basis", "INTEGER NOT NULL DEFAULT 0"},
+	{"email_messages", "seq", "INTEGER NOT NULL DEFAULT 0"},
 }
 
 func migrate(db *sql.DB) error {

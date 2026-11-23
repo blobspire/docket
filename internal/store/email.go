@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS email_messages (
   bulk INTEGER NOT NULL DEFAULT 0,
   from_me INTEGER NOT NULL DEFAULT 0,
   fetched_at INTEGER NOT NULL,
-  pruned INTEGER NOT NULL DEFAULT 0
+  pruned INTEGER NOT NULL DEFAULT 0,
+  seq INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS email_messages_mid ON email_messages(account, message_id);
 CREATE INDEX IF NOT EXISTS email_messages_thread ON email_messages(account, thread, date);
@@ -193,9 +194,11 @@ func (s *Store) AddEmail(account string, msgs []*mail.Message, me func(string) b
 		if m.Date.IsZero() {
 			e.Date = now
 		}
+		// seq orders messages by when docket stored them (a stored number,
+		// unlike rowid, which a VACUUM may renumber).
 		_, err := tx.Exec(`INSERT INTO email_messages(id, account, folder, uid, uidvalidity, message_id, thread, in_reply_to, refs,
-			from_name, from_addr, reply_to, to_json, cc_json, subject, date, text, html, attachments, list_id, bulk, from_me, fetched_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			from_name, from_addr, reply_to, to_json, cc_json, subject, date, text, html, attachments, list_id, bulk, from_me, fetched_at, seq)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,(SELECT COALESCE(MAX(seq),0)+1 FROM email_messages))`,
 			e.ID, e.Account, e.Folder, e.UID, e.UIDValidity, e.MessageID, e.Thread, strings.Join(e.InReplyTo, " "), strings.Join(e.References, " "),
 			e.From.Name, e.From.Email, js(e.ReplyTo), js(e.To), js(e.Cc), e.Subject, e.Date, e.Text, e.HTML, js(e.Attachments),
 			e.ListID, b2i(e.Bulk), b2i(e.FromMe), e.FetchedAt)
