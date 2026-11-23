@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -115,5 +116,22 @@ func TestAReplyThatArrivesBeforeItsParentJoinsTheThread(t *testing.T) {
 	msgs, _ := s.ThreadMessages("gmail", "A@x")
 	if len(msgs) != 3 {
 		t.Fatalf("thread A holds %d messages, want 3", len(msgs))
+	}
+}
+
+// A message with a huge References list (bypassing Parse's cap) still
+// stores, with everything else in its batch.
+func TestAHugeReferencesListNeverBlocksStoring(t *testing.T) {
+	s := open(t)
+	refs := make([]string, 40000)
+	for i := range refs {
+		refs[i] = fmt.Sprintf("r%d@x", i)
+	}
+	got, err := s.AddEmail("gmail", []*mail.Message{
+		{Folder: "INBOX", UID: 1, UIDValidity: 1, MessageID: "spam@x", References: refs, Date: time.Now()},
+		{Folder: "INBOX", UID: 2, UIDValidity: 1, MessageID: "real@x", Date: time.Now()},
+	}, me)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("stored %d: %v", len(got), err)
 	}
 }

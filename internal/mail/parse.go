@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"mime"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -277,8 +278,7 @@ func hiddenCSS(style string) bool {
 			continue
 		}
 		k = strings.ToLower(strings.TrimSpace(k))
-		v = strings.ToLower(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(v), "!important")))
-		v = strings.TrimSpace(v)
+		v = strings.TrimSpace(importantRE.ReplaceAllString(strings.ToLower(v), ""))
 		switch k {
 		case "display":
 			if v == "none" {
@@ -320,6 +320,8 @@ func hiddenCSS(style string) bool {
 	return false
 }
 
+var importantRE = regexp.MustCompile(`!\s*important\s*$`)
+
 func cssNumber(v string) (float64, bool) {
 	n, _, ok := cssLength(v)
 	return n, ok
@@ -340,12 +342,20 @@ func cssLength(v string) (float64, string, bool) {
 	return n, strings.TrimSpace(v[i:]), true
 }
 
+// maxRefs is how many References docket keeps: the root and the latest,
+// which is all threading needs. A message listing thousands (anyone can
+// send one) would otherwise be costly or worse to store.
+const maxRefs = 20
+
 func validIDs(ids []string) []string {
 	var out []string
 	for _, id := range ids {
 		if msgIDOK(id) {
 			out = append(out, id)
 		}
+	}
+	if len(out) > maxRefs {
+		out = append(out[:1], out[len(out)-(maxRefs-1):]...)
 	}
 	return out
 }

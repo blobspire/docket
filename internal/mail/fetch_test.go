@@ -124,9 +124,28 @@ func TestHTMLTextKeepsSmallButVisibleText(t *testing.T) {
 		`<div style="display: none !important">imp</div><p>ok</p>`:            "ok",
 		`<div style="max-height:0;overflow:hidden">pre</div><p>ok</p>`:        "ok",
 		`<div style="visibility:hidden">x</div><p style="font-size:0">y</p>z`: "z",
+		`<div style="display:none !IMPORTANT">a</div><p>ok</p>`:               "ok",
+		`<div style="display: none ! important">a</div><p>ok</p>`:             "ok",
+		`<div style="DISPLAY:NONE!Important">a</div><p>ok</p>`:                "ok",
+		`<div style="visibility:hidden !IMPORTANT">a</div><p>ok</p>`:          "ok",
 	} {
 		if got := HTMLText(in); got != want {
 			t.Errorf("%s => %q, want %q", in, got, want)
 		}
+	}
+}
+
+// Anyone can send a message with thousands of References: docket keeps the
+// root and the latest few, enough to thread.
+func TestParseKeepsAFewReferences(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("From: x@example.org\r\nSubject: s\r\nMessage-ID: <m@x>\r\nReferences:")
+	for i := 0; i < 40000; i++ {
+		fmt.Fprintf(&b, " <r%d@x>", i)
+	}
+	b.WriteString("\r\n\r\nbody\r\n")
+	m, _ := Parse([]byte(b.String()))
+	if len(m.References) != maxRefs || m.References[0] != "r0@x" || m.References[maxRefs-1] != "r39999@x" {
+		t.Fatalf("kept %d refs: first %v", len(m.References), m.References[:3])
 	}
 }

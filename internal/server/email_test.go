@@ -129,3 +129,21 @@ password_file = "/x"
 		t.Fatalf("plain text to Gmail must be refused: %v", err)
 	}
 }
+
+// One folder that can't be read doesn't stop the others.
+func TestAFailingFolderDoesntBlockTheOthers(t *testing.T) {
+	e, addr, _ := emailEnv(t, "")
+	mailtest.Append(t, addr, "INBOX", msg("n1@x", "Nancy <nancy@example.org>", "me@example.com", "Hi", "hi"), time.Now())
+	a := e.s.cfg.Email.Accounts[0]
+	a.Folders = []string{"Missing", "INBOX"}
+	r, err := e.s.readAccount(e.ctx, a)
+	if err == nil || !strings.Contains(err.Error(), "Missing") {
+		t.Fatalf("the missing folder should be reported: %v", err)
+	}
+	if len(r.New) != 1 || r.New[0].MessageID != "n1@x" {
+		t.Fatalf("INBOX should still be read: %+v", r.New)
+	}
+	if c := e.s.st.EmailCursor("test", "INBOX"); c.LastUID == 0 {
+		t.Fatal("INBOX's cursor should advance")
+	}
+}

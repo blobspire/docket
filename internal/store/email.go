@@ -151,9 +151,9 @@ func (s *Store) AddEmail(account string, msgs []*mail.Message, me func(string) b
 			for _, k := range keys {
 				args = append(args, k)
 			}
-			if _, err := tx.Exec(`UPDATE email_messages SET thread=? WHERE account=? AND thread IN (?`+strings.Repeat(",?", len(keys)-1)+`)`, args...); err != nil {
-				return nil, err
-			}
+			// Best effort: a failure here leaves a reply in its own thread,
+			// never the message unstored.
+			tx.Exec(`UPDATE email_messages SET thread=? WHERE account=? AND thread IN (?`+strings.Repeat(",?", len(keys)-1)+`)`, args...)
 		}
 		added = append(added, e)
 	}
@@ -179,6 +179,9 @@ func ownKeys(m *mail.Message, thread string) []string {
 			out = append(out, k)
 		}
 	}
+	if len(out) > 64 {
+		out = out[:64]
+	}
 	return out
 }
 
@@ -190,6 +193,9 @@ func threadOf(tx *sql.Tx, account string, m *mail.Message, rowID string) string 
 	ids := append(append([]string{}, m.InReplyTo...), m.References...)
 	if m.MessageID != "" {
 		ids = append(ids, m.MessageID)
+	}
+	if len(ids) > 64 { // Parse keeps at most 20 References; stay well under SQLite's variable limit regardless
+		ids = append(ids[:1], ids[len(ids)-63:]...)
 	}
 	if len(ids) > 0 {
 		q := `SELECT thread FROM email_messages WHERE account=? AND message_id IN (?` + strings.Repeat(",?", len(ids)-1) + `) ORDER BY date LIMIT 1`

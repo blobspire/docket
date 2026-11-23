@@ -32,6 +32,13 @@ func TestCleanSqueezesEveryKindOfBlankRun(t *testing.T) {
 		"order":            strings.Repeat("<br><br><p></p>", 40),
 		"empty list items": "<ul>" + strings.Repeat("<li> </li>", 80) + "</ul>",
 		"space run":        "<p>a" + strings.Repeat(" ", 400) + "b</p>",
+		"empty tables":     strings.Repeat("<br><br><table></table>", 100),
+		"tables only":      strings.Repeat("<table></table>", 300),
+		"empty tbody":      strings.Repeat("<br><br><table><tbody></tbody></table>", 100),
+		"empty rows":       strings.Repeat("<br><br><table><tr></tr></table>", 100),
+		"blank cells":      strings.Repeat("<table><tr><td> </td></tr></table>", 100),
+		"nested breaks":    strings.Repeat("<strong><br><br>", 40) + "x" + strings.Repeat("</strong>", 40),
+		"in a cell":        "<table><tr><td>a" + strings.Repeat("<br><br><table></table>", 100) + "b</td></tr></table>",
 	}
 	for name, mid := range cases {
 		out, notes := Clean("<p>Thanks, Cole</p>" + mid + "<p>key=SECRET</p>")
@@ -66,7 +73,7 @@ func TestCleanSqueezesEveryKindOfBlankRun(t *testing.T) {
 		for _, n := range nodes {
 			walk(n)
 		}
-		if maxRun > 2 || blanks > 0 || !strings.Contains(out, "key=SECRET") || strings.Count(out, " ") > 2 {
+		if maxRun > 2 || blanks > 0 || !strings.Contains(out, "key=SECRET") || strings.Count(out, " ") > 2 || strings.Count(out, "<table>") > 1 {
 			t.Errorf("%s: %d breaks in a row, %d blank blocks: %.200q", name, maxRun, blanks, out)
 		}
 		if name != "space run" && len(notes) == 0 {

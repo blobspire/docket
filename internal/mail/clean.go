@@ -65,7 +65,7 @@ func squeeze(s string) (string, bool) {
 			serialize(&b, n)
 		}
 		out := b.String()
-		if sq.big {
+		if sq.big || sq.breaks > 2 {
 			changed = true
 		}
 		if out == s {
@@ -76,7 +76,10 @@ func squeeze(s string) (string, bool) {
 	return s, changed
 }
 
-type squeezer struct{ big bool }
+type squeezer struct {
+	big    bool
+	breaks int // line breaks removed, across the whole tree
+}
 
 func blankText(t string) bool {
 	for _, r := range t {
@@ -123,6 +126,15 @@ func (sq *squeezer) tidy(n *html.Node) {
 			}
 		case html.ElementNode:
 			switch c.DataAtom {
+			case atom.Table, atom.Tbody, atom.Thead, atom.Tfoot, atom.Tr:
+				// A table (or row) with no text renders nothing but its
+				// margin, so a stack of them pads text out of view.
+				if blankText(textOf(c)) {
+					sq.big = true
+					n.RemoveChild(c)
+					c = next
+					continue
+				}
 			case atom.P, atom.Li, atom.Strong, atom.A, atom.Ul, atom.Ol:
 				if blank(c) {
 					if c.DataAtom != atom.Strong && c.DataAtom != atom.A {
@@ -147,7 +159,7 @@ func (sq *squeezer) tidy(n *html.Node) {
 			run++
 			if run > 2 {
 				n.RemoveChild(c)
-				sq.big = sq.big || run > 3
+				sq.breaks++
 			}
 		case c.Type == html.TextNode && blankText(c.Data):
 		default:
@@ -157,6 +169,9 @@ func (sq *squeezer) tidy(n *html.Node) {
 	}
 	for _, edge := range []func() *html.Node{func() *html.Node { return n.FirstChild }, func() *html.Node { return n.LastChild }} {
 		for c := edge(); c != nil && (c.Type == html.ElementNode && c.DataAtom == atom.Br || c.Type == html.TextNode && blankText(c.Data)); c = edge() {
+			if c.Type == html.ElementNode {
+				sq.breaks++
+			}
 			n.RemoveChild(c)
 		}
 	}
