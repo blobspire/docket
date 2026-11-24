@@ -951,8 +951,11 @@ func askStatus(d store.Delivery) string {
 	case "confirmed":
 		return "the agent has it"
 	case "sent":
-		if d.Method == "resume" {
-			return "sent to the agent's session, resumed on " + d.Machine
+		switch d.Method {
+		case "resume":
+			return "sent to the agent, resuming its session"
+		case "mailbox":
+			return "in the agent's mailbox on " + d.Machine + "; an ended session gets it when it's resumed"
 		}
 		return "sent to the agent"
 	case "failed":

@@ -283,8 +283,7 @@ CREATE TABLE IF NOT EXISTS starts (
   status TEXT NOT NULL,
   error TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL,
-  sent_at INTEGER NOT NULL DEFAULT 0,
-  resume TEXT NOT NULL DEFAULT ''
+  sent_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS starts_status ON starts(machine, status);
 `
@@ -396,7 +395,6 @@ var added = []struct{ table, column, ddl string }{
 	{"items", "next", "TEXT NOT NULL DEFAULT ''"},
 	{"deliveries", "question", "TEXT NOT NULL DEFAULT ''"},
 	{"deliveries", "answered_at", "INTEGER NOT NULL DEFAULT 0"},
-	{"starts", "resume", "TEXT NOT NULL DEFAULT ''"},
 }
 
 func migrate(db *sql.DB) error {
@@ -1381,20 +1379,6 @@ func (s *Store) ClaimDelivery(id string, attempts int, method string) bool {
 	}
 	n, _ := res.RowsAffected()
 	return n == 1
-}
-
-// AskResumeFailed puts a question whose session couldn't be resumed back
-// to pending, saying why (sending it counted the try); the session, which
-// was marked busy for the resume, is ended again.
-func (s *Store) AskResumeFailed(id, why string) error {
-	res, err := s.DB.Exec(`UPDATE deliveries SET status='pending', error=? WHERE id=? AND kind='ask' AND status='sent'`, why, id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n > 0 {
-		_, err = s.DB.Exec(`UPDATE sessions SET state='ended' WHERE id=(SELECT session_id FROM deliveries WHERE id=?) AND state='busy'`, id)
-	}
-	return err
 }
 
 // UnansweredAsks are the human's questions about an item that no answer

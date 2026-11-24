@@ -625,21 +625,6 @@ func (s *Server) paste(ctx context.Context, m Machine, sess store.Session, d sto
 }
 
 // resume restarts a finished session in tmux with the answer as its prompt.
-// askStartPrefix marks a laptop start that resumes a session with a
-// question (Ask the agent): its start id is this, the try, "-" and the
-// delivery's id.
-const askStartPrefix = "ask-"
-
-// askResumeTries is how many times a laptop tries resuming a session for a
-// question before the question waits in the mailbox instead.
-const askResumeTries = 3
-
-// resumable reports an ended session docket can resume: an interactive or
-// background one whose folder it knows.
-func resumable(sess store.Session) bool {
-	return (sess.Kind == "" || sess.Kind == "interactive" || sess.Kind == "bg") && sess.Cwd != ""
-}
-
 // resumeName is the tmux name an ended session is resumed under, and the
 // idea it keeps: an idea's session keeps its idea, and the name docket stops
 // it by.
