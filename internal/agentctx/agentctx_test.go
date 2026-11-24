@@ -149,12 +149,12 @@ func TestRefileWithTheSameKeyIsListedOnce(t *testing.T) {
 	// Closed here before the re-file: the re-file is a new item, listed.
 	o3 := o
 	o3.Closed = []Closed{{ID: "dk-first01", At: now - 10}}
-	found := false
+	got3 := map[string]string{}
 	for _, it := range c.Merged(o3).Open {
-		found = found || (it.ID == "dk-second1" && it.Title == "New plan")
+		got3[it.ID] = it.Title
 	}
-	if !found {
-		t.Fatalf("a re-file after a local done isn't listed: %+v", c.Merged(o3).Open)
+	if len(got3) != 4 || got3["dk-second1"] != "New plan" || got3["dk-first01"] != "" {
+		t.Fatalf("a re-file after a local done: %v, want it listed once under dk-second1 among 4", got3)
 	}
 	// Closing it locally after the re-file, by either id, hides it.
 	for _, id := range []string{"dk-first01", "dk-second1"} {
