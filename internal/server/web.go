@@ -114,6 +114,13 @@ var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 	"reply": func(id, placeholder string, hide bool) replyForm {
 		return replyForm{ID: id, Placeholder: placeholder, Hide: hide}
 	},
+	// askForm is the dock's question box for an item the human dealt with.
+	"askForm": func(id string) replyForm {
+		return replyForm{ID: id, Placeholder: "Ask the agent about this", Action: "ask"}
+	},
+	"asks":      asks,
+	"asking":    asking,
+	"askStatus": askStatus,
 	"replyHint": func(kind string) string {
 		switch kind {
 		case "review", "fyi":
@@ -147,6 +154,7 @@ var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 	"isImage": func(m string) bool { return strings.HasPrefix(m, "image/") },
 	"isVideo": func(m string) bool { return strings.HasPrefix(m, "video/") },
 	"rcURL":   rcURL,
+	"hm":      func(unix int64) string { return time.Unix(unix, 0).Format("15:04") },
 	"clock": func(unix int64) string {
 		if unix == 0 {
 			return ""
@@ -190,6 +198,8 @@ func kindName(k string) string {
 		return "Rule"
 	case "email":
 		return "Reply"
+	case store.KindProgress:
+		return "Progress"
 	}
 	return k
 }
@@ -259,6 +269,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /item/{id}/act", s.act)
 	mux.HandleFunc("POST /project/{name}", s.editProject)
 	mux.HandleFunc("GET /done", s.pageDone)
+	mux.HandleFunc("GET /timeline", s.pageTimeline)
 	mux.HandleFunc("GET /stash", s.pageStash)
 	mux.HandleFunc("GET /search", s.pageSearch)
 	mux.HandleFunc("GET /evidence", s.pageEvidence)
@@ -384,6 +395,7 @@ type page struct {
 	Email       *readerView
 	Skipped     *skippedView
 	Backup      *backupStatus
+	Timeline    *timelineView
 }
 
 // attachment is one piece of evidence as the item sheet shows it.
@@ -405,7 +417,8 @@ const (
 // replyForm is the dock's answer box.
 type replyForm struct {
 	ID, Placeholder string
-	Hide            bool // folded until Reply (or r) opens it: the options come first
+	Hide            bool   // folded until Reply (or r) opens it: the options come first
+	Action          string // what it posts: answer (the default), or ask
 }
 
 type leadRow struct {
@@ -902,4 +915,56 @@ func localPath(p string) bool {
 func isURL(s string) bool {
 	u, err := url.Parse(strings.TrimSpace(s))
 	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
+}
+
+// asks are the human's questions about an item still waiting for an
+// answer (Ask the agent), oldest first; answered ones are in the item's text.
+func asks(ds []store.Delivery) []store.Delivery {
+	var out []store.Delivery
+	for _, d := range ds {
+		if d.Kind == "ask" && d.AnsweredAt == 0 && d.Status != "dropped" {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// askWait is how long a sheet keeps watching for the agent's answer to a
+// question: an answer can take a resumed session a few minutes; after that
+// the human can come back to it.
+const askWait = time.Hour
+
+// asking reports a question asked within askWait that's still unanswered:
+// the open sheet reloads when its answer arrives.
+func asking(ds []store.Delivery) bool {
+	for _, d := range asks(ds) {
+		if time.Since(time.Unix(d.CreatedAt, 0)) < askWait {
+			return true
+		}
+	}
+	return false
+}
+
+// askStatus says where a question is, in a few words.
+func askStatus(d store.Delivery) string {
+	switch d.Status {
+	case "confirmed":
+		return "the agent has it"
+	case "sent":
+		switch d.Method {
+		case "resume":
+			return "sent to the agent, resuming its session"
+		case "mailbox":
+			return "in the agent's mailbox on " + d.Machine + "; an ended session gets it when it's resumed"
+		}
+		return "sent to the agent"
+	case "failed":
+		if d.Error != "" {
+			return "not delivered yet: " + d.Error
+		}
+		return "not delivered yet"
+	case "dropped":
+		return "couldn't reach the agent"
+	}
+	return "on its way to the agent"
 }

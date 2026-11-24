@@ -206,7 +206,8 @@ var (
 	mdHeading  = regexp.MustCompile(`^#{1,6}\s+`)
 	mdImage    = regexp.MustCompile(`!\[([^\]]*)\]\([^)]*\)`)
 	mdLink     = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
-	mdEmph     = regexp.MustCompile("\\*\\*|__|~~|`|(^|\\s)[*_]|[*_]($|\\s|[.,;:!?])")
+	mdStrong   = strings.NewReplacer("**", "", "__", "", "~~", "", "`", "")
+	mdEmph     = regexp.MustCompile(`(^|\s)[*_]|[*_]($|\s|[.,;:!?])`)
 	mdHTML     = regexp.MustCompile(`^<[!/a-zA-Z]`)
 )
 
@@ -229,7 +230,7 @@ func firstLine(body string) string {
 		t = mdListMark.ReplaceAllString(t, "")
 		t = mdImage.ReplaceAllString(t, "$1")
 		t = mdLink.ReplaceAllString(t, "$1")
-		t = strings.TrimSpace(mdEmph.ReplaceAllString(t, "$1$2"))
+		t = strings.TrimSpace(mdEmph.ReplaceAllString(mdStrong.Replace(t), "$1$2"))
 		if t == "" {
 			continue
 		}

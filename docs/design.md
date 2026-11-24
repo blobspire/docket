@@ -77,6 +77,12 @@ docket is how agents reach the human, not where their work is kept. Sessions run
 - **docket keeps what it was sent.** Items, their bodies and copies of their evidence stay in the database after Done (Search finds them); they're the human's reading copy, never the source.
 - **Nightly backups.** The server writes a gzipped snapshot of its database (`VACUUM INTO`) to `<data_dir>/backups` after 4:00 each day and keeps `backup_days` of them (default 7; 0 turns them off). They guard against a bad upgrade or a damaged file, not a lost disk. Evidence files aren't copied: they're named by content and never rewritten. To restore one: stop docket, delete `docket.db-wal` and `docket.db-shm` next to the database (a crash can leave them, and they'd be applied to the restored file), then `gunzip -c` the backup over `docket.db` and start docket.
 
+## Progress, the timeline, and asking later
+
+- **Progress** (`docket progress "<what's done>" --next "<what's starting>"`): when an agent finishes a major stage it posts a sentence or two. It's stored as an item with its own status, `logged`, so everything that gathers what needs the human (the docket, the badge, pushes, expiry, the agents' context, the Done page) skips it by construction; search still finds it. The docket shows the last three days in one folded Progress list under the action items. The human can ask about an entry or mark it not worth their time, nothing else.
+- **The timeline** (`/timeline?p=<project>`): a project's history, by day, newest first, built from what docket already keeps: results (reviews not dismissed, done or not), progress, problems, the human's decisions, and ideas that shipped (with their pull request). **Results** is one of its filters, so a result from months ago is two taps away.
+- **Ask the agent**: on any item the human has dealt with (closed, or a progress entry) that came from an agent's session, a question box sends the question to that session by the usual paths (waking it, or resuming an ended session on a machine the server reaches; on a laptop, an ended session gets it in its mailbox when it's next resumed, and the sheet says so). The item stays where it is: the question is a delivery of its own kind, not an answer, so it changes nothing about the item's status. The agent answers onto the item with `docket add`, and the open sheet reloads when the answer lands.
+
 ## Handing an item back
 
 Agents sometimes file as a task something they could do themselves with the human's go-ahead: a config change outside their repository, a step auto mode refused, commands written up for the human to run. Two things keep that from costing the human a terminal:
@@ -118,6 +124,7 @@ Agents sometimes file as a task something they could do themselves with the huma
 | Dismiss | Closed | Nothing |
 | Stash | Kept on the Stash for 30 days, then in Done; an open item is also marked done | As for Done |
 | Snooze | Hidden until tomorrow at 9:00 (or an hour) | Nothing |
+| Ask the agent (an item already dealt with) | Nothing changes; the question shows on the item until the answer is added | The question, right away (waking or resuming it) |
 
 ## What was learned building it
 

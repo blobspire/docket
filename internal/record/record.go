@@ -44,7 +44,7 @@ type Record struct {
 // Item is something an agent filed for the human.
 type Item struct {
 	ID        string     `json:"id"`
-	Kind      string     `json:"kind"` // ask | review | human_task | issue | fyi
+	Kind      string     `json:"kind"` // ask | review | human_task | issue | fyi | progress
 	Title     string     `json:"title"`
 	Body      string     `json:"body,omitempty"`
 	Options   []string   `json:"options,omitempty"`
@@ -72,6 +72,8 @@ type Item struct {
 	// commit) or a URL. docket keeps the agent's summary; the project keeps
 	// the record.
 	Record string `json:"record,omitempty"`
+	// Next is what a progress entry says the agent is starting next.
+	Next string `json:"next,omitempty"`
 }
 
 type Evidence struct {

@@ -73,6 +73,7 @@ func TestBlockSaysDocketIsTheMessageNotTheRecord(t *testing.T) {
 			"Sessions run for days and " + who + " can't follow them 24/7: unless they're talking with you right now, what reaches them through docket is all they see.",
 			"docket is for reaching " + who + ", not for keeping the work: keep results and reports in the project",
 			"with `--record` saying where the full version is. You and later agents can't read docket back.",
+			"Not docket items: progress updates, merged-PR reports, problems you can fix yourself or track in the repo, and questions with a sensible default (take it and say so). When you finish a major stage (a phase done, a result in, a change of direction), say so in a sentence or two with `docket progress`: it goes on the project's timeline and never asks for their attention.",
 		} {
 			if !strings.Contains(b, want) {
 				t.Errorf("block for %q is missing %q:\n%s", person, want, b)

@@ -29,10 +29,23 @@ type queueView struct {
 	Sections []section
 	Snoozed  []itemView
 	Email    *emailSection // the bottom of the All view, when email is set up
+	Progress *progressFold // what agents finished lately, folded under the action items
 
 	ProjectInfo *store.Project // project view: for the edit form
 	Projects    []string       // every project name, for "move to"
 }
+
+// progressFold is the docket's folded list of recent progress entries: what
+// agents finished, which never asks for the human's attention.
+type progressFold struct {
+	Key     string     // the fold's name, so it stays open or closed
+	Entries []itemView // newest first
+	Today   int        // posted since midnight
+}
+
+// progressDays is how far back the docket's Progress fold reaches; the
+// timeline keeps everything.
+const progressDays = 3
 
 type sideEntry struct {
 	Name, Desc string
@@ -105,9 +118,15 @@ func (v itemView) CanHandOff() bool {
 // Closed reports an item that's no longer on the docket's to-do list.
 func (v itemView) Closed() bool { return closedStatus(v.Status) }
 
-// Kept reports an item on the Stash, or closed: its sheet offers only to
-// put it back or keep it.
-func (v itemView) Kept() bool { return v.Stashed() || v.Closed() }
+// Kept reports an item on the Stash, closed, or a progress entry: nothing on
+// it waits for the human.
+func (v itemView) Kept() bool { return v.Stashed() || v.Closed() || v.Logged() }
+
+// Logged reports a progress entry: a line on the project's timeline.
+func (v itemView) Logged() bool { return v.Status == store.StatusLogged }
+
+// CanAsk reports an item the human can ask its agent about from the sheet.
+func (v itemView) CanAsk() bool { return askable(v.Item) }
 
 // Stashed reports an item on the Stash.
 func (v itemView) Stashed() bool {
@@ -555,10 +574,37 @@ func (s *Server) buildQueue(query url.Values) (*queueView, error) {
 	default:
 		q.Sections = s.byProject(rest, wait, desc, q)
 	}
+	if q.Mode == "all" || q.Mode == "project" {
+		q.Progress = s.progressFold(q.Project)
+	}
 	if q.Mode == "all" && s.cfg.Email.On() {
 		q.Email = s.buildEmail(emailOpen, emailWait, q.Projects)
 	}
 	return q, nil
+}
+
+// progressFold gathers the last few days of progress entries (one project's,
+// or every project's), or nil when there are none.
+func (s *Server) progressFold(project string) *progressFold {
+	now := s.cfg.Now()
+	items, err := s.st.RecentProgress(project, now.AddDate(0, 0, -progressDays).Unix(), 40)
+	if err != nil || len(items) == 0 {
+		return nil
+	}
+	f := &progressFold{Key: "progress:" + firstNonEmptyStr(project, "all"), Entries: s.rows(ranked(items), "list", project == "", nil)}
+	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Unix()
+	for _, it := range items {
+		if it.CreatedAt >= midnight {
+			f.Today++
+		}
+	}
+	return f
+}
+
+// Agent names who posted an item: its session's name, else its lead, else
+// its machine.
+func (v itemView) Agent() string {
+	return firstNonEmptyStr(v.Session.Name, v.Lead, v.Machine)
 }
 
 func (sec *section) countStuck() {

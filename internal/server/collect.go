@@ -339,13 +339,14 @@ func (s *Server) Receive(machine string, r io.Reader, sessionsJSON []byte, have 
 			continue
 		}
 		// Hand it over even if the session has ended: resuming it later runs
-		// the SessionStart hook, which delivers what is waiting.
-		if sess.HasPlugin {
-			reply.Deliveries = append(reply.Deliveries, mailbox.Delivery{ID: d.ID, ItemID: d.ItemID, SessionID: d.SessionID, Nonce: d.Nonce, Text: d.Text, Quiet: d.Quiet})
+		// the SessionStart hook, which delivers what is waiting. (A question
+		// to an ended laptop session waits there too; its sheet says so.) It's
+		// claimed first, so two overlapping syncs can't both hand it out.
+		if sess.HasPlugin && s.st.ClaimDelivery(d.ID, d.Attempts, "mailbox") {
 			// Writing a local mailbox file can't meaningfully fail; if it ever
 			// does, the missing receipt makes the deliverer resend it, and the
 			// mailbox ignores ids it has already delivered.
-			s.st.DeliverySent(d.ID, "mailbox")
+			reply.Deliveries = append(reply.Deliveries, mailbox.Delivery{ID: d.ID, ItemID: d.ItemID, SessionID: d.SessionID, Nonce: d.Nonce, Text: d.Text, Quiet: d.Quiet})
 		}
 	}
 	if starts, err := s.st.Starts(machine, "pending"); err == nil {

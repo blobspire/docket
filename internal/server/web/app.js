@@ -108,7 +108,7 @@
         const r = new URL(document.referrer);
         if (r.origin === location.origin && !r.pathname.startsWith("/item/")) {
           back.href = r.pathname + r.search;
-          const names = { "/stash": "Stash", "/done": "Done", "/ideas": "Ideas", "/search": "Search", "/brain": "Brain", "/leads": "Leads", "/evidence": "Evidence", "/health": "Health" };
+          const names = { "/stash": "Stash", "/done": "Done", "/ideas": "Ideas", "/search": "Search", "/brain": "Brain", "/leads": "Leads", "/evidence": "Evidence", "/health": "Health", "/timeline": "Timeline" };
           const q = r.searchParams;
           $("span", back).textContent = r.pathname === "/" ? (q.get("p") || q.get("place") || (q.get("view") === "now" ? "Act now" : "All")) : names[r.pathname] || "Back";
         }
@@ -206,6 +206,7 @@
     openSheet(order[j], "replace");
   };
   const sheetEl = () => (openId ? $(".sheet") : null);
+  const sheetScroller = (sh) => sh && ($(".sh-b", sh) || sh); // what scrolls in a sheet
   const liveSheet = () => { const sh = sheetEl(); return sh && sh.dataset.id === openId && !sh.classList.contains("busy") && $(".dock", sh) ? sh : null; };
 
   // The answer box: folded under the options until Reply (or r).
@@ -230,11 +231,12 @@
   // ---- actions --------------------------------------------------------------------------------
   const verb = { approve: "approve it", decline: "decline it", choose: "send that", answer: "send that", handoff: "hand it to the agent", done: "mark it done",
     dismiss: "dismiss it", noise: "close it", snooze: "snooze it", stash: "stash it", unstash: "take it off the Stash",
-    reopen: "put it back", reclassify: "move it", undo: "undo that" };
+    reopen: "put it back", reclassify: "move it", undo: "undo that", ask: "send the question" };
   const clip = (s) => (s.length > 28 ? s.slice(0, 27) + "…" : s);
   const said = (action, extra, id) => {
     switch (action) {
       case "answer": return `Sent “${clip(extra.text)}” to the agent`;
+      case "ask": return "Asked the agent. Its answer is added to the item";
       case "choose": { const b = $(`.sheet [data-option="${extra.option}"] span`); return b ? `Sent “${clip(b.textContent)}” to the agent` : "Sent to the agent"; }
       case "approve": return "Approved";
       case "handoff": return extra.text ? "Handed to the agent, with your note" : "Handed to the agent";
@@ -256,7 +258,7 @@
     return "Done";
   };
   // What leaves the list it's on (and slides out).
-  const leaves = (action) => !["reclassify", "undo"].includes(action);
+  const leaves = (action) => !["reclassify", "undo", "ask"].includes(action);
   const answers = ["approve", "decline", "choose", "answer", "handoff"];
   // The actions whose message to the agent the server holds back for a moment
   // (undoHold in deliver.go): an answer, a "marked done" (a done, or a stash
@@ -316,7 +318,7 @@
       // From an item's own page: back to the list it came from (fresh), or
       // stay for an undo, a move or a reopen, which keep it here.
       carry(msg, undo ? `${undo} ${decision}` : null, ms);
-      if (["undo", "reclassify", "reopen", "stash", "unstash"].includes(action)) { location.reload(); return true; }
+      if (["undo", "reclassify", "reopen", "stash", "unstash", "ask"].includes(action)) { location.reload(); return true; }
       let to = "/";
       try { const r = new URL(document.referrer); if (r.origin === location.origin && !r.pathname.startsWith("/item/")) to = r.pathname + r.search; } catch (_) {}
       location.href = to;
@@ -514,6 +516,11 @@
       }
       return act(id, el.dataset.act, extra);
     }
+    // A progress line or a timeline entry opens its item over the page.
+    if ((el = t.closest("[data-open]")) && !(e.metaKey || e.ctrlKey || e.shiftKey || e.button > 0)) {
+      e.preventDefault();
+      return openSheet(el.dataset.open);
+    }
     // A row opens its item; a modified click on its title opens a tab.
     if ((el = t.closest(".row[data-id]")) && !t.closest("button, select, input, textarea, form")) {
       if (t.closest("a") && (e.metaKey || e.ctrlKey || e.shiftKey || e.button > 0)) return;
@@ -541,7 +548,7 @@
       e.preventDefault();
       const text = $("textarea", f).value.trim();
       if (!text) { $("[data-reply-err]")?.removeAttribute("hidden"); return $("textarea", f).focus(); }
-      act(f.closest("[data-id]").dataset.id, "answer", { text });
+      act(f.closest("[data-id]").dataset.id, f.elements.action?.value || "answer", { text });
     }
   });
   document.addEventListener("input", (e) => {
@@ -549,7 +556,7 @@
   });
   // Waiting folds stay as you left them.
   const folds = () => { try { return JSON.parse(ss.get("docket.wt") || "[]"); } catch (_) { return []; } };
-  const applyFolds = () => { const open = folds(); $$("details[data-wt]").forEach((d) => { d.open = open.includes(d.dataset.wt); }); };
+  const applyFolds = (root = document) => { const open = folds(); $$("details[data-wt]", root).forEach((d) => { d.open = open.includes(d.dataset.wt); }); };
   document.addEventListener("toggle", (e) => {
     const d = e.target;
     if (!d.matches || !d.matches("details[data-wt]")) return;
@@ -652,7 +659,7 @@
     if ((k === "Enter" || k === " ") && a && a !== document.body && a.matches("a, button, summary")) return;
     if (g) {
       g = false;
-      const to = { d: "/", q: "/", t: "/stash", i: "/ideas", l: "/leads", e: "/evidence", b: "/brain", h: "/health", s: "/search" }[k];
+      const to = { d: "/", q: "/", t: "/stash", p: "/timeline", i: "/ideas", l: "/leads", e: "/evidence", b: "/brain", h: "/health", s: "/search" }[k];
       if (to) location.href = to;
       return;
     }
@@ -745,7 +752,12 @@
         const side = $(".side"), sideAt = side && [side.scrollLeft, side.scrollTop];
         const q0 = document.activeElement && document.activeElement.id === "q" ? document.activeElement : null;
         const caret = q0 && [q0.selectionStart, q0.selectionEnd, q0.selectionDirection, q0.scrollLeft];
+        // Folds open as you left them before the swap: measured closed for a
+        // moment, a page that only scrolls with a fold open would jump to the top.
+        applyFolds(doc);
+        const y = window.scrollY;
         $(where).replaceWith($(where, doc));
+        if (window.scrollY !== y) window.scrollTo(0, y);
         $("header.bar").replaceWith($("header.bar", doc));
         document.title = openId ? document.title : doc.title;
         v0 = document.body.dataset.version = doc.body.dataset.version;
@@ -972,6 +984,29 @@
       emailV = v;
     } catch (_) {}
   }, 1000);
+
+  // A question to the agent: the open item reloads when its answer arrives.
+  // The baseline is the version the sheet was drawn at, so an answer that
+  // lands before the first check still counts; the sheet keeps its scroll.
+  setInterval(async () => {
+    const sh = solo ? document : sheetEl();
+    const w = sh && $("[data-asking]", sh);
+    if (!w || document.hidden) return;
+    const f = $("[data-reply] textarea", sh);
+    if (f && f.value.trim()) return; // don't swap the sheet under a question being typed
+    try {
+      const { v } = await (await fetch("/api/version", { signal: timeout(8000) })).json();
+      if (!solo && openId !== sh.dataset.id) return; // another item opened meanwhile
+      if (w.dataset.v && v !== w.dataset.v) {
+        const box = solo ? document.scrollingElement : sheetScroller(sh);
+        const top = box ? box.scrollTop : 0;
+        if (solo) await reloadSheet();
+        else if (openId) { await openSheet(openId, "none"); refresh(true); }
+        const nb = solo ? document.scrollingElement : sheetScroller(sheetEl());
+        if (nb) nb.scrollTop = top;
+      }
+    } catch (_) {}
+  }, 5000);
 
   // ---- start --------------------------------------------------------------------------------------
   observeDigest();

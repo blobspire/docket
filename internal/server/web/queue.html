@@ -6,6 +6,7 @@
   <div class="mh">
     <div>
       <h1>{{$q.Heading}}{{if $q.ProjectInfo}} <button type="button" class="edit" data-edit-project aria-label="Edit the project">{{template "i" "pen"}}</button>{{end}}</h1>
+      {{if eq $q.Mode "project"}}<p class="tl-link"><a href="/timeline?p={{$q.Project}}">{{template "i" "trend"}}Timeline: results, progress and decisions</a></p>{{end}}
       <p>{{if $q.Need}}{{$q.Need}} need{{if eq $q.Need 1}}s{{end}} you{{else}}Nothing needs you{{end}}{{if $q.Waiting}} · {{$q.Waiting}} waiting on agents{{end}}{{with $q.Email}}{{if .Need}} · {{.Need}} email{{if gt .Need 1}}s{{end}} to answer{{end}}{{end}}</p>
       {{with $q.Desc}}<p class="desc">{{.}}</p>{{end}}
     </div>
@@ -58,6 +59,8 @@
   </div>
   {{end}}
 
+  {{with $q.Progress}}{{template "progressfold" .}}{{end}}
+
   {{with $q.Email}}{{template "emailsecs" .}}{{end}}
 
   {{if $q.Snoozed}}
@@ -70,6 +73,16 @@
 </main>
 </div>
 {{template "foot" .}}{{end}}
+
+{{/* What agents finished lately: folded, never counted, nothing to do.
+     The timeline keeps the rest. */}}
+{{define "progressfold"}}{{$f := .}}
+<details class="wt pgf" data-wt="{{.Key}}">
+  <summary>{{template "i" "trend"}}<span>Progress</span>{{if .Today}}<span class="cnt">{{.Today}} today</span>{{end}}{{with index .Entries 0}}<span class="pgf-l">{{.Title}}</span><span class="pgf-a">{{ago .CreatedAt}}</span>{{end}}{{template "i" "chev-d"}}</summary>
+  <ol class="dl">{{range .Entries}}<li class="dg"><a class="dg-l" href="/item/{{.ID}}" data-open="{{.ID}}"><span class="dg-a pg-a">{{if .ShowProject}}{{projectName .Item}}{{else}}Progress{{end}}</span><span class="dg-t">{{.Title}}</span><span class="dg-m">{{with .Next}}Next: {{.}} · {{end}}{{with .Agent}}{{.}} · {{end}}{{ago .CreatedAt}}</span></a></li>{{end}}</ol>
+  <p class="pgf-more"><a href="/timeline{{with (index .Entries 0)}}{{if not .ShowProject}}?p={{.Project}}{{end}}{{end}}">The whole timeline</a></p>
+</details>
+{{end}}
 
 {{/* The bottom of the docket: email replies, then the digest. */}}
 {{define "emailsecs"}}

@@ -188,7 +188,7 @@ func apply(s *store.Store, e store.RawEvent, o Options) error {
 			return nil
 		}
 		if a.Text != "" {
-			if err := s.AppendToItem(it.ID, clip(a.Text, 20000)); err != nil {
+			if err := addAnswer(s, it.ID, clip(a.Text, 20000)); err != nil {
 				return err
 			}
 		}
@@ -245,6 +245,13 @@ func apply(s *store.Store, e store.RawEvent, o Options) error {
 			}
 			if !ok && !d.Explicit {
 				it, ok = s.ActiveByAgentKey(k, "", r.Machine)
+			}
+		}
+		// An agent may answer the human's question about an item with a
+		// done and a note: the note is the answer.
+		if ok && d.Note != "" && hasReceivedAsk(s, it.ID) {
+			if err := addAnswer(s, it.ID, clip(d.Note, 20000)); err != nil {
+				return err
 			}
 		}
 		// Only an item that still needs someone (or one whose answer the
@@ -417,12 +424,22 @@ func fileItem(s *store.Store, r record.Record, base store.Item, o Options) error
 	case "now", "soon", "normal":
 		it.Urgency = in.Urgency
 	}
+	progress := in.Kind == store.KindProgress
+	if progress {
+		// A progress entry is a line on the project's timeline: it never asks
+		// for the human's attention, so it's logged, not open, and carries
+		// nothing that would (urgency, options, a deadline, a key).
+		it.Status = store.StatusLogged
+		it.Urgency = "normal"
+		it.Next = clip(oneLine(in.Next, 300), 300)
+		it.Options, it.Recommend, it.Blocking, it.Blocks, it.Physical, it.Due, it.Place, it.ExpiresAt = nil, "", false, "", false, "", "", 0
+	}
 	explicit := store.Slug(in.Project)
 	it.Project = explicit
 	if it.Project == "" {
 		it.Project = projectFor(s, o, r.Lead, base.Machine, firstNonEmpty(in.Root, base.Cwd))
 	}
-	if in.Key != "" {
+	if in.Key != "" && !progress {
 		k := keyNorm(in.Key)
 		it.DedupeKey = "key:" + it.Project + ":" + k
 		if hit, ok := s.ActiveByKey(it.DedupeKey); ok {
@@ -470,12 +487,15 @@ func fileItem(s *store.Store, r record.Record, base store.Item, o Options) error
 	if in.Root != "" && in.Remote != "" {
 		_ = s.SetDirRemote(base.Machine, in.Root, in.Remote)
 	}
-	if in.Idea != "" {
+	if in.Idea != "" && !progress {
 		if err := linkProposal(s, in.Idea, id, it.SessionID, base.Machine); err != nil {
 			return err
 		}
 	}
 	for _, ev := range in.Evidence {
+		if progress {
+			break
+		}
 		if err := s.AddEvidence(store.Evidence{SHA256: ev.SHA256, ItemID: id, Name: ev.Name, Mime: ev.Mime, Size: ev.Size}); err != nil {
 			return err
 		}
@@ -626,6 +646,39 @@ func parseTS(ts string) int64 {
 		return t.Unix()
 	}
 	return time.Now().Unix()
+}
+
+// addAnswer adds an agent's text to an item. Text added while a question the
+// human asked (and the agent received) waits is its answer: it goes under
+// the question, so the item reads as a conversation. A question that never
+// reached the agent isn't answered by text it hadn't seen.
+func addAnswer(s *store.Store, id, text string) error {
+	asks, _ := s.UnansweredAsks(id)
+	var ids []string
+	var q strings.Builder
+	for _, d := range asks {
+		if d.Status != "confirmed" {
+			continue
+		}
+		ids = append(ids, d.ID)
+		q.WriteString("**You asked:** " + clip(oneLine(d.Question, 1000), 1000) + "\n\n")
+	}
+	if err := s.AppendToItem(id, q.String()+text); err != nil {
+		return err
+	}
+	return s.AnswerAsks(ids)
+}
+
+// hasReceivedAsk reports a question about the item the agent received and
+// hasn't answered.
+func hasReceivedAsk(s *store.Store, id string) bool {
+	asks, _ := s.UnansweredAsks(id)
+	for _, d := range asks {
+		if d.Status == "confirmed" {
+			return true
+		}
+	}
+	return false
 }
 
 // recordLine is where an item's full version lives, kept as the agent wrote

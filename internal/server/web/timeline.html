@@ -1,0 +1,47 @@
+{{define "timeline.html"}}{{template "head" .}}{{$t := .Timeline}}
+<main class="main solo" id="main" data-label="Timeline">
+  <div class="pg tl-pg">
+  <div class="mh"><div>
+    <h1>{{if $t.Project}}{{$t.Project}} <span class="muted">· Timeline</span>{{else}}Timeline{{end}}</h1>
+    {{with $t.Desc}}<p class="desc">{{.}}</p>{{end}}
+    <p>What your agents sent you and what you decided, newest first. Marking something done never removes it from here.</p>
+  </div></div>
+  <nav class="chips" aria-label="Projects">{{range $t.Projects}}<a class="chip-l{{if .On}} on{{end}}" href="{{.URL}}"{{if .On}} aria-current="page"{{end}}>{{.Label}}</a>{{end}}</nav>
+  <nav class="chips" aria-label="Show">{{range $t.Filters}}<a class="chip-l{{if .On}} on{{end}}" href="{{.URL}}"{{if .On}} aria-current="page"{{end}}>{{.Label}}</a>{{end}}</nav>
+  {{if not $t.Days}}<div class="blank">{{$t.Empty}}</div>{{end}}
+  {{range $t.Days}}
+  <section class="tl-day">
+    <h2>{{.Label}}</h2>
+    <ol class="tl">
+    {{range .Entries}}
+      <li class="tl-e tl-{{.Kind}}">
+        <span class="tl-dot" aria-hidden="true"></span>
+        <div class="tl-c">
+          <div class="tl-h">
+            <span class="tl-at">{{hm .At}}</span>
+            <span class="chip k-{{.Class}}">{{.Label}}</span>
+            {{if .OnDocket}}<span class="tl-on">on your docket</span>{{end}}
+            {{if .ShowProject}}{{with .Item}}<span>{{projectName .}}</span>{{end}}{{with .Idea}}<span>{{.Project}}</span>{{end}}{{end}}
+            {{if not .Decision}}{{with .View}}{{with .Agent}}<span>{{.}}</span>{{end}}{{end}}{{end}}
+          </div>
+          {{if .Idea}}
+            <div class="tl-t">{{.Idea.Title}}</div>
+            {{with .Note}}<div class="prose tl-note">{{.}}</div>{{end}}
+          {{else if .Decision}}
+            <div class="tl-t">{{.What}} · <a href="/item/{{.Item.ID}}" data-open="{{.Item.ID}}">{{.Item.Title}}</a></div>
+          {{else}}
+            <a class="tl-t" href="/item/{{.Item.ID}}" data-open="{{.Item.ID}}">{{.Item.Title}}</a>
+            {{with .Summary}}<p class="tl-s">{{.}}</p>{{end}}
+            {{with .Item.Next}}<p class="tl-s">Next: {{.}}</p>{{end}}
+            {{if or .Item.Record .View}}<p class="tl-m">{{with .Item.Record}}<span class="tl-rec" title="Where the full version is kept"><b>Record:</b> {{if isURL .}}<a href="{{.}}" target="_blank" rel="noopener noreferrer">{{.}}</a>{{else}}<code>{{.}}</code>{{end}}</span>{{end}}{{with .View}}{{$n := add (len .Images) .Docs}}{{if $n}}<span>{{template "i" "clip"}}{{$n}}</span>{{end}}{{end}}</p>{{end}}
+          {{end}}
+        </div>
+      </li>
+    {{end}}
+    </ol>
+  </section>
+  {{end}}
+  {{with $t.Older}}<p class="tl-older"><a class="sb" href="{{.}}">Older</a></p>{{end}}
+  </div>
+</main>
+{{template "foot" .}}{{end}}
