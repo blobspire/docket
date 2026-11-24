@@ -70,27 +70,28 @@ func TestAddRecord(t *testing.T) {
 }
 
 // Re-filing with the key of an item that's still open updates it: the
-// confirmation names the id answers will carry, not a new one.
-func TestRefileWithKeySaysUpdated(t *testing.T) {
+// confirmation names the new filing's id (always valid: it's the new item,
+// or an alias of the one the server merges it into), and docket list shows
+// one entry under it.
+func TestRefileWithKeyIsListedOnce(t *testing.T) {
 	getenv := env(t)
 	var out bytes.Buffer
 	if err := File("review", []string{"Nightly results", "--project", "vlm", "--key", "nightly", "--record", "r1"}, &out, getenv); err != nil {
 		t.Fatal(err)
 	}
-	first := last(t).Item.ID
 	out.Reset()
 	if err := File("review", []string{"Nightly results, updated", "--project", "vlm", "--key", "nightly", "--record", "r2"}, &out, getenv); err != nil {
 		t.Fatal(err)
 	}
 	second := last(t).Item.ID
-	if !strings.Contains(out.String(), "docket: updated "+first) || strings.Contains(out.String(), second) {
-		t.Fatalf("re-file confirmation (first %s, second %s):\n%s", first, second, out.String())
+	if !strings.Contains(out.String(), "docket: filed "+second) {
+		t.Fatalf("re-file confirmation (second %s):\n%s", second, out.String())
 	}
 	var list bytes.Buffer
 	if err := List([]string{"--all"}, &list, getenv); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(list.String(), "Nightly results") != 1 || !strings.Contains(list.String(), first) {
+	if strings.Count(list.String(), "Nightly results") != 1 || !strings.Contains(list.String(), second) || !strings.Contains(list.String(), "Nightly results, updated") {
 		t.Fatalf("docket list after a re-file:\n%s", list.String())
 	}
 }

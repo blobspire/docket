@@ -192,7 +192,7 @@ func apply(s *store.Store, e store.RawEvent, o Options) error {
 				return err
 			}
 		}
-		if rec := clip(oneLine(a.Record, 500), 500); rec != "" {
+		if rec := recordLine(a.Record); rec != "" {
 			if err := s.SetRecord(it.ID, rec); err != nil {
 				return err
 			}
@@ -412,7 +412,7 @@ func fileItem(s *store.Store, r record.Record, base store.Item, o Options) error
 	it.Component = clip(strings.TrimSpace(in.Component), 60)
 	it.Place = store.Slug(in.Place)
 	it.ExpiresAt = in.Expires
-	it.Record = clip(oneLine(in.Record, 500), 500)
+	it.Record = recordLine(in.Record)
 	switch in.Urgency {
 	case "now", "soon", "normal":
 		it.Urgency = in.Urgency
@@ -626,6 +626,14 @@ func parseTS(ts string) int64 {
 		return t.Unix()
 	}
 	return time.Now().Unix()
+}
+
+// recordLine is where an item's full version lives, kept as the agent wrote
+// it (a path can hold double spaces) on one line. The CLI allows 500
+// characters; 2000 bytes holds that many in any script.
+func recordLine(s string) string {
+	s = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ").Replace(s)
+	return clip(strings.TrimSpace(s), 2000)
 }
 
 func oneLine(s string, n int) string {

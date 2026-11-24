@@ -95,7 +95,7 @@ Lead with what you need from them and why, in a sentence or two. Then at most ~5
 
 - `--key <stable-id>`: re-filing with the same key updates the one item instead of adding another: a new title, body or urgency, and answers go to the session that re-filed it. Escalate this way (`--urgency now`): raising an item to now brings it back if it was snoozed, and pushes their phone (unless they set its urgency by hand, which wins). Use it for anything you re-check on a schedule, and close it with `docket done --key <key>`.
 - `--blocking`: you're paused until they answer.
-- `--record <path or URL>`: where the full version lives in the project (see above). Any item can carry one; a review should.
+- `--record <path or URL>`: where the full version lives in the project (see above). `ask`, `task`, `review` and `issue` take it; a review should have one.
 
 ## After filing: keep the docket true
 

@@ -67,6 +67,10 @@ func TestNightlyBackup(t *testing.T) {
 	if it, ok, _ := st.GetItem("dk-backup01"); !ok || it.Title != "LIBERO-plus results" {
 		t.Fatalf("restored backup lacks the item: %+v %v", it, ok)
 	}
+	// Restored, it doesn't think today's backup is done.
+	if d := st.Get("backup:day"); d != "" {
+		t.Fatalf("the backup remembers backup:day = %q", d)
+	}
 
 	// Once a day: a second tick the same day doesn't redo it.
 	os.Remove(path)
@@ -112,6 +116,41 @@ func TestBackupFailureShows(t *testing.T) {
 	e.s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/health", nil))
 	if !strings.Contains(rec.Body.String(), "The last backup failed") {
 		t.Fatal("health page hides the failure")
+	}
+	// Not retried every tick: once fixed, the same day stays as it was...
+	os.Remove(e.s.backupDir())
+	e.s.backupDaily(time.Date(2026, 11, 24, 5, 0, 30, 0, time.Local))
+	if _, err := os.Stat(e.s.backupDir()); !os.IsNotExist(err) {
+		t.Fatal("a failed backup was retried the same day")
+	}
+	// ...and the next day's backup works and clears the error.
+	e.s.backupDaily(time.Date(2026, 11, 25, 5, 0, 0, 0, time.Local))
+	if b := e.s.backupStatus(); b.Error != "" || b.At == 0 {
+		t.Fatalf("status after the next day's backup: %+v", b)
+	}
+}
+
+// Pruning keeps only nightly backups in count, never deletes a copy made by
+// hand or the one just written, and a crash's leftovers are cleaned up.
+func TestBackupPruneAndLeftovers(t *testing.T) {
+	e := newEnv(t, "backup_days = 1\nperson = \"Cole\"\n[[machine]]\nname = \"box\"\nmode = \"local\"\n")
+	dir := e.s.backupDir()
+	os.MkdirAll(dir, 0o700)
+	keep := []string{"docket-manual.db.gz", "docket-2026-11-24-pre-upgrade.db.gz", "notes.txt"}
+	gone := []string{"docket-2026-11-20.db.gz", ".snapshot-2026-11-20.db", ".snapshot-2026-11-20.db-journal", "docket-2026-11-20.db.gz.partial"}
+	for _, n := range append(append([]string{}, keep...), gone...) {
+		os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o600)
+	}
+	e.s.backupDaily(time.Date(2026, 11, 24, 5, 0, 0, 0, time.Local))
+	for _, n := range append(keep, "docket-2026-11-24.db.gz") {
+		if _, err := os.Stat(filepath.Join(dir, n)); err != nil {
+			t.Errorf("%s is gone", n)
+		}
+	}
+	for _, n := range gone {
+		if _, err := os.Stat(filepath.Join(dir, n)); err == nil {
+			t.Errorf("%s is still there", n)
+		}
 	}
 }
 

@@ -75,7 +75,7 @@ docket is how agents reach the human, not where their work is kept. Sessions run
 
 - **The instructions say so.** Agents keep results in the project, file a summary written for the human, and say where the full version lives with `--record` (a path with a commit, or a URL). Neither the filing agent nor a later one can read docket back.
 - **docket keeps what it was sent.** Items, their bodies and copies of their evidence stay in the database after Done (Search finds them); they're the human's reading copy, never the source.
-- **Nightly backups.** The server writes a gzipped snapshot of its database (`VACUUM INTO`) to `<data_dir>/backups` after 4:00 each day and keeps `backup_days` of them (default 7; 0 turns them off). They guard against a bad upgrade or a damaged file, not a lost disk. Evidence files aren't copied: they're named by content and never rewritten.
+- **Nightly backups.** The server writes a gzipped snapshot of its database (`VACUUM INTO`) to `<data_dir>/backups` after 4:00 each day and keeps `backup_days` of them (default 7; 0 turns them off). They guard against a bad upgrade or a damaged file, not a lost disk. Evidence files aren't copied: they're named by content and never rewritten. To restore one: stop docket, delete `docket.db-wal` and `docket.db-shm` next to the database (a crash can leave them, and they'd be applied to the restored file), then `gunzip -c` the backup over `docket.db` and start docket.
 
 ## Handing an item back
 

@@ -203,7 +203,9 @@ func File(cmd string, args []string, stdout io.Writer, getenv func(string) strin
 	}
 	rememberErr := agentctx.Remember(func(o *agentctx.Overlay) {
 		at := now.Unix()
-		o.Filed = append(o.Filed, agentctx.Item{ID: it.ID, Title: it.Title, Kind: kind, Project: project, Urgency: firstNonEmpty(urgency, "normal"), Key: it.Key, SessionID: r.SessionID, CreatedAt: at})
+		// Urgency as given (empty: not given), so a re-file without one
+		// doesn't seem to lower it.
+		o.Filed = append(o.Filed, agentctx.Item{ID: it.ID, Title: it.Title, Kind: kind, Project: project, Urgency: urgency, Key: it.Key, SessionID: r.SessionID, CreatedAt: at})
 		if it.NewProject != "" && !ctx.HasProject(project) {
 			o.Projects = append(o.Projects, agentctx.NewThing{Name: project, Description: it.NewProject, ID: it.ID, At: at})
 		}
@@ -221,21 +223,18 @@ func File(cmd string, args []string, stdout io.Writer, getenv func(string) strin
 	if project != "" {
 		where = " in " + project
 	}
-	// Re-filing with the key of an item that's still open updates that item:
-	// say its id, the one answers will carry, not the new one.
-	id, did := it.ID, "filed"
-	if prev, ok := ctx.OpenByKey(it.Key, project, it.ID); ok {
-		id, did = prev.ID, "updated"
-	}
+	// This id is always the right one to use: a re-file with the key of an
+	// item that's still open is merged into that item, and the server knows
+	// this id as an alias of it (an answer then says so).
 	if idea != "" {
-		fmt.Fprintf(stdout, "docket: proposal %s %s%s for %s. End your turn now and wait: %s's answer (Build it, Save for later, or a reply) arrives as a message tagged [docket %s]. To revise it, run docket propose again.\n",
-			id, did, where, idea, capitalize(person), id)
+		fmt.Fprintf(stdout, "docket: proposal %s filed%s for %s. End your turn now and wait: %s's answer (Build it, Save for later, or a reply) arrives as a message tagged [docket %s]. To revise it, run docket propose again.\n",
+			it.ID, where, idea, capitalize(person), it.ID)
 		return nil
 	}
-	fmt.Fprintf(stdout, "docket: %s %s%s (%s). %s will see it in docket; keep working. An answer arrives as a message tagged [docket %s]. If it's settled in chat instead, run `docket done %s`.\n",
-		did, id, where, firstNonEmpty(urgency, "normal"), capitalize(person), id, id)
+	fmt.Fprintf(stdout, "docket: filed %s%s (%s). %s will see it in docket; keep working. An answer arrives as a message tagged [docket %s]. If it's settled in chat instead, run `docket done %s`.\n",
+		it.ID, where, firstNonEmpty(urgency, "normal"), capitalize(person), it.ID, it.ID)
 	if kind == "review" && rec == "" {
-		fmt.Fprintf(stdout, "docket: no --record. If these are results, keep them in the project and say where with `docket add %s --record \"<path or URL>\"`: docket is a message to %s, not the record.\n", id, person)
+		fmt.Fprintf(stdout, "docket: no --record. If these are results, keep them in the project and say where with `docket add %s --record \"<path or URL>\"`: docket is a message to %s, not the record.\n", it.ID, person)
 	}
 	return nil
 }

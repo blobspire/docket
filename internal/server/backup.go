@@ -2,10 +2,12 @@ package server
 
 import (
 	"compress/gzip"
+	"database/sql"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -75,11 +77,16 @@ func (s *Server) backup(day string, keep int) (int64, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return 0, err
 	}
-	os.Chmod(dir, 0o700) // the database holds email bodies and answers
+	os.Chmod(dir, 0o700)  // the database holds email bodies and answers
+	cleanBackupTemps(dir) // what a crash mid-backup left, any day
 	snap := filepath.Join(dir, ".snapshot-"+day+".db")
-	os.Remove(snap) // VACUUM INTO refuses an existing file (a crash left one)
-	defer os.Remove(snap)
+	defer cleanBackupTemps(dir)
 	if _, err := s.st.DB.Exec(`VACUUM INTO ?`, snap); err != nil {
+		return 0, fmt.Errorf("snapshot: %w", err)
+	}
+	// The copy shouldn't remember this backup: restored, it would think
+	// today's backup was done and skip it.
+	if err := forgetBackups(snap); err != nil {
 		return 0, fmt.Errorf("snapshot: %w", err)
 	}
 	final := filepath.Join(dir, "docket-"+day+".db.gz")
@@ -87,8 +94,30 @@ func (s *Server) backup(day string, keep int) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	pruneBackups(dir, keep)
+	pruneBackups(dir, keep, final)
 	return size, nil
+}
+
+// cleanBackupTemps removes the snapshot, partial and journal files a backup
+// works with; a crash or a full disk can leave them behind.
+func cleanBackupTemps(dir string) {
+	for _, pat := range []string{".snapshot-*", "docket-*.db.gz.partial"} {
+		names, _ := filepath.Glob(filepath.Join(dir, pat))
+		for _, n := range names {
+			os.Remove(n)
+		}
+	}
+}
+
+// forgetBackups clears the backup bookkeeping from a snapshot.
+func forgetBackups(path string) error {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	_, err = db.Exec(`DELETE FROM kv WHERE k LIKE 'backup:%'`)
+	return err
 }
 
 // gzipFile compresses src into dst through a temporary file, so dst is
@@ -133,11 +162,22 @@ func gzipFile(src, dst string) (int64, error) {
 	return info.Size(), nil
 }
 
-// pruneBackups keeps the newest keep backups (their names sort by day).
-func pruneBackups(dir string, keep int) {
-	names, _ := filepath.Glob(filepath.Join(dir, "docket-*.db.gz"))
+// backupName is a nightly backup's file name; anything else in the folder
+// (a copy made by hand before an upgrade, say) is never pruned.
+var backupName = regexp.MustCompile(`^docket-\d{4}-\d{2}-\d{2}\.db\.gz$`)
+
+// pruneBackups keeps the newest keep nightly backups (their names sort by
+// day), and always the one just written.
+func pruneBackups(dir string, keep int, just string) {
+	all, _ := filepath.Glob(filepath.Join(dir, "docket-*.db.gz"))
+	var names []string
+	for _, n := range all {
+		if backupName.MatchString(filepath.Base(n)) && n != just {
+			names = append(names, n)
+		}
+	}
 	sort.Strings(names)
-	for len(names) > keep {
+	for len(names) > keep-1 && len(names) > 0 {
 		os.Remove(names[0])
 		names = names[1:]
 	}

@@ -299,69 +299,77 @@ func (c Context) Merged(o Overlay) Context {
 			closings = append(closings, x)
 		}
 	}
-	closed := func(it Item) bool {
-		for _, x := range closings {
-			if x.ID != "" {
-				if x.ID == it.ID || slices.Contains(it.Aliases, x.ID) {
-					return true
-				}
-				continue
-			}
-			if x.Key != "" && x.Key == it.Key && (x.Project == "" || x.Project == it.Project) && it.CreatedAt < x.At {
-				return true
-			}
-		}
-		return false
-	}
 	// A filing with the key of an open item updates that item (the server
-	// merges it in), so it isn't a second entry; nor is one the server
-	// already knows by another id (an alias).
+	// merges it in), so it's one entry, not two; nor is a filing the server
+	// already knows by another id (an alias) a second entry. The entry goes
+	// by the newest filing's id: if the server merges it, that id is an
+	// alias of the open item; if this copy is stale and the item was closed
+	// meanwhile, it's the new item. Either way docket done and docket add
+	// reach the right one.
+	type entry struct {
+		Item
+		ids     []string // every id it's known by here
+		refiled int64    // when this machine last filed it, unseen by the server (0: never)
+	}
 	have := map[string]bool{}
-	keyed := map[string]int{} // project + key → index in open
-	var open []Item
+	keyed := map[string]int{} // project + key → index in entries
+	var entries []entry
 	for _, it := range c.Open {
 		have[it.ID] = true
 		for _, a := range it.Aliases {
 			have[a] = true
 		}
-		if !closed(it) {
-			if it.Key != "" {
-				keyed[it.Project+"\x00"+it.Key] = len(open)
-			}
-			open = append(open, it)
+		if it.Key != "" {
+			keyed[it.Project+"\x00"+it.Key] = len(entries)
 		}
+		entries = append(entries, entry{Item: it, ids: append([]string{it.ID}, it.Aliases...)})
 	}
 	for _, it := range o.Filed {
-		if it.CreatedAt < cut || seen[it.ID] || have[it.ID] || closed(it) {
+		if it.CreatedAt < cut || seen[it.ID] || have[it.ID] {
 			continue
 		}
 		if it.Key != "" {
 			k := it.Project + "\x00" + it.Key
 			if i, ok := keyed[k]; ok {
-				// The newer filing's words win, under the id answers carry.
-				open[i].Title, open[i].Urgency = it.Title, it.Urgency
+				e := &entries[i]
+				e.Aliases = append(e.Aliases, e.ID)
+				e.ID, e.Title, e.refiled = it.ID, it.Title, it.CreatedAt
+				e.ids = append(e.ids, it.ID)
+				if it.Urgency != "" { // empty: not given, the old one stands
+					e.Urgency = it.Urgency
+				}
 				continue
 			}
-			keyed[k] = len(open)
+			keyed[k] = len(entries)
 		}
-		open = append(open, it)
+		if it.Urgency == "" {
+			it.Urgency = "normal"
+		}
+		entries = append(entries, entry{Item: it, ids: []string{it.ID}, refiled: it.CreatedAt})
+	}
+	// A closing on this machine hides an entry, unless the entry was filed
+	// again after it: that filing made a new item (the old one was closed).
+	closed := func(e entry) bool {
+		for _, x := range closings {
+			switch {
+			case x.ID != "":
+				if slices.Contains(e.ids, x.ID) && (e.refiled == 0 || x.At >= e.refiled) {
+					return true
+				}
+			case x.Key != "" && x.Key == e.Key && (x.Project == "" || x.Project == e.Project) && max(e.CreatedAt, e.refiled) < x.At:
+				return true
+			}
+		}
+		return false
+	}
+	var open []Item
+	for _, e := range entries {
+		if !closed(e) {
+			open = append(open, e.Item)
+		}
 	}
 	out.Open = open
 	return out
-}
-
-// OpenByKey is the open item a filing with this key and project updates
-// (the server merges a re-filing into it), other than the filing itself.
-func (c Context) OpenByKey(key, project, except string) (Item, bool) {
-	if key == "" {
-		return Item{}, false
-	}
-	for _, it := range c.Open {
-		if it.Key == key && it.Project == project && it.ID != except {
-			return it, true
-		}
-	}
-	return Item{}, false
 }
 
 // HasDir reports whether this exact folder has a project.
