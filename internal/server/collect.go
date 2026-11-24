@@ -328,11 +328,6 @@ func (s *Server) Receive(machine string, r io.Reader, sessionsJSON []byte, have 
 	if err != nil {
 		return reply, err
 	}
-	// A question whose resume started but never reached the agent (no
-	// receipt: claude didn't get as far as the prompt) is tried again.
-	if stale, err := s.st.UnconfirmedResumes(machine, time.Now().Add(-unconfirmedAfter).Unix()); err == nil {
-		pending = append(pending, stale...)
-	}
 	for _, d := range pending {
 		if d.Machine != machine {
 			continue
@@ -345,28 +340,32 @@ func (s *Server) Receive(machine string, r io.Reader, sessionsJSON []byte, have 
 			continue
 		}
 		// A question about an item goes to the session that filed it, which
-		// has usually ended: the laptop resumes it with the question, as the
-		// server does on the machines it reaches. If that keeps failing, it
-		// waits in the mailbox like an answer.
-		// (A retry finds the session ended again once the laptop's registry
-		// stops listing it; one that's running now gets it in its mailbox.)
+		// has usually ended: the laptop resumes it once with the question, as
+		// the server does on the machines it reaches. A start the laptop
+		// reports failed never reached the agent, so it's tried again, and
+		// then the question waits in the mailbox like an answer. One that
+		// started is never resumed again (it may have reached the agent);
+		// its sheet says it went to a resumed session.
 		if d.Kind == "ask" && sess.State == "ended" && d.Attempts < askResumeTries && resumable(sess) {
+			if !s.st.ClaimDelivery(d.ID, d.Attempts, "resume") {
+				continue // an overlapping sync took it
+			}
 			name, idea := s.resumeName(sess)
 			id := fmt.Sprintf("%s%d-%s", askStartPrefix, d.Attempts, d.ID) // one start per try
-			if err := s.st.AddStart(store.Start{ID: id, Machine: machine, Name: name, Cwd: sess.Cwd, IdeaID: idea, Prompt: d.Text, Resume: d.SessionID}); err == nil {
-				s.st.DeliverySent(d.ID, "resume")
-				s.st.PatchSession(d.SessionID, store.SessionPatch{State: store.Str("busy")})
+			if err := s.st.AddStart(store.Start{ID: id, Machine: machine, Name: name, Cwd: sess.Cwd, IdeaID: idea, Prompt: d.Text, Resume: d.SessionID}); err != nil {
+				s.st.AskResumeFailed(d.ID, "couldn't queue the resume: "+err.Error())
 				continue
 			}
+			s.st.PatchSession(d.SessionID, store.SessionPatch{State: store.Str("busy")})
+			continue
 		}
 		// Hand it over even if the session has ended: resuming it later runs
 		// the SessionStart hook, which delivers what is waiting.
-		if sess.HasPlugin {
-			reply.Deliveries = append(reply.Deliveries, mailbox.Delivery{ID: d.ID, ItemID: d.ItemID, SessionID: d.SessionID, Nonce: d.Nonce, Text: d.Text, Quiet: d.Quiet})
+		if sess.HasPlugin && s.st.ClaimDelivery(d.ID, d.Attempts, "mailbox") {
 			// Writing a local mailbox file can't meaningfully fail; if it ever
 			// does, the missing receipt makes the deliverer resend it, and the
 			// mailbox ignores ids it has already delivered.
-			s.st.DeliverySent(d.ID, "mailbox")
+			reply.Deliveries = append(reply.Deliveries, mailbox.Delivery{ID: d.ID, ItemID: d.ItemID, SessionID: d.SessionID, Nonce: d.Nonce, Text: d.Text, Quiet: d.Quiet})
 		}
 	}
 	if starts, err := s.st.Starts(machine, "pending"); err == nil {

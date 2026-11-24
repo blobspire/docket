@@ -996,6 +996,7 @@
     if (f && f.value.trim()) return; // don't swap the sheet under a question being typed
     try {
       const { v } = await (await fetch("/api/version", { signal: timeout(8000) })).json();
+      if (!solo && openId !== sh.dataset.id) return; // another item opened meanwhile
       if (w.dataset.v && v !== w.dataset.v) {
         const box = solo ? document.scrollingElement : sheetScroller(sh);
         const top = box ? box.scrollTop : 0;

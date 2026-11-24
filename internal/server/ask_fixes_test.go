@@ -180,45 +180,65 @@ func TestFirstLineKeepsBoldWords(t *testing.T) {
 	}
 }
 
-// A resume that started but never delivered the question (no receipt) is
-// tried again once the session shows as ended, then left in the mailbox; a
-// session running again gets it in its mailbox at once.
-func TestAskResumeWithoutReceiptIsRetried(t *testing.T) {
+// A resume that started is never resumed again, even with no receipt (the
+// question may have reached the agent, or arrive in the same sync): its
+// sheet says it went to a resumed session.
+func TestAskResumesOnceWithoutReceipt(t *testing.T) {
 	e := newEnv(t, pushCfg)
 	st := e.s.st
 	st.PatchSession("s-lap0002", store.SessionPatch{Machine: store.Str("laptop"), State: store.Str("ended"), HasPlugin: store.Bool(true), Cwd: store.Str("/Users/x/vlm")})
 	st.UpsertItem(store.Item{ID: "dk-lap00002", Kind: "review", Title: "Laptop result", Status: "done", Source: "cli", SessionID: "s-lap0002", Machine: "laptop", Project: "vlm"})
 	e.s.Decide("dk-lap00002", Action{Kind: "ask", Text: "Which run?"})
-	stale := func() {
-		st.DB.Exec(`UPDATE deliveries SET sent_at=sent_at-600 WHERE item_id='dk-lap00002'`)
-		st.PatchSession("s-lap0002", store.SessionPatch{State: store.Str("ended")}) // the registry stopped listing it
-	}
-	for try := 0; try < askResumeTries; try++ {
-		r := syncLaptop(t, e)
-		if len(r.Starts) != 1 || r.Starts[0].Resume != "s-lap0002" {
-			t.Fatalf("try %d: %+v", try+1, r)
-		}
-		if again := syncLaptop(t, e); len(again.Starts) != 0 {
-			t.Fatalf("try %d resent before it could have arrived", try+1)
-		}
-		stale()
-	}
-	r := syncLaptop(t, e)
-	if len(r.Starts) != 0 || len(r.Deliveries) != 1 {
-		t.Fatalf("after %d silent resumes: %+v", askResumeTries, r)
-	}
-
-	// Running again (the human resumed it): straight to its mailbox.
-	st.PatchSession("s-lap0003", store.SessionPatch{Machine: store.Str("laptop"), State: store.Str("ended"), HasPlugin: store.Bool(true), Cwd: store.Str("/Users/x/vlm")})
-	st.UpsertItem(store.Item{ID: "dk-lap00003", Kind: "review", Title: "Other", Status: "done", Source: "cli", SessionID: "s-lap0003", Machine: "laptop", Project: "vlm"})
-	e.s.Decide("dk-lap00003", Action{Kind: "ask", Text: "And this?"})
 	if r := syncLaptop(t, e); len(r.Starts) != 1 {
-		t.Fatalf("first try: %+v", r)
+		t.Fatalf("first sync: %+v", r)
 	}
-	st.DB.Exec(`UPDATE deliveries SET sent_at=sent_at-600 WHERE item_id='dk-lap00003'`)
-	st.PatchSession("s-lap0003", store.SessionPatch{State: store.Str("idle")})
-	if r := syncLaptop(t, e); len(r.Starts) != 0 || len(r.Deliveries) != 1 || !strings.Contains(r.Deliveries[0].Text, "And this?") {
-		t.Fatalf("a running session: %+v", r)
+	st.DB.Exec(`UPDATE deliveries SET sent_at=sent_at-86400 WHERE item_id='dk-lap00002'`)
+	st.PatchSession("s-lap0002", store.SessionPatch{State: store.Str("ended")})
+	for i := 0; i < 3; i++ {
+		if r := syncLaptop(t, e); len(r.Starts)+len(r.Deliveries) != 0 {
+			t.Fatalf("handed out again: %+v", r)
+		}
+	}
+	e.s.deliverAll(e.ctx)
+	ds, _ := st.ItemDeliveries("dk-lap00002")
+	if len(ds) != 1 || ds[0].Status != "sent" || ds[0].Attempts != 1 {
+		t.Fatalf("delivery = %+v", ds)
+	}
+	if b := getOK(t, e, "/item/dk-lap00002"); !strings.Contains(b, "resumed on laptop") {
+		t.Fatal("the sheet doesn't say the question went to a resumed session")
+	}
+}
+
+// Two overlapping syncs hand a question out once.
+func TestOverlappingSyncsHandOutOnce(t *testing.T) {
+	e := newEnv(t, pushCfg)
+	st := e.s.st
+	st.PatchSession("s-lap0004", store.SessionPatch{Machine: store.Str("laptop"), State: store.Str("ended"), HasPlugin: store.Bool(true), Cwd: store.Str("/Users/x/vlm")})
+	st.PatchSession("s-lap0005", store.SessionPatch{Machine: store.Str("laptop"), State: store.Str("idle"), HasPlugin: store.Bool(true), Cwd: store.Str("/Users/x/vlm")})
+	st.UpsertItem(store.Item{ID: "dk-lap00004", Kind: "review", Title: "Ended", Status: "done", Source: "cli", SessionID: "s-lap0004", Machine: "laptop", Project: "vlm"})
+	st.UpsertItem(store.Item{ID: "dk-lap00005", Kind: "review", Title: "Running", Status: "done", Source: "cli", SessionID: "s-lap0005", Machine: "laptop", Project: "vlm"})
+	e.s.Decide("dk-lap00004", Action{Kind: "ask", Text: "Q1"})
+	e.s.Decide("dk-lap00005", Action{Kind: "ask", Text: "Q2"})
+	replies := make(chan SyncReply, 8)
+	done := make(chan struct{})
+	for i := 0; i < 8; i++ {
+		go func() {
+			r, _ := e.s.Receive("laptop", strings.NewReader(`{"_cursor":"","_more":false}`+"\n"), nil, Hashes{Rules: "-", Context: "-"})
+			replies <- r
+			done <- struct{}{}
+		}()
+	}
+	for i := 0; i < 8; i++ {
+		<-done
+	}
+	close(replies)
+	starts, boxed := 0, 0
+	for r := range replies {
+		starts += len(r.Starts)
+		boxed += len(r.Deliveries)
+	}
+	if starts != 1 || boxed != 1 {
+		t.Fatalf("8 overlapping syncs handed out %d starts and %d mailbox deliveries, want 1 and 1", starts, boxed)
 	}
 }
 
