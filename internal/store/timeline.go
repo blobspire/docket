@@ -66,7 +66,8 @@ func (s *Store) Timeline(project, filter string, before int64, limit int) (entri
 	if err != nil {
 		return nil, false, err
 	}
-	return append(entries, same...), true, nil
+	older, err := s.timeline(project, filter, "<", edge, 1)
+	return append(entries, same...), len(older) > 0, err
 }
 
 // timeline gathers the entries whose time compares (op: "<" or "=") with t,

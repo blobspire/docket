@@ -999,7 +999,8 @@
       if (w.dataset.v && v !== w.dataset.v) {
         const box = solo ? document.scrollingElement : sheetScroller(sh);
         const top = box ? box.scrollTop : 0;
-        await reloadSheet();
+        if (solo) await reloadSheet();
+        else if (openId) { await openSheet(openId, "none"); refresh(true); }
         const nb = solo ? document.scrollingElement : sheetScroller(sheetEl());
         if (nb) nb.scrollTop = top;
       }

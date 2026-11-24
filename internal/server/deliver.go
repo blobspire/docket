@@ -640,6 +640,23 @@ func resumable(sess store.Session) bool {
 	return (sess.Kind == "" || sess.Kind == "interactive" || sess.Kind == "bg") && sess.Cwd != ""
 }
 
+// resumeName is the tmux name an ended session is resumed under, and the
+// idea it keeps: an idea's session keeps its idea, and the name docket stops
+// it by.
+func (s *Server) resumeName(sess store.Session) (name, idea string) {
+	if sess.Idea != "" {
+		run := sess.Idea
+		if i, ok, _ := s.st.GetIdea(sess.Idea); ok && i.SessionID == sess.ID && i.SessionName != "" {
+			run = i.SessionName
+		}
+		return run, sess.Idea
+	}
+	if sess.Name != "" {
+		return sess.Name, ""
+	}
+	return "docket-" + short(sess.ID), ""
+}
+
 func (s *Server) resume(ctx context.Context, m Machine, sess store.Session, d store.Delivery) {
 	if sess.Kind != "" && sess.Kind != "interactive" && sess.Kind != "bg" {
 		s.st.DeliveryFailed(d.ID, "the session has ended and isn't resumable ("+sess.Kind+")")
@@ -649,18 +666,10 @@ func (s *Server) resume(ctx context.Context, m Machine, sess store.Session, d st
 		s.st.DeliveryFailed(d.ID, "the session has ended and its folder is unknown")
 		return
 	}
-	name := sess.Name
-	if name == "" {
-		name = "docket-" + short(d.SessionID)
-	}
+	name, idea := s.resumeName(sess)
 	args := []string{"session", "resume", "--id", d.SessionID, "--cwd", sess.Cwd, "--name", name}
-	if sess.Idea != "" {
-		// An idea's session keeps its idea, and the name docket stops it by.
-		run := sess.Idea
-		if i, ok, _ := s.st.GetIdea(sess.Idea); ok && i.SessionID == sess.ID && i.SessionName != "" {
-			run = i.SessionName
-		}
-		args = []string{"session", "resume", "--id", d.SessionID, "--cwd", sess.Cwd, "--name", run, "--idea", sess.Idea}
+	if idea != "" {
+		args = append(args, "--idea", idea)
 	}
 	if _, err := s.remote(ctx, m, strings.NewReader(d.Text), args...); err != nil {
 		s.st.DeliveryFailed(d.ID, err.Error())

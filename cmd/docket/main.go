@@ -603,7 +603,14 @@ func runStart(st server.StartCmd, sp spool.Spool) {
 		sessions.Stop(st.Name)
 		return
 	}
-	err := sessions.Start(sessions.StartOpts{Name: st.Name, Cwd: st.Cwd, Idea: st.Idea, Args: st.Args, Prompt: st.Prompt, ResumeID: st.Resume, Home: home})
+	var err error
+	if st.Resume != "" {
+		// A session to resume with a message (a question for an ended one):
+		// the same as `docket session resume` on a machine the server reaches.
+		err = sessions.ResumeIdea(st.Resume, st.Cwd, st.Name, st.Idea, st.Prompt, home)
+	} else {
+		err = sessions.Start(sessions.StartOpts{Name: st.Name, Cwd: st.Cwd, Idea: st.Idea, Args: st.Args, Prompt: st.Prompt, Home: home})
+	}
 	r := record.New("session.started", os.Getenv)
 	p := map[string]any{"start_id": st.ID, "ok": err == nil}
 	if err != nil {

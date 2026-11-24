@@ -1371,6 +1371,12 @@ func (s *Store) deliveries(where string, args ...any) ([]Delivery, error) {
 	return out, rows.Err()
 }
 
+// UnconfirmedResumes are the questions a machine was asked to resume a
+// session with, sent before the unix time before and never confirmed.
+func (s *Store) UnconfirmedResumes(machine string, before int64) ([]Delivery, error) {
+	return s.deliveries(`WHERE machine=? AND kind='ask' AND method='resume' AND status='sent' AND COALESCE(sent_at,0)<? AND COALESCE(confirmed_at,0)=0 ORDER BY created_at`, machine, before)
+}
+
 // AskResumeFailed puts a question whose session couldn't be resumed back
 // to pending, saying why (sending it counted the try); the session, which
 // was marked busy for the resume, is ended again.

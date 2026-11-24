@@ -2,8 +2,10 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/blobspire/docket/internal/ingest"
 	"github.com/blobspire/docket/internal/record"
@@ -175,5 +177,77 @@ func TestFirstLineKeepsBoldWords(t *testing.T) {
 		if got := firstLine(in); got != want {
 			t.Errorf("firstLine(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// A resume that started but never delivered the question (no receipt) is
+// tried again once the session shows as ended, then left in the mailbox; a
+// session running again gets it in its mailbox at once.
+func TestAskResumeWithoutReceiptIsRetried(t *testing.T) {
+	e := newEnv(t, pushCfg)
+	st := e.s.st
+	st.PatchSession("s-lap0002", store.SessionPatch{Machine: store.Str("laptop"), State: store.Str("ended"), HasPlugin: store.Bool(true), Cwd: store.Str("/Users/x/vlm")})
+	st.UpsertItem(store.Item{ID: "dk-lap00002", Kind: "review", Title: "Laptop result", Status: "done", Source: "cli", SessionID: "s-lap0002", Machine: "laptop", Project: "vlm"})
+	e.s.Decide("dk-lap00002", Action{Kind: "ask", Text: "Which run?"})
+	stale := func() {
+		st.DB.Exec(`UPDATE deliveries SET sent_at=sent_at-600 WHERE item_id='dk-lap00002'`)
+		st.PatchSession("s-lap0002", store.SessionPatch{State: store.Str("ended")}) // the registry stopped listing it
+	}
+	for try := 0; try < askResumeTries; try++ {
+		r := syncLaptop(t, e)
+		if len(r.Starts) != 1 || r.Starts[0].Resume != "s-lap0002" {
+			t.Fatalf("try %d: %+v", try+1, r)
+		}
+		if again := syncLaptop(t, e); len(again.Starts) != 0 {
+			t.Fatalf("try %d resent before it could have arrived", try+1)
+		}
+		stale()
+	}
+	r := syncLaptop(t, e)
+	if len(r.Starts) != 0 || len(r.Deliveries) != 1 {
+		t.Fatalf("after %d silent resumes: %+v", askResumeTries, r)
+	}
+
+	// Running again (the human resumed it): straight to its mailbox.
+	st.PatchSession("s-lap0003", store.SessionPatch{Machine: store.Str("laptop"), State: store.Str("ended"), HasPlugin: store.Bool(true), Cwd: store.Str("/Users/x/vlm")})
+	st.UpsertItem(store.Item{ID: "dk-lap00003", Kind: "review", Title: "Other", Status: "done", Source: "cli", SessionID: "s-lap0003", Machine: "laptop", Project: "vlm"})
+	e.s.Decide("dk-lap00003", Action{Kind: "ask", Text: "And this?"})
+	if r := syncLaptop(t, e); len(r.Starts) != 1 {
+		t.Fatalf("first try: %+v", r)
+	}
+	st.DB.Exec(`UPDATE deliveries SET sent_at=sent_at-600 WHERE item_id='dk-lap00003'`)
+	st.PatchSession("s-lap0003", store.SessionPatch{State: store.Str("idle")})
+	if r := syncLaptop(t, e); len(r.Starts) != 0 || len(r.Deliveries) != 1 || !strings.Contains(r.Deliveries[0].Text, "And this?") {
+		t.Fatalf("a running session: %+v", r)
+	}
+}
+
+// An idea's session resumes under its idea and run name, as on a machine
+// the server reaches.
+func TestAskResumeKeepsAnIdeaSession(t *testing.T) {
+	e := newEnv(t, pushCfg)
+	st := e.s.st
+	st.PatchSession("s-idea0001", store.SessionPatch{Machine: store.Str("laptop"), State: store.Str("ended"), HasPlugin: store.Bool(true), Cwd: store.Str("/Users/x/docket"), Idea: store.Str("idea-abcdefgh")})
+	st.AddIdea(store.Idea{ID: "idea-abcdefgh", Project: "docket", Title: "x", Status: store.IdeaBuilt, SessionID: "s-idea0001", SessionName: "idea-abcdefgh-2"})
+	st.UpsertItem(store.Item{ID: "dk-idea0001", Kind: "review", Title: "Shipped", Status: "done", Source: "cli", SessionID: "s-idea0001", Machine: "laptop", Project: "docket"})
+	e.s.Decide("dk-idea0001", Action{Kind: "ask", Text: "Which PR?"})
+	r := syncLaptop(t, e)
+	if len(r.Starts) != 1 || r.Starts[0].Idea != "idea-abcdefgh" || r.Starts[0].Name != "idea-abcdefgh-2" {
+		t.Fatalf("start = %+v", r.Starts)
+	}
+}
+
+// A crowded second with nothing older: no Older link to an empty page.
+func TestTimelineNoEmptyOlderPage(t *testing.T) {
+	e := newEnv(t, "")
+	at := time.Now().Add(-time.Hour).Unix()
+	for i := 0; i < timelineLimit+5; i++ {
+		e.s.st.UpsertItem(store.Item{ID: fmt.Sprintf("dk-e%07d", i), Kind: "progress", Status: store.StatusLogged, Title: "bulk", Project: "vlm", CreatedAt: at})
+	}
+	if entries, more, _ := e.s.st.Timeline("vlm", "", 0, timelineLimit); len(entries) != timelineLimit+5 || more {
+		t.Fatalf("%d entries, more=%v", len(entries), more)
+	}
+	if b := getOK(t, e, "/timeline?p=vlm"); strings.Contains(b, "before=") {
+		t.Fatal("an Older link with nothing older")
 	}
 }
