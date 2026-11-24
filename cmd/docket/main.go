@@ -50,8 +50,11 @@ project, and say where with --record. Neither you nor later agents can read dock
       Results they asked for or are waiting on: an experiment finished, a report is ready.
       A summary written for them; --record says where the full version lives in the project.
   docket issue "<something broken that needs them>" --project <p> [--why "..."]
+  docket progress "<what you finished, a sentence or two>" [--next "<what you're starting>"] [--project <p>] [--record "<path or URL>"]
+      A major stage done (a phase finished, a result in, a change of direction): a line on the
+      project's timeline. It never notifies them and needs nothing back. Not for routine steps.
 
-  Flags for all of these:
+  Flags for ask, task, review and issue:
     --project <name>           which project (see docket projects); --new-project "<description>" to start one
     --component <name>         part of the project, e.g. "FR5 hardware", "billing"
     --place <name>             where they must be to do it in person, e.g. lab, home

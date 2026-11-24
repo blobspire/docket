@@ -41,7 +41,7 @@ func Block(person string) string {
 - a decision you can't reasonably make yourself
 - something only they can do: a login, credentials, money, hardware, contacting a person, anything physical
 - something broken that needs them
-Not docket: progress updates, merged-PR reports, problems you can fix yourself or track in the repo, and questions with a sensible default (take it and say so).
+Not docket items: progress updates, merged-PR reports, problems you can fix yourself or track in the repo, and questions with a sensible default (take it and say so). When you finish a major stage (a phase done, a result in, a change of direction), say so in a sentence or two with ` + "`docket progress`" + `: it goes on the project's timeline and never asks for their attention.
 docket is for reaching ` + person + `, not for keeping the work: keep results and reports in the project, the way it already keeps its records, and file a summary written for them, with ` + "`--record`" + ` saying where the full version is. You and later agents can't read docket back.
 If ` + person + ` is in the conversation with you right now, just ask in chat. File anyway when it would matter if they stepped away (it blocks work beyond this conversation, it's urgent, or it's results they'll want later), and close the item yourself with ` + "`docket done <id>`" + ` once it's settled in chat.
 To file: ` + "`docket ask|task|review|issue \"<title>\" --project <p> --why \"<markdown>\"`" + `. Read the docket skill first (projects, urgency, how to write a title they can scan); ` + "`docket help`" + ` lists the flags. Answers arrive as messages tagged ` + "`[docket dk-…]`" + `.

@@ -382,7 +382,7 @@ func (s *Store) bumpIdeas() {
 // Version changes whenever the queue or the ideas do: the web pages poll it
 // to refresh in place.
 func (s *Store) Version() string {
-	return s.QueueDigest() + "." + s.Get("ideas:version") + "." + s.Get("email:bump")
+	return s.QueueDigest() + "." + s.Get("ideas:version") + "." + s.Get("email:bump") + "." + s.progressDigest()
 }
 
 // ---- where a project's code lives -----------------------------------------

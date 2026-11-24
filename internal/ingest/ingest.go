@@ -417,12 +417,22 @@ func fileItem(s *store.Store, r record.Record, base store.Item, o Options) error
 	case "now", "soon", "normal":
 		it.Urgency = in.Urgency
 	}
+	progress := in.Kind == store.KindProgress
+	if progress {
+		// A progress entry is a line on the project's timeline: it never asks
+		// for the human's attention, so it's logged, not open, and carries
+		// nothing that would (urgency, options, a deadline, a key).
+		it.Status = store.StatusLogged
+		it.Urgency = "normal"
+		it.Next = clip(oneLine(in.Next, 300), 300)
+		it.Options, it.Recommend, it.Blocking, it.Blocks, it.Physical, it.Due, it.Place, it.ExpiresAt = nil, "", false, "", false, "", "", 0
+	}
 	explicit := store.Slug(in.Project)
 	it.Project = explicit
 	if it.Project == "" {
 		it.Project = projectFor(s, o, r.Lead, base.Machine, firstNonEmpty(in.Root, base.Cwd))
 	}
-	if in.Key != "" {
+	if in.Key != "" && !progress {
 		k := keyNorm(in.Key)
 		it.DedupeKey = "key:" + it.Project + ":" + k
 		if hit, ok := s.ActiveByKey(it.DedupeKey); ok {
@@ -470,12 +480,15 @@ func fileItem(s *store.Store, r record.Record, base store.Item, o Options) error
 	if in.Root != "" && in.Remote != "" {
 		_ = s.SetDirRemote(base.Machine, in.Root, in.Remote)
 	}
-	if in.Idea != "" {
+	if in.Idea != "" && !progress {
 		if err := linkProposal(s, in.Idea, id, it.SessionID, base.Machine); err != nil {
 			return err
 		}
 	}
 	for _, ev := range in.Evidence {
+		if progress {
+			break
+		}
 		if err := s.AddEvidence(store.Evidence{SHA256: ev.SHA256, ItemID: id, Name: ev.Name, Mime: ev.Mime, Size: ev.Size}); err != nil {
 			return err
 		}

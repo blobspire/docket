@@ -1,6 +1,6 @@
 ---
 name: docket
-description: Reach the human through docket, their dashboard of decisions and action items, when something genuinely needs them and would otherwise be missed - results they're waiting on, a decision you can't make, something only they can do (logins, credentials, money, hardware, people, anything physical), or something broken. Read before running docket ask/task/review/issue, and when a message tagged [docket dk-…] arrives with their answer.
+description: Reach the human through docket, their dashboard of decisions and action items, when something genuinely needs them and would otherwise be missed - results they're waiting on, a decision you can't make, something only they can do (logins, credentials, money, hardware, people, anything physical), or something broken. Read before running docket ask/task/review/issue/progress, and when a message tagged [docket dk-…] arrives with their answer or a question.
 ---
 
 # docket: reaching the human
@@ -13,7 +13,7 @@ File it when it **needs them** and **would otherwise be missed**:
 
 | File it | Don't file it |
 |---|---|
-| Results they asked for or are waiting on: "LIBERO-plus results: Model A 65.5% vs control 78.6%" | Progress updates, "started X", "tests pass" |
+| Results they asked for or are waiting on: "LIBERO-plus results: Model A 65.5% vs control 78.6%" | Progress updates, "started X", "tests pass" (a major stage finished goes on the timeline with `docket progress`, below) |
 | A decision you can't reasonably make yourself, that changes direction or costs money | A question with a sensible default: take the default, say so in your reply |
 | Only they can do it: a login, credentials, money, hardware, contacting a person, anything physical | "PR merged: review report" when no decision is needed |
 | Something is broken and needs them: "ARC login expired: all training jobs are failing" | Bugs you can fix, or track in the repo's issues |
@@ -97,6 +97,20 @@ Lead with what you need from them and why, in a sentence or two. Then at most ~5
 - `--blocking`: you're paused until they answer.
 - `--record <path or URL>`: where the full version lives in the project (see above). `ask`, `task`, `review` and `issue` take it; a review should have one.
 
+## Progress: a line on the project's timeline
+
+They can't read your session, so when you finish a **major stage**, say so in a sentence or two:
+
+```sh
+docket progress "Second seed analysis done: camera carry-over confirmed (38.3% vs 33.5%)" \
+  --next "Writing the ablation plan" --project vlm-teacher
+```
+
+- **When:** a phase finished, a result in, a change of direction, starting the next phase. A few times a day at most. Not for routine steps, passing tests, merged PRs or "still working on it"; and not as a heartbeat (`docket job` is for that).
+- **What it does:** it goes on the project's timeline and in a folded Progress list on their docket. It never notifies them, never counts as something they need to do, and has nothing to close. `--next` says what you're starting, so they can see what each agent is working on now.
+- **It isn't a result.** If they're waiting on the result, file it with `docket review` too: progress is never read as a request.
+- They may mark a progress entry **not worth their time**: post fewer, bigger ones.
+
 ## After filing: keep the docket true
 
 - `docket list` shows open items from this machine. `*` marks yours, so you can find their ids after a context compaction.
@@ -113,6 +127,13 @@ It shows up as a message starting with `[docket dk-xxxxxxxx #nonce]`. Act on it:
 - If they marked it **done** without answering, you'll hear that at your next turn (right away if you filed it `--blocking`): a review was looked at and needs nothing more; a question marked done is not a yes (they may have handled it themselves). Don't act as if they approved.
 - If they marked your item **not worth their time**, take their note to heart: don't re-file it, and file fewer things like it.
 - When the item is resolved, run `docket done dk-xxxxxxxx --why "<what happened>"`.
+
+## When they ask about an item
+
+They can come back to a result or progress entry later (on a call, say) and ask about it. The question arrives as a message tagged `[docket dk-… #nonce]` that starts "… asks about your docket item" (or "your progress entry"):
+- Answer it **onto the item**, where they're reading: `docket add <id> --why "<your answer>"`. A reply in chat or your session never reaches them.
+- Read the item's record first (the message names it): answer from the project's data, not from memory.
+- Keep it short and direct; they may be in a meeting. Don't reopen it, re-file it or close it: it stays where they left it.
 
 ## Long-running jobs
 

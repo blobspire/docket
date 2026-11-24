@@ -98,7 +98,8 @@ CREATE TABLE IF NOT EXISTS items (
   expires_at INTEGER NOT NULL DEFAULT 0,
   pinned TEXT NOT NULL DEFAULT '',
   stashed_at INTEGER NOT NULL DEFAULT 0,
-  record TEXT NOT NULL DEFAULT ''
+  record TEXT NOT NULL DEFAULT '',
+  next TEXT NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX IF NOT EXISTS items_active_dedupe ON items(dedupe_key)
   WHERE dedupe_key IS NOT NULL AND status IN ('maybe','open','snoozed','answered');
@@ -128,7 +129,8 @@ CREATE TABLE IF NOT EXISTS deliveries (
   attempts INTEGER NOT NULL DEFAULT 0,
   error TEXT NOT NULL DEFAULT '',
   live_only INTEGER NOT NULL DEFAULT 0,
-  quiet INTEGER NOT NULL DEFAULT 0
+  quiet INTEGER NOT NULL DEFAULT 0,
+  question TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS deliveries_status ON deliveries(status);
 CREATE TABLE IF NOT EXISTS decisions (
@@ -389,6 +391,8 @@ var added = []struct{ table, column, ddl string }{
 	{"email_messages", "seq", "INTEGER NOT NULL DEFAULT 0"},
 	{"email_drafts", "hand_recipients", "INTEGER NOT NULL DEFAULT 0"},
 	{"items", "record", "TEXT NOT NULL DEFAULT ''"},
+	{"items", "next", "TEXT NOT NULL DEFAULT ''"},
+	{"deliveries", "question", "TEXT NOT NULL DEFAULT ''"},
 }
 
 func migrate(db *sql.DB) error {
@@ -748,6 +752,15 @@ func (s *Store) Sessions(includeEnded bool, limit int) ([]Session, error) {
 
 // ---- items ----------------------------------------------------------------
 
+// Progress entries: a sentence or two an agent posts when it finishes a major
+// stage. They're kept as items so search, the sheet and Ask the agent work on
+// them, but with their own status, so nothing that gathers what needs the
+// human (the docket, its badge, pushes, expiry, the agents' context) sees them.
+const (
+	KindProgress = "progress"
+	StatusLogged = "logged"
+)
+
 type Item struct {
 	ID           string
 	Kind         string
@@ -787,6 +800,7 @@ type Item struct {
 	Pinned       string // comma-separated fields the human set by hand
 	StashedAt    int64  // when the human put it on their Stash (0: never)
 	Record       string // where the full version lives in the project (a path or URL), as the agent said
+	Next         string // a progress entry: what the agent is starting next
 
 	// Ongoing marks an upsert that re-checks a standing condition (a session
 	// still waiting, a machine still down). It refreshes the item without
@@ -794,13 +808,13 @@ type Item struct {
 	Ongoing bool
 }
 
-const itemCols = `id, kind, status, title, body, options, recommend, blocking, blocks, physical, due, COALESCE(dedupe_key,''), source, machine, session_id, lead, cwd, quote, created_at, updated_at, last_seen_at, mention_count, COALESCE(snoozed_until,0), COALESCE(resolved_at,0), resolution, answer, COALESCE(answered_at,0), COALESCE(pushed_at,0), chief_note, project, component, place, urgency, urgent_since, expires_at, pinned, stashed_at, record`
+const itemCols = `id, kind, status, title, body, options, recommend, blocking, blocks, physical, due, COALESCE(dedupe_key,''), source, machine, session_id, lead, cwd, quote, created_at, updated_at, last_seen_at, mention_count, COALESCE(snoozed_until,0), COALESCE(resolved_at,0), resolution, answer, COALESCE(answered_at,0), COALESCE(pushed_at,0), chief_note, project, component, place, urgency, urgent_since, expires_at, pinned, stashed_at, record, next`
 
 func scanItem(sc interface{ Scan(...any) error }) (Item, error) {
 	var it Item
 	var opts string
 	var blocking, physical int
-	err := sc.Scan(&it.ID, &it.Kind, &it.Status, &it.Title, &it.Body, &opts, &it.Recommend, &blocking, &it.Blocks, &physical, &it.Due, &it.DedupeKey, &it.Source, &it.Machine, &it.SessionID, &it.Lead, &it.Cwd, &it.Quote, &it.CreatedAt, &it.UpdatedAt, &it.LastSeenAt, &it.MentionCount, &it.SnoozedUntil, &it.ResolvedAt, &it.Resolution, &it.Answer, &it.AnsweredAt, &it.PushedAt, &it.ChiefNote, &it.Project, &it.Component, &it.Place, &it.Urgency, &it.UrgentSince, &it.ExpiresAt, &it.Pinned, &it.StashedAt, &it.Record)
+	err := sc.Scan(&it.ID, &it.Kind, &it.Status, &it.Title, &it.Body, &opts, &it.Recommend, &blocking, &it.Blocks, &physical, &it.Due, &it.DedupeKey, &it.Source, &it.Machine, &it.SessionID, &it.Lead, &it.Cwd, &it.Quote, &it.CreatedAt, &it.UpdatedAt, &it.LastSeenAt, &it.MentionCount, &it.SnoozedUntil, &it.ResolvedAt, &it.Resolution, &it.Answer, &it.AnsweredAt, &it.PushedAt, &it.ChiefNote, &it.Project, &it.Component, &it.Place, &it.Urgency, &it.UrgentSince, &it.ExpiresAt, &it.Pinned, &it.StashedAt, &it.Record, &it.Next)
 	it.Blocking, it.Physical = blocking != 0, physical != 0
 	_ = json.Unmarshal([]byte(opts), &it.Options)
 	return it, err
@@ -916,10 +930,10 @@ func (s *Store) UpsertItem(it Item) (string, bool, error) {
 		resolvedAt = t
 	}
 	res, err := s.DB.Exec(`INSERT OR IGNORE INTO items(id, kind, status, title, body, options, recommend, blocking, blocks, physical, due, dedupe_key, source, machine, session_id, lead, cwd, quote, created_at, updated_at, last_seen_at,
-		project, component, place, urgency, urgent_since, expires_at, resolution, resolved_at, record)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?)`,
+		project, component, place, urgency, urgent_since, expires_at, resolution, resolved_at, record, next)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?)`,
 		it.ID, it.Kind, it.Status, it.Title, it.Body, string(opts), it.Recommend, boolInt(it.Blocking), it.Blocks, boolInt(it.Physical), it.Due, dedupe, it.Source, it.Machine, it.SessionID, it.Lead, it.Cwd, it.Quote, it.CreatedAt, t, t,
-		it.Project, it.Component, it.Place, it.Urgency, it.UrgentSince, it.ExpiresAt, it.Resolution, resolvedAt, it.Record)
+		it.Project, it.Component, it.Place, it.Urgency, it.UrgentSince, it.ExpiresAt, it.Resolution, resolvedAt, it.Record, it.Next)
 	if err != nil {
 		return "", false, err
 	}
@@ -1296,21 +1310,24 @@ type Delivery struct {
 	// HoldUntil (unix milliseconds) keeps a pending delivery back until then,
 	// so the human can still undo the decision it carries. 0: no hold.
 	HoldUntil int64
+	// Question is what the human asked (kind "ask"), as they typed it, for
+	// the sheet; Text is the whole message the agent gets.
+	Question string
 }
 
-const deliveryCols = `id, item_id, machine, session_id, text, nonce, method, status, error, created_at, COALESCE(sent_at,0), COALESCE(confirmed_at,0), attempts, live_only, quiet, kind, hold_until`
+const deliveryCols = `id, item_id, machine, session_id, text, nonce, method, status, error, created_at, COALESCE(sent_at,0), COALESCE(confirmed_at,0), attempts, live_only, quiet, kind, hold_until, question`
 
 func scanDelivery(sc interface{ Scan(...any) error }) (Delivery, error) {
 	var d Delivery
 	var live, quiet int
-	err := sc.Scan(&d.ID, &d.ItemID, &d.Machine, &d.SessionID, &d.Text, &d.Nonce, &d.Method, &d.Status, &d.Error, &d.CreatedAt, &d.SentAt, &d.ConfirmedAt, &d.Attempts, &live, &quiet, &d.Kind, &d.HoldUntil)
+	err := sc.Scan(&d.ID, &d.ItemID, &d.Machine, &d.SessionID, &d.Text, &d.Nonce, &d.Method, &d.Status, &d.Error, &d.CreatedAt, &d.SentAt, &d.ConfirmedAt, &d.Attempts, &live, &quiet, &d.Kind, &d.HoldUntil, &d.Question)
 	d.LiveOnly, d.Quiet = live != 0, quiet != 0
 	return d, err
 }
 
 func (s *Store) AddDelivery(d Delivery) error {
-	_, err := s.DB.Exec(`INSERT INTO deliveries(id, item_id, machine, session_id, text, nonce, status, created_at, live_only, quiet, kind, hold_until) VALUES (?,?,?,?,?,?,'pending',?,?,?,?,?)`,
-		d.ID, d.ItemID, d.Machine, d.SessionID, d.Text, d.Nonce, now(), boolInt(d.LiveOnly), boolInt(d.Quiet), d.Kind, d.HoldUntil)
+	_, err := s.DB.Exec(`INSERT INTO deliveries(id, item_id, machine, session_id, text, nonce, status, created_at, live_only, quiet, kind, hold_until, question) VALUES (?,?,?,?,?,?,'pending',?,?,?,?,?,?)`,
+		d.ID, d.ItemID, d.Machine, d.SessionID, d.Text, d.Nonce, now(), boolInt(d.LiveOnly), boolInt(d.Quiet), d.Kind, d.HoldUntil, d.Question)
 	return err
 }
 

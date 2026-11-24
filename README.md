@@ -33,6 +33,8 @@ docket gives your agents one place to bring you what really needs you: results y
 - **Done tells the agent.** It closes the item, and the agent that filed it hears so at its next turn, in words that fit what it asked (a review was looked at; an unanswered question isn't a yes).
 - **"Have the agent do it."** A task or issue an agent filed that it could do itself, given your go-ahead, goes back to it in one tap (on the item or its row). The agent does it and closes the item, and files just the step that truly needs you, if one does.
 - **The message, not the record.** Agents are told docket is how they reach you, not where work is kept: results stay in the project, the way it keeps its records, and the summary they file says where the full version lives (`--record`). docket keeps every item after Done, and backs its database up every night.
+- **Progress, without the noise.** When an agent finishes a major stage it posts a sentence or two (`docket progress`): what it did and what it's starting. It never notifies you or counts as something to do; it sits in a folded Progress list under your action items.
+- **A timeline per project:** results, progress, problems, your decisions and what shipped, by day. **Results** is one of its filters, so the result you remember from a month ago is two taps away, and **Ask the agent** on it sends your question to the agent that filed it, whose answer appears on the item.
 - **Stash** keeps what you've dealt with but want close at hand (results to share, a quote to act on) off your docket for 30 days.
 - **"Not worth my time" with a note.** It closes the item, tells the agent that filed it, and joins a short list every agent reads, so the bar calibrates itself.
 - **Delivers your answer immediately:**

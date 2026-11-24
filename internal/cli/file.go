@@ -39,6 +39,9 @@ var kinds = map[string]string{
 	// propose: a research session's plan for an idea the human dictated, an
 	// ask with fixed options (Build it | Save for later).
 	"propose": "ask",
+	// progress: a major stage finished, a line on the project's timeline that
+	// never asks for the human's attention.
+	"progress": "progress",
 }
 
 // The options of a proposal (the server matches them by these words).
@@ -52,22 +55,28 @@ var ideaIDOK = regexp.MustCompile(`^idea-[a-z0-9]{8}$`)
 const (
 	maxEvidence = 200 << 20
 	maxTitle    = 90
+	// A progress entry is a sentence or two, not a scannable title.
+	maxProgress = 280
+	maxNext     = 200
 )
 
 var (
 	boolFlags  = map[string]bool{"blocking": true, "physical": true, "all": true}
 	valueFlags = map[string]bool{"options": true, "recommend": true, "why": true, "details": true, "blocks": true, "due": true, "key": true, "evidence": true,
-		"project": true, "new-project": true, "component": true, "place": true, "urgency": true, "expires": true, "idea": true, "record": true}
+		"project": true, "new-project": true, "component": true, "place": true, "urgency": true, "expires": true, "idea": true, "record": true, "next": true}
 	// The flags each command takes; anything else is an error, not ignored.
 	fileFlags    = set("options", "recommend", "why", "details", "blocks", "due", "key", "evidence", "project", "new-project", "component", "place", "urgency", "expires", "blocking", "physical", "record")
 	proposeFlags = set("recommend", "why", "details", "evidence", "project", "component", "idea")
-	doneFlags    = set("why", "details", "key", "project")
-	addFlags     = set("why", "details", "evidence", "record")
-	listFlags    = set("project", "all")
-	dashWord     = regexp.MustCompile(`^-[A-Za-z]`)
-	dateOK       = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
-	slugBad      = regexp.MustCompile(`[^a-z0-9]+`)
-	relative     = regexp.MustCompile(`^(\d+)([mhd])$`)
+	// A progress entry carries no urgency, options, deadline, key or files:
+	// nothing that would ask for attention.
+	progressFlags = set("project", "new-project", "component", "next", "record")
+	doneFlags     = set("why", "details", "key", "project")
+	addFlags      = set("why", "details", "evidence", "record")
+	listFlags     = set("project", "all")
+	dashWord      = regexp.MustCompile(`^-[A-Za-z]`)
+	dateOK        = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+	slugBad       = regexp.MustCompile(`[^a-z0-9]+`)
+	relative      = regexp.MustCompile(`^(\d+)([mhd])$`)
 )
 
 // IsFileCommand reports whether cmd is one of the filing commands.
@@ -80,8 +89,11 @@ func File(cmd string, args []string, stdout io.Writer, getenv func(string) strin
 		return fmt.Errorf("unknown command %q", cmd)
 	}
 	allowed := fileFlags
-	if cmd == "propose" {
+	switch cmd {
+	case "propose":
 		allowed = proposeFlags
+	case "progress":
+		allowed = progressFlags
 	}
 	pos, flags, err := parse(args, allowed)
 	if err != nil {
@@ -107,13 +119,23 @@ func File(cmd string, args []string, stdout io.Writer, getenv func(string) strin
 	ctx = ctx.Merged(agentctx.LoadOverlay())
 	person := Person()
 	title := strings.TrimSpace(strings.Join(pos, " "))
+	progress := kind == "progress"
 	if title == "" {
+		if progress {
+			return errors.New(`usage: docket progress "<what you finished, a sentence or two>" [--next "<what you're starting>"] --project <name>`)
+		}
 		return fmt.Errorf("usage: docket %s \"<what you need from %s>\" --project <name> [flags]  (see `docket help`)", cmd, person)
 	}
-	if strings.ContainsAny(title, "\r\n") {
+	if progress {
+		if strings.ContainsAny(title, "\r\n") || utf8.RuneCountInString(title) > maxProgress {
+			return fmt.Errorf("a progress entry is one line of at most %d characters: what you finished, in a sentence or two. Put what's next in --next", maxProgress)
+		}
+		if n := flags["next"]; strings.ContainsAny(n, "\r\n") || utf8.RuneCountInString(n) > maxNext {
+			return fmt.Errorf("--next is one line of at most %d characters: what you're starting", maxNext)
+		}
+	} else if strings.ContainsAny(title, "\r\n") {
 		return errors.New("the title must be one line. Put details in --why (markdown is fine)")
-	}
-	if n := utf8.RuneCountInString(title); n > maxTitle {
+	} else if n := utf8.RuneCountInString(title); n > maxTitle {
 		return fmt.Errorf("the title is %d characters; keep it to %d at most so %s can scan it. Say the decision or action in plain words, no paths, hashes or ids, and put the details in --why", n, maxTitle, person)
 	}
 	if k := flags["key"]; utf8.RuneCountInString(k) > 120 || len(k) > 200 || (k != "" && strings.TrimSpace(k) == "") {
@@ -147,6 +169,7 @@ func File(cmd string, args []string, stdout io.Writer, getenv func(string) strin
 		Place:     Slug(flags["place"]),
 		Idea:      idea,
 		Record:    rec,
+		Next:      strings.TrimSpace(flags["next"]),
 	}
 	if utf8.RuneCountInString(it.Component) > 40 {
 		return errors.New("--component is a short name for a part of the project (at most 40 characters)")
@@ -204,8 +227,11 @@ func File(cmd string, args []string, stdout io.Writer, getenv func(string) strin
 	rememberErr := agentctx.Remember(func(o *agentctx.Overlay) {
 		at := now.Unix()
 		// Urgency as given (empty: not given), so a re-file without one
-		// doesn't seem to lower it.
-		o.Filed = append(o.Filed, agentctx.Item{ID: it.ID, Title: it.Title, Kind: kind, Project: project, Urgency: urgency, Key: it.Key, SessionID: r.SessionID, CreatedAt: at})
+		// doesn't seem to lower it. A progress entry isn't an open item:
+		// docket list never shows it.
+		if !progress {
+			o.Filed = append(o.Filed, agentctx.Item{ID: it.ID, Title: it.Title, Kind: kind, Project: project, Urgency: urgency, Key: it.Key, SessionID: r.SessionID, CreatedAt: at})
+		}
 		if it.NewProject != "" && !ctx.HasProject(project) {
 			o.Projects = append(o.Projects, agentctx.NewThing{Name: project, Description: it.NewProject, ID: it.ID, At: at})
 		}
@@ -222,6 +248,11 @@ func File(cmd string, args []string, stdout io.Writer, getenv func(string) strin
 	where := ""
 	if project != "" {
 		where = " in " + project
+	}
+	if progress {
+		fmt.Fprintf(stdout, "docket: progress noted%s (%s): it's on the project's timeline, and no one is notified. Keep working. If %s asks about it, the question arrives tagged [docket %s].\n",
+			where, it.ID, capitalize(person), it.ID)
+		return nil
 	}
 	// This id is always the right one to use: a re-file with the key of an
 	// item that's still open is merged into that item, and the server knows

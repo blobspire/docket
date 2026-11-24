@@ -62,6 +62,17 @@ func (s *Server) decide(id string, a Action) error {
 		return errors.New("no such item")
 	}
 	defer s.st.Bump()
+	// A question about something the human already dealt with (a result they
+	// marked done, a progress entry) goes to the agent that filed it and
+	// leaves the item where it is.
+	if a.Kind == "ask" {
+		return s.askAgent(it, a.Text)
+	}
+	// A progress entry needs nothing from the human: they can ask about it,
+	// or say it wasn't worth posting.
+	if it.Status == store.StatusLogged && a.Kind != "noise" && a.Kind != "undo" {
+		return errors.New("a progress entry needs nothing from you: ask the agent about it, or mark it not worth your time")
+	}
 	// A closed item can only be reopened, undone, or kept on (or taken off)
 	// the Stash; acting on it again would quietly reopen it, and moving it
 	// would put a move between the close and the Reopen that undoes it.
@@ -390,7 +401,8 @@ func (s *Server) tellDone(it store.Item, note string) error {
 // still running, and without waking it), and every agent sees it in the
 // feedback section of rules.md from then on.
 func (s *Server) noise(it store.Item, note string) error {
-	if it.Status != "open" && it.Status != "snoozed" && it.Status != "answered" && it.Status != "maybe" {
+	progress := it.Status == store.StatusLogged
+	if it.Status != "open" && it.Status != "snoozed" && it.Status != "answered" && it.Status != "maybe" && !progress {
 		return errors.New("this item is already closed")
 	}
 	res := "Not worth " + s.cfg.Person + "'s time"
@@ -408,8 +420,68 @@ func (s *Server) noise(it store.Item, note string) error {
 	if note != "" {
 		msg += ". Their note: " + note
 	}
-	msg += ". It's closed; don't re-file it. File fewer items like this: keep docket for what really needs " + s.cfg.Person + ", and mention smaller things in chat instead."
+	if progress {
+		msg = fmt.Sprintf("%s marked your progress entry %q as not worth their time", s.cfg.Person, it.Title)
+		if note != "" {
+			msg += ". Their note: " + note
+		}
+		msg += ". Post progress only when you finish a major stage (a phase done, a result in, a change of direction), not for routine steps."
+	} else {
+		msg += ". It's closed; don't re-file it. File fewer items like this: keep docket for what really needs " + s.cfg.Person + ", and mention smaller things in chat instead."
+	}
 	return s.notifyQuietly(it, msg, "noise")
+}
+
+// askable reports whether the human can ask the filing agent about an item
+// from its sheet: one they've dealt with (closed, or a progress entry) that
+// came from an agent's session. Open items have Reply instead.
+func askable(it store.Item) bool {
+	if it.SessionID == "" || it.Source != ingest.SrcCLI || it.Kind == "rule" || it.Kind == "email" {
+		return false
+	}
+	switch it.Status {
+	case "done", "dismissed", "expired", "delivered", store.StatusLogged:
+		return true
+	}
+	return false
+}
+
+// maxQuestion bounds what the human types into Ask the agent.
+const maxQuestion = 4000
+
+// askAgent sends the human's question about an item to the session that
+// filed it (waking or resuming it like an answer), without reopening the
+// item. The agent answers onto the item with docket add, where the human
+// is reading.
+func (s *Server) askAgent(it store.Item, q string) error {
+	q = strings.TrimSpace(q)
+	switch {
+	case q == "":
+		return errors.New("type your question first")
+	case len(q) > maxQuestion:
+		return fmt.Errorf("keep the question under %d characters", maxQuestion)
+	case it.Status == "open" || it.Status == "snoozed" || it.Status == "maybe" || it.Status == "answered":
+		return errors.New("it's still on your docket: reply to it instead")
+	case !askable(it):
+		return errors.New("no agent session filed this item, so there's no one to ask")
+	}
+	when := time.Unix(it.CreatedAt, 0).In(s.cfg.loc).Format("Jan 2")
+	about := fmt.Sprintf("your docket item %q (filed %s; it's off their docket, so don't reopen or re-file it)", it.Title, when)
+	if it.Kind == store.KindProgress {
+		about = fmt.Sprintf("your progress entry %q (posted %s)", it.Title, when)
+	}
+	msg := fmt.Sprintf("%s asks about %s:\n\n%s\n\nAnswer onto the item, where they'll read it: docket add %s --why \"<your answer>\"",
+		s.cfg.Person, about, q, it.ID)
+	if it.Record != "" {
+		msg += ". Its record (where the full version lives): " + it.Record
+	}
+	msg += "."
+	nonce := randomNonce()
+	if a := s.st.LatestAlias(it.ID, it.SessionID); a != "" {
+		msg = "(this is the item you filed as " + a + ") " + msg
+	}
+	return s.add(store.Delivery{ID: ulid.New(time.Now()), ItemID: it.ID, Machine: it.Machine, SessionID: it.SessionID, Nonce: nonce,
+		Text: fmt.Sprintf("[docket %s #%s] %s", it.ID, nonce, msg), Kind: "ask", Question: q})
 }
 
 // notifyQuietly tells the session that filed an item something it should
