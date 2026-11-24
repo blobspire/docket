@@ -334,12 +334,13 @@ func TestClosedItemsCantBeActedOnAgain(t *testing.T) {
 	if it, _, _ := st.GetItem("dk-c1000001"); it.Status != "done" {
 		t.Fatalf("status = %s", it.Status)
 	}
-	// Its page offers no actions, only the way back.
+	// Its page offers no actions and no answer, only the way back and a
+	// question for its agent (Ask the agent, which leaves it closed).
 	rec := httptest.NewRecorder()
 	e.s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/item/dk-c1000001", nil))
 	body := rec.Body.String()
-	if strings.Contains(body, `data-act="snooze"`) || strings.Contains(body, `data-reply`) || !strings.Contains(body, `data-act="reopen"`) {
-		t.Fatal("a closed item's page still offers actions (or no way to reopen it)")
+	if strings.Contains(body, `data-act="snooze"`) || strings.Contains(body, `name="action" value="answer"`) || !strings.Contains(body, `data-act="reopen"`) || !strings.Contains(body, `name="action" value="ask"`) {
+		t.Fatal("a closed item's page still offers actions (or no way to reopen it, or no Ask)")
 	}
 	// Undo reopens it without the stale closing note.
 	e.s.Decide("dk-c1000001", Action{Kind: "undo"})
