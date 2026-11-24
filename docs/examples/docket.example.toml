@@ -7,6 +7,7 @@ public_url = "https://server.your-tailnet.ts.net"   # used for links in phone pu
 timezone = "America/New_York"
 system_project = "admin"            # where docket's own health items go (default "system")
 # allow_logins = ["you@example.com"]  # optional: Tailscale-User-Login allowlist
+# backup_days = 7                   # nightly gzipped database backups kept in <data_dir>/backups (0 = off)
 
 [ntfy]
 server = "https://ntfy.sh"

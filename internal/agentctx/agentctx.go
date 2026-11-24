@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -70,6 +71,7 @@ type Item struct {
 	SessionID string   `json:"session_id,omitempty"`
 	CreatedAt int64    `json:"created_at"`
 	Aliases   []string `json:"aliases,omitempty"` // other ids agents were told for it (re-filings)
+	Seq       int64    `json:"seq,omitempty"`     // overlay only: its place among this machine's filings and closings
 }
 
 // Path is ~/.docket/context.json.
@@ -168,6 +170,9 @@ type Overlay struct {
 	Closed   []Closed   `json:"closed,omitempty"`
 	Projects []NewThing `json:"projects,omitempty"`
 	Dirs     []NewThing `json:"dirs,omitempty"`
+	// Seq numbers filings and closings in the order this machine made them
+	// (times are whole seconds, so two in one second would tie).
+	Seq int64 `json:"seq,omitempty"`
 }
 
 // Closed is an item this machine closed with `docket done`: the item's id
@@ -178,6 +183,7 @@ type Closed struct {
 	Project  string `json:"project,omitempty"`
 	RecordID string `json:"record"` // the done record; once seen, the server's copy is the truth
 	At       int64  `json:"at"`
+	Seq      int64  `json:"seq,omitempty"` // its place among this machine's filings and closings (0: an older docket's)
 }
 
 // Retention is how long overlay entries count. It is shorter than the window
@@ -234,7 +240,18 @@ func Remember(f func(*Overlay)) error {
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 
 	o := LoadOverlay()
+	nf, nc := len(o.Filed), len(o.Closed)
 	f(&o)
+	// Number what f added, in order: Merged replays filings and closings
+	// in the order they were made.
+	for i := nf; i < len(o.Filed); i++ {
+		o.Seq++
+		o.Filed[i].Seq = o.Seq
+	}
+	for i := nc; i < len(o.Closed); i++ {
+		o.Seq++
+		o.Closed[i].Seq = o.Seq
+	}
 	cut := time.Now().Add(-Retention).Unix()
 	o.Filed = keep(o.Filed, func(it Item) bool { return it.CreatedAt >= cut })
 	o.Closed = keep(o.Closed, func(c Closed) bool { return c.At >= cut })
@@ -293,39 +310,107 @@ func (c Context) Merged(o Overlay) Context {
 		}
 	}
 
-	var closings []Closed
-	for _, x := range o.Closed {
-		if x.At >= cut && (x.RecordID == "" || !seen[x.RecordID]) {
-			closings = append(closings, x)
+	// The open items are the server's, then this machine's filings and
+	// closings it hasn't seen yet, replayed in the order they were made:
+	//   - a filing with the key of an open item updates that item (the
+	//     server merges it in), so it's one entry, not two. The entry goes
+	//     by the newest filing's id: if the server merges it, that id is an
+	//     alias of the open item; if this copy is stale and the item was
+	//     closed meanwhile, it's the new item. Either way docket done and
+	//     docket add with it reach the right one.
+	//   - a closing removes the entry it names (by any of its ids), or the
+	//     entries with its key that existed before it.
+	type entry struct {
+		Item
+		ids   []string // every id it's known by here
+		local bool     // filed on this machine, unseen by the server
+		gone  bool
+	}
+	have := map[string]bool{}
+	var entries []*entry
+	for _, it := range c.Open {
+		have[it.ID] = true
+		for _, a := range it.Aliases {
+			have[a] = true
+		}
+		entries = append(entries, &entry{Item: it, ids: append([]string{it.ID}, it.Aliases...)})
+	}
+	type event struct {
+		seq, at int64
+		filing  *Item
+		closing *Closed
+	}
+	var events []event
+	for i := range o.Filed {
+		it := &o.Filed[i]
+		if it.CreatedAt >= cut && !seen[it.ID] && !have[it.ID] {
+			events = append(events, event{seq: it.Seq, at: it.CreatedAt, filing: it})
 		}
 	}
-	closed := func(it Item) bool {
-		for _, x := range closings {
-			if x.ID != "" {
-				if x.ID == it.ID || slices.Contains(it.Aliases, x.ID) {
-					return true
+	for i := range o.Closed {
+		x := &o.Closed[i]
+		if x.At >= cut && (x.RecordID == "" || !seen[x.RecordID]) {
+			events = append(events, event{seq: x.Seq, at: x.At, closing: x})
+		}
+	}
+	// An older docket's entries (no seq) came first; among themselves, by
+	// time, a filing before a closing in the same second.
+	sort.SliceStable(events, func(a, b int) bool {
+		ea, eb := events[a], events[b]
+		if ea.seq != eb.seq {
+			return ea.seq < eb.seq
+		}
+		if ea.at != eb.at {
+			return ea.at < eb.at
+		}
+		return ea.filing != nil && eb.closing != nil
+	})
+	live := func(key, project string) *entry {
+		for _, e := range entries {
+			if !e.gone && key != "" && e.Key == key && e.Project == project {
+				return e
+			}
+		}
+		return nil
+	}
+	for _, ev := range events {
+		if it := ev.filing; it != nil {
+			if e := live(it.Key, it.Project); e != nil {
+				e.Aliases = append(e.Aliases, e.ID)
+				e.ID, e.Title, e.local = it.ID, it.Title, true
+				e.ids = append(e.ids, it.ID)
+				if it.Urgency != "" { // empty: not given, the old one stands
+					e.Urgency = it.Urgency
 				}
 				continue
 			}
-			if x.Key != "" && x.Key == it.Key && (x.Project == "" || x.Project == it.Project) && it.CreatedAt < x.At {
-				return true
+			n := *it
+			if n.Urgency == "" {
+				n.Urgency = "normal"
 			}
-		}
-		return false
-	}
-	have := map[string]bool{}
-	var open []Item
-	for _, it := range c.Open {
-		have[it.ID] = true
-		if !closed(it) {
-			open = append(open, it)
-		}
-	}
-	for _, it := range o.Filed {
-		if it.CreatedAt < cut || seen[it.ID] || have[it.ID] || closed(it) {
+			entries = append(entries, &entry{Item: n, ids: []string{it.ID}, local: true})
 			continue
 		}
-		open = append(open, it)
+		x := ev.closing
+		for _, e := range entries {
+			if e.gone {
+				continue
+			}
+			if x.ID != "" {
+				e.gone = slices.Contains(e.ids, x.ID)
+			} else if x.Key != "" && x.Key == e.Key && (x.Project == "" || x.Project == e.Project) {
+				// One the server made after this closing (filed again from
+				// elsewhere) isn't the one it closed.
+				e.gone = e.local || e.CreatedAt < x.At
+			}
+		}
+	}
+	var open []Item
+	for _, e := range entries {
+		if !e.gone {
+			e.Item.Seq = 0
+			open = append(open, e.Item)
+		}
 	}
 	out.Open = open
 	return out

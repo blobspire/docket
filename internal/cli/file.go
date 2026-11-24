@@ -57,12 +57,12 @@ const (
 var (
 	boolFlags  = map[string]bool{"blocking": true, "physical": true, "all": true}
 	valueFlags = map[string]bool{"options": true, "recommend": true, "why": true, "details": true, "blocks": true, "due": true, "key": true, "evidence": true,
-		"project": true, "new-project": true, "component": true, "place": true, "urgency": true, "expires": true, "idea": true}
+		"project": true, "new-project": true, "component": true, "place": true, "urgency": true, "expires": true, "idea": true, "record": true}
 	// The flags each command takes; anything else is an error, not ignored.
-	fileFlags    = set("options", "recommend", "why", "details", "blocks", "due", "key", "evidence", "project", "new-project", "component", "place", "urgency", "expires", "blocking", "physical")
+	fileFlags    = set("options", "recommend", "why", "details", "blocks", "due", "key", "evidence", "project", "new-project", "component", "place", "urgency", "expires", "blocking", "physical", "record")
 	proposeFlags = set("recommend", "why", "details", "evidence", "project", "component", "idea")
 	doneFlags    = set("why", "details", "key", "project")
-	addFlags     = set("why", "details", "evidence")
+	addFlags     = set("why", "details", "evidence", "record")
 	listFlags    = set("project", "all")
 	dashWord     = regexp.MustCompile(`^-[A-Za-z]`)
 	dateOK       = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
@@ -122,6 +122,10 @@ func File(cmd string, args []string, stdout io.Writer, getenv func(string) strin
 	if flags["new-project"] != "" && flags["project"] == "" {
 		return errors.New("--new-project describes a project you're creating: give its name with --project <short-name>")
 	}
+	rec, err := checkRecord(flags["record"])
+	if err != nil {
+		return err
+	}
 	urgency := strings.ToLower(flags["urgency"])
 	switch urgency {
 	case "", "now", "soon", "normal":
@@ -142,6 +146,7 @@ func File(cmd string, args []string, stdout io.Writer, getenv func(string) strin
 		Component: strings.TrimSpace(flags["component"]),
 		Place:     Slug(flags["place"]),
 		Idea:      idea,
+		Record:    rec,
 	}
 	if utf8.RuneCountInString(it.Component) > 40 {
 		return errors.New("--component is a short name for a part of the project (at most 40 characters)")
@@ -198,7 +203,9 @@ func File(cmd string, args []string, stdout io.Writer, getenv func(string) strin
 	}
 	rememberErr := agentctx.Remember(func(o *agentctx.Overlay) {
 		at := now.Unix()
-		o.Filed = append(o.Filed, agentctx.Item{ID: it.ID, Title: it.Title, Kind: kind, Project: project, Urgency: firstNonEmpty(urgency, "normal"), Key: it.Key, SessionID: r.SessionID, CreatedAt: at})
+		// Urgency as given (empty: not given), so a re-file without one
+		// doesn't seem to lower it.
+		o.Filed = append(o.Filed, agentctx.Item{ID: it.ID, Title: it.Title, Kind: kind, Project: project, Urgency: urgency, Key: it.Key, SessionID: r.SessionID, CreatedAt: at})
 		if it.NewProject != "" && !ctx.HasProject(project) {
 			o.Projects = append(o.Projects, agentctx.NewThing{Name: project, Description: it.NewProject, ID: it.ID, At: at})
 		}
@@ -216,6 +223,9 @@ func File(cmd string, args []string, stdout io.Writer, getenv func(string) strin
 	if project != "" {
 		where = " in " + project
 	}
+	// This id is always the right one to use: a re-file with the key of an
+	// item that's still open is merged into that item, and the server knows
+	// this id as an alias of it (an answer then says so).
 	if idea != "" {
 		fmt.Fprintf(stdout, "docket: proposal %s filed%s for %s. End your turn now and wait: %s's answer (Build it, Save for later, or a reply) arrives as a message tagged [docket %s]. To revise it, run docket propose again.\n",
 			it.ID, where, idea, capitalize(person), it.ID)
@@ -223,7 +233,23 @@ func File(cmd string, args []string, stdout io.Writer, getenv func(string) strin
 	}
 	fmt.Fprintf(stdout, "docket: filed %s%s (%s). %s will see it in docket; keep working. An answer arrives as a message tagged [docket %s]. If it's settled in chat instead, run `docket done %s`.\n",
 		it.ID, where, firstNonEmpty(urgency, "normal"), capitalize(person), it.ID, it.ID)
+	if kind == "review" && rec == "" {
+		fmt.Fprintf(stdout, "docket: no --record. If these are results, keep them in the project and say where with `docket add %s --record \"<path or URL>\"`: docket is a message to %s, not the record.\n", it.ID, person)
+	}
 	return nil
+}
+
+// checkRecord validates --record: one line saying where the full version
+// lives in the project (a path, with a commit, or a URL).
+func checkRecord(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	if strings.ContainsAny(v, "\r\n") {
+		return "", errors.New("--record is one line: where the full version lives (a path in the project, with a commit, or a URL)")
+	}
+	if utf8.RuneCountInString(v) > 500 {
+		return "", errors.New("--record says where the full version lives (a path, with a commit, or a URL); keep it under 500 characters and put details in --why")
+	}
+	return v, nil
 }
 
 // resolveProject decides which project an item belongs to. strict makes an
@@ -841,9 +867,13 @@ func Add(args []string, stdout io.Writer, getenv func(string) string) error {
 		return err
 	}
 	if len(pos) != 1 || !strings.HasPrefix(pos[0], "dk-") {
-		return errors.New(`usage: docket add <dk-id> [--why "<more details>"] [--evidence <files>]`)
+		return errors.New(`usage: docket add <dk-id> [--why "<more details>"] [--evidence <files>] [--record "<path or URL>"]`)
 	}
 	text := firstNonEmpty(flags["why"], flags["details"])
+	rec, err := checkRecord(flags["record"])
+	if err != nil {
+		return err
+	}
 	sp := spool.Spool{Dir: config.SpoolDir()}
 	var evs []record.Evidence
 	for _, p := range splitList(flags["evidence"]) {
@@ -853,13 +883,13 @@ func Add(args []string, stdout io.Writer, getenv func(string) string) error {
 		}
 		evs = append(evs, e)
 	}
-	if text == "" && len(evs) == 0 {
-		return errors.New("nothing to add: give --why and/or --evidence")
+	if text == "" && len(evs) == 0 && rec == "" {
+		return errors.New("nothing to add: give --why, --evidence and/or --record")
 	}
 	r := record.New("cli.add", getenv)
 	r.SessionID = sessionID(getenv)
 	r.Cwd, _ = os.Getwd()
-	r.Payload, _ = json.Marshal(map[string]any{"item_id": pos[0], "text": text, "evidence": evs})
+	r.Payload, _ = json.Marshal(map[string]any{"item_id": pos[0], "text": text, "evidence": evs, "record": rec})
 	if err := sp.Append(r); err != nil {
 		return err
 	}

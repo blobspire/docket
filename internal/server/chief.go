@@ -137,6 +137,7 @@ func (s *Server) chiefTick(ctx context.Context) {
 	s.pushes(ctx)
 	s.syncRules(ctx)
 	s.rulesTick(ctx)
+	s.backupDaily(s.cfg.Now())
 }
 
 // pushes sends one phone notification for the act-now items that came due,

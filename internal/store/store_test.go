@@ -276,3 +276,38 @@ func TestConcurrentMigrationsOfAnOldDatabase(t *testing.T) {
 		t.Errorf("a concurrent migration failed: %v", err)
 	}
 }
+
+// A database from before a column existed gains it on open: each column a
+// release adds must be in the added list, not only in the schema.
+func TestOlderDatabaseGainsNewColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "docket.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer := []struct{ table, column string }{{"items", "record"}}
+	for _, c := range newer {
+		if _, err := s.DB.Exec(`ALTER TABLE ` + c.table + ` DROP COLUMN ` + c.column); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, c := range newer {
+		var n int
+		s.DB.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, c.table, c.column).Scan(&n)
+		if n != 1 {
+			t.Errorf("%s.%s missing after reopening an older database", c.table, c.column)
+		}
+	}
+	if _, _, err := s.UpsertItem(Item{ID: "dk-old00001", Kind: "review", Title: "x", Record: "results/x"}); err != nil {
+		t.Fatal(err)
+	}
+	if it, _, _ := s.GetItem("dk-old00001"); it.Record != "results/x" {
+		t.Fatalf("record = %q", it.Record)
+	}
+}

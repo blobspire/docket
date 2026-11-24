@@ -17,6 +17,17 @@
   </table>
 </section>
 <section>
+  <h2>Backups</h2>
+  {{with .Backup}}
+  {{if .Off}}<p class="empty">Nightly backups are off (<code>backup_days</code> is 0 or less).</p>
+  {{else}}
+  {{if .Error}}<p class="banner stuck">{{template "i" "alert"}}<span>The last backup failed: {{.Error}}</span></p>{{end}}
+  <p>{{if .At}}Last backup {{clock .At}} ({{age .At}} ago), {{.MB}}.{{else}}No backup yet: the first runs after 4:00.{{end}} docket keeps {{.Keep}} nightly copies of its database, gzipped, in <code>{{.Dir}}</code>, on this machine. Evidence files aren't in them.</p>
+  <p class="muted small">To restore one: stop docket, delete <code>docket.db-wal</code> and <code>docket.db-shm</code> next to the database, then <code>gunzip -c</code> the backup over <code>docket.db</code> and start docket again.</p>
+  {{end}}
+  {{end}}
+</section>
+<section>
   <h2>Claude usage limits</h2>
   {{if not .Quotas}}<p class="empty">No usage data yet. It comes from Claude Code's status line (<code>docket statusline</code>).</p>{{else}}
   <table>

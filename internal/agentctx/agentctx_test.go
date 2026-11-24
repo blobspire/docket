@@ -113,3 +113,109 @@ func TestServerFolderMappingWinsATie(t *testing.T) {
 		t.Fatalf("a deeper overlay folder should still apply: %q", got)
 	}
 }
+
+// Re-filing with the key of an open item (docket propose run again, say)
+// updates that item: docket list shows it once, under the newest filing's
+// id, which reaches the right item whether the server merges it (an alias)
+// or the open item was closed meanwhile (a new item).
+func TestRefileWithTheSameKeyIsListedOnce(t *testing.T) {
+	now := time.Now().Unix()
+	c := Context{Open: []Item{
+		{ID: "dk-first01", Title: "Old plan", Key: "idea-abcdefgh", Project: "docket", Urgency: "now", CreatedAt: now - 600},
+		{ID: "dk-aliased", Title: "Known by another id", Project: "docket", Urgency: "normal", CreatedAt: now - 600, Aliases: []string{"dk-alias01"}},
+	}}
+	o := Overlay{Filed: []Item{
+		{ID: "dk-second1", Title: "New plan", Key: "idea-abcdefgh", Project: "docket", CreatedAt: now}, // no --urgency: "now" stands
+		{ID: "dk-alias01", Title: "Known by another id", Project: "docket", CreatedAt: now},
+		{ID: "dk-elsewhr", Title: "Same key, other project", Key: "idea-abcdefgh", Project: "cwant", CreatedAt: now},
+		// Two filings the server hasn't seen yet, with one key: one entry.
+		{ID: "dk-unseen1", Title: "Nightly report v1", Key: "nightly", Project: "docket", Urgency: "soon", CreatedAt: now},
+		{ID: "dk-unseen2", Title: "Nightly report v2", Key: "nightly", Project: "docket", CreatedAt: now + 1},
+	}}
+	m := c.Merged(o)
+	got := map[string]string{}
+	for _, it := range m.Open {
+		got[it.ID] = it.Title + " / " + it.Urgency
+	}
+	want := map[string]string{
+		"dk-second1": "New plan / now",
+		"dk-aliased": "Known by another id / normal",
+		"dk-elsewhr": "Same key, other project / normal",
+		"dk-unseen2": "Nightly report v2 / soon",
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("open = %v\nwant   %v", got, want)
+	}
+	// Closed here before the re-file: the re-file is a new item, listed.
+	o3 := o
+	o3.Closed = []Closed{{ID: "dk-first01", At: now - 10}}
+	got3 := map[string]string{}
+	for _, it := range c.Merged(o3).Open {
+		got3[it.ID] = it.Title
+	}
+	if len(got3) != 4 || got3["dk-second1"] != "New plan" || got3["dk-first01"] != "" {
+		t.Fatalf("a re-file after a local done: %v, want it listed once under dk-second1 among 4", got3)
+	}
+	// Closing it locally after the re-file, by either id, hides it.
+	for _, id := range []string{"dk-first01", "dk-second1"} {
+		o2 := o
+		o2.Closed = []Closed{{ID: id, At: now + 5}}
+		for _, it := range c.Merged(o2).Open {
+			if it.Title == "New plan" {
+				t.Fatalf("docket done %s left it listed", id)
+			}
+		}
+	}
+}
+
+// A done and a re-file with the same key in the same second are told apart
+// by the order this machine made them in (Remember numbers them).
+func TestDoneAndRefileInTheSameSecond(t *testing.T) {
+	t.Setenv("DOCKET_HOME", t.TempDir())
+	now := time.Now().Unix()
+	c := Context{Open: []Item{{ID: "dk-aaaaaaaa", Title: "First", Key: "k", Project: "docket", CreatedAt: now - 60}}}
+	list := func() []string {
+		var ids []string
+		for _, it := range c.Merged(LoadOverlay()).Open {
+			ids = append(ids, it.ID)
+		}
+		return ids
+	}
+	// done, then re-file: the re-file is a new item.
+	Remember(func(o *Overlay) { o.Closed = append(o.Closed, Closed{ID: "dk-aaaaaaaa", RecordID: "r1", At: now}) })
+	Remember(func(o *Overlay) {
+		o.Filed = append(o.Filed, Item{ID: "dk-bbbbbbbb", Title: "Second", Key: "k", Project: "docket", CreatedAt: now})
+	})
+	if got := list(); fmt.Sprint(got) != "[dk-bbbbbbbb]" {
+		t.Fatalf("done then re-file in one second: open = %v, want the re-file", got)
+	}
+	// ...then done of the re-file, same second: nothing open.
+	Remember(func(o *Overlay) { o.Closed = append(o.Closed, Closed{ID: "dk-bbbbbbbb", RecordID: "r2", At: now}) })
+	if got := list(); len(got) != 0 {
+		t.Fatalf("after closing the re-file: open = %v", got)
+	}
+	// Two unseen filings and a done of the first, in one second, each order.
+	t.Setenv("DOCKET_HOME", t.TempDir())
+	c = Context{}
+	Remember(func(o *Overlay) {
+		o.Filed = append(o.Filed, Item{ID: "dk-u1111111", Key: "k2", Project: "p", CreatedAt: now})
+	})
+	Remember(func(o *Overlay) { o.Closed = append(o.Closed, Closed{ID: "dk-u1111111", RecordID: "r3", At: now}) })
+	Remember(func(o *Overlay) {
+		o.Filed = append(o.Filed, Item{ID: "dk-u2222222", Key: "k2", Project: "p", CreatedAt: now})
+	})
+	if got := list(); fmt.Sprint(got) != "[dk-u2222222]" {
+		t.Fatalf("file, done, re-file in one second: open = %v", got)
+	}
+	t.Setenv("DOCKET_HOME", t.TempDir())
+	Remember(func(o *Overlay) {
+		o.Filed = append(o.Filed, Item{ID: "dk-u1111111", Key: "k2", Project: "p", CreatedAt: now})
+	})
+	Remember(func(o *Overlay) {
+		o.Filed = append(o.Filed, Item{ID: "dk-u2222222", Key: "k2", Project: "p", CreatedAt: now})
+	})
+	Remember(func(o *Overlay) { o.Closed = append(o.Closed, Closed{ID: "dk-u1111111", RecordID: "r4", At: now}) })
+	if got := list(); len(got) != 0 {
+		t.Fatalf("file, re-file, done in one second: open = %v (the re-file merged into the closed one)", got)
+	}
+}

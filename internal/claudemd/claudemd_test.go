@@ -59,3 +59,24 @@ func TestInstallIntoMissingFile(t *testing.T) {
 		t.Fatalf("expected empty file after uninstall, got %q", b)
 	}
 }
+
+// The block tells agents that the person sees only what reaches docket, and
+// that docket is a message, not where the work is kept.
+func TestBlockSaysDocketIsTheMessageNotTheRecord(t *testing.T) {
+	for _, person := range []string{"Cole", "Sam", ""} {
+		b := Block(person)
+		who := person
+		if who == "" {
+			who = "the user"
+		}
+		for _, want := range []string{
+			"Sessions run for days and " + who + " can't follow them 24/7: unless they're talking with you right now, what reaches them through docket is all they see.",
+			"docket is for reaching " + who + ", not for keeping the work: keep results and reports in the project",
+			"with `--record` saying where the full version is. You and later agents can't read docket back.",
+		} {
+			if !strings.Contains(b, want) {
+				t.Errorf("block for %q is missing %q:\n%s", person, want, b)
+			}
+		}
+	}
+}

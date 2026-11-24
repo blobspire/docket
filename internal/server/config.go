@@ -37,6 +37,9 @@ type Config struct {
 	Transcribe    Transcribe  `toml:"transcribe"`
 	Ideas         IdeasConfig `toml:"ideas"`
 	Email         EmailConfig `toml:"email"`
+	// BackupDays is how many nightly database backups to keep, gzipped in
+	// <data_dir>/backups. Unset means 7; 0 turns backups off.
+	BackupDays *int `toml:"backup_days"`
 
 	loc *time.Location
 }
