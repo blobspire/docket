@@ -917,12 +917,12 @@ func isURL(s string) bool {
 	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }
 
-// asks are the questions the human sent about an item (Ask the agent),
-// oldest first.
+// asks are the human's questions about an item still waiting for an
+// answer (Ask the agent), oldest first; answered ones are in the item's text.
 func asks(ds []store.Delivery) []store.Delivery {
 	var out []store.Delivery
 	for _, d := range ds {
-		if d.Kind == "ask" {
+		if d.Kind == "ask" && d.AnsweredAt == 0 && d.Status != "dropped" {
 			out = append(out, d)
 		}
 	}
@@ -934,16 +934,15 @@ func asks(ds []store.Delivery) []store.Delivery {
 // the human can come back to it.
 const askWait = time.Hour
 
-// asking reports a question about the item asked within askWait that the
-// agent hasn't answered yet (nothing was added to the item since).
-func asking(updated int64, ds []store.Delivery) bool {
-	var last int64
-	for _, d := range ds {
-		if d.Kind == "ask" && d.Status != "dropped" && d.CreatedAt > last {
-			last = d.CreatedAt
+// asking reports a question asked within askWait that's still unanswered:
+// the open sheet reloads when its answer arrives.
+func asking(ds []store.Delivery) bool {
+	for _, d := range asks(ds) {
+		if time.Since(time.Unix(d.CreatedAt, 0)) < askWait {
+			return true
 		}
 	}
-	return last > 0 && last >= updated && time.Since(time.Unix(last, 0)) < askWait
+	return false
 }
 
 // askStatus says where a question is, in a few words.

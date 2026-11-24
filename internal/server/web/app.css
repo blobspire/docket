@@ -536,7 +536,7 @@ body.ds-open { overflow: hidden; }
 .tl-pg .chips + .chips { margin-bottom: 22px; }
 .tl-day h2 { margin: 26px 0 10px; font-size: 13px; font-weight: 650; letter-spacing: .02em; text-transform: uppercase; color: var(--muted); }
 .tl { list-style: none; margin: 0; padding: 0 0 0 18px; position: relative; }
-.tl::before { content: ""; position: absolute; left: 5px; top: 6px; bottom: 6px; width: 2px; border-radius: 1px; background: var(--line); }
+.tl::before { content: ""; position: absolute; left: 5px; top: 6px; bottom: 6px; width: 2px; border-radius: 1px; background: var(--line-2); }
 .tl-e { position: relative; padding: 0 0 18px 12px; }
 .tl-e:last-child { padding-bottom: 4px; }
 .tl-dot { position: absolute; left: -18px; top: 5px; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--bg); background: var(--muted); }

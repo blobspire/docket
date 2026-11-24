@@ -130,7 +130,8 @@ CREATE TABLE IF NOT EXISTS deliveries (
   error TEXT NOT NULL DEFAULT '',
   live_only INTEGER NOT NULL DEFAULT 0,
   quiet INTEGER NOT NULL DEFAULT 0,
-  question TEXT NOT NULL DEFAULT ''
+  question TEXT NOT NULL DEFAULT '',
+  answered_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS deliveries_status ON deliveries(status);
 CREATE TABLE IF NOT EXISTS decisions (
@@ -393,6 +394,7 @@ var added = []struct{ table, column, ddl string }{
 	{"items", "record", "TEXT NOT NULL DEFAULT ''"},
 	{"items", "next", "TEXT NOT NULL DEFAULT ''"},
 	{"deliveries", "question", "TEXT NOT NULL DEFAULT ''"},
+	{"deliveries", "answered_at", "INTEGER NOT NULL DEFAULT 0"},
 }
 
 func migrate(db *sql.DB) error {
@@ -1311,16 +1313,18 @@ type Delivery struct {
 	// so the human can still undo the decision it carries. 0: no hold.
 	HoldUntil int64
 	// Question is what the human asked (kind "ask"), as they typed it, for
-	// the sheet; Text is the whole message the agent gets.
-	Question string
+	// the sheet; Text is the whole message the agent gets. AnsweredAt is
+	// when the agent's answer was added to the item (0: not yet).
+	Question   string
+	AnsweredAt int64
 }
 
-const deliveryCols = `id, item_id, machine, session_id, text, nonce, method, status, error, created_at, COALESCE(sent_at,0), COALESCE(confirmed_at,0), attempts, live_only, quiet, kind, hold_until, question`
+const deliveryCols = `id, item_id, machine, session_id, text, nonce, method, status, error, created_at, COALESCE(sent_at,0), COALESCE(confirmed_at,0), attempts, live_only, quiet, kind, hold_until, question, answered_at`
 
 func scanDelivery(sc interface{ Scan(...any) error }) (Delivery, error) {
 	var d Delivery
 	var live, quiet int
-	err := sc.Scan(&d.ID, &d.ItemID, &d.Machine, &d.SessionID, &d.Text, &d.Nonce, &d.Method, &d.Status, &d.Error, &d.CreatedAt, &d.SentAt, &d.ConfirmedAt, &d.Attempts, &live, &quiet, &d.Kind, &d.HoldUntil, &d.Question)
+	err := sc.Scan(&d.ID, &d.ItemID, &d.Machine, &d.SessionID, &d.Text, &d.Nonce, &d.Method, &d.Status, &d.Error, &d.CreatedAt, &d.SentAt, &d.ConfirmedAt, &d.Attempts, &live, &quiet, &d.Kind, &d.HoldUntil, &d.Question, &d.AnsweredAt)
 	d.LiveOnly, d.Quiet = live != 0, quiet != 0
 	return d, err
 }
@@ -1363,6 +1367,22 @@ func (s *Store) deliveries(where string, args ...any) ([]Delivery, error) {
 		out = append(out, d)
 	}
 	return out, rows.Err()
+}
+
+// UnansweredAsks are the human's questions about an item that no answer
+// has been added for yet, oldest first.
+func (s *Store) UnansweredAsks(itemID string) ([]Delivery, error) {
+	return s.deliveries(`WHERE item_id=? AND kind='ask' AND answered_at=0 AND status<>'dropped' ORDER BY created_at, rowid`, itemID)
+}
+
+// AnswerAsks records that the agent's answer to these questions was added.
+func (s *Store) AnswerAsks(ids []string) error {
+	for _, id := range ids {
+		if _, err := s.DB.Exec(`UPDATE deliveries SET answered_at=? WHERE id=? AND answered_at=0`, now(), id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) ItemDeliveries(itemID string) ([]Delivery, error) {

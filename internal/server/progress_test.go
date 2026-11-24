@@ -189,19 +189,28 @@ func TestAskTheAgentAboutAResult(t *testing.T) {
 	if it, _, _ := e.s.st.GetItem(id); it.Status != "done" {
 		t.Fatalf("the receipt reopened it: %s", it.Status)
 	}
+	if sheet := getOK(t, e, "/item/"+id); !strings.Contains(sheet, "the agent has it") || !strings.Contains(sheet, "data-asking") {
+		t.Fatal("the sheet doesn't say the agent has the question")
+	}
 
-	time.Sleep(1100 * time.Millisecond) // the answer comes after the question
+	// The agent's answer goes under the question, in the item's text.
 	if err := cli.Add([]string{id, "--why", "Checkpoint step 40k, 517 episodes per arm."}, &out, agent); err != nil {
 		t.Fatal(err)
 	}
 	e.cycle()
 	it, _, _ := e.s.st.GetItem(id)
-	if it.Status != "done" || !strings.Contains(it.Body, "517 episodes") {
+	if it.Status != "done" || !strings.HasSuffix(it.Body, "38.3% vs 33.5%\n\n**You asked:** Which checkpoint was that, and how many episodes?\n\nCheckpoint step 40k, 517 episodes per arm.") {
 		t.Fatalf("after the answer: %s %q", it.Status, it.Body)
 	}
 	sheet = getOK(t, e, "/item/"+id)
-	if strings.Contains(sheet, "data-asking") || !strings.Contains(sheet, "517 episodes") || !strings.Contains(sheet, "the agent has it") {
+	if strings.Contains(sheet, "data-asking") || strings.Contains(sheet, `class="asks"`) || !strings.Contains(sheet, "<strong>You asked:</strong> Which checkpoint") {
 		t.Fatalf("sheet after the answer:\n%s", sheet)
+	}
+	// A later note from the agent isn't labelled as an answer.
+	cli.Add([]string{id, "--why", "Also: the B200 control is in."}, &out, agent)
+	e.cycle()
+	if it, _, _ := e.s.st.GetItem(id); strings.Count(it.Body, "You asked") != 1 {
+		t.Fatalf("a later note was labelled as an answer: %q", it.Body)
 	}
 }
 

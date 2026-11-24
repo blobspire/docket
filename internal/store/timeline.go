@@ -162,7 +162,7 @@ func (s *Store) progressDigest() string {
 	var n, upd int64
 	s.DB.QueryRow(`SELECT COUNT(*), COALESCE(MAX(updated_at),0) FROM items WHERE status=?`, StatusLogged).Scan(&n, &upd)
 	fmt.Fprintf(h, "%d.%d\n", n, upd)
-	rows, err := s.DB.Query(`SELECT d.id, d.status, d.attempts, i.updated_at FROM deliveries d JOIN items i ON i.id = d.item_id
+	rows, err := s.DB.Query(`SELECT d.id, d.status, d.attempts, i.updated_at + d.answered_at FROM deliveries d JOIN items i ON i.id = d.item_id
 		WHERE d.kind='ask' AND d.created_at>=? ORDER BY d.id`, now()-24*60*60)
 	if err == nil {
 		defer rows.Close()

@@ -3,7 +3,8 @@
   <div class="pg tl-pg">
   <div class="mh"><div>
     <h1>{{if $t.Project}}{{$t.Project}} <span class="muted">· Timeline</span>{{else}}Timeline{{end}}</h1>
-    <p>{{with $t.Desc}}{{.}} {{end}}What your agents sent you and what you decided, newest first. Marking something done never removes it from here.</p>
+    {{with $t.Desc}}<p class="desc">{{.}}</p>{{end}}
+    <p>What your agents sent you and what you decided, newest first. Marking something done never removes it from here.</p>
   </div></div>
   <nav class="chips" aria-label="Projects">{{range $t.Projects}}<a class="chip-l{{if .On}} on{{end}}" href="{{.URL}}"{{if .On}} aria-current="page"{{end}}>{{.Label}}</a>{{end}}</nav>
   <nav class="chips" aria-label="Show">{{range $t.Filters}}<a class="chip-l{{if .On}} on{{end}}" href="{{.URL}}"{{if .On}} aria-current="page"{{end}}>{{.Label}}</a>{{end}}</nav>

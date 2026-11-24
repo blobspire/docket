@@ -188,7 +188,20 @@ func apply(s *store.Store, e store.RawEvent, o Options) error {
 			return nil
 		}
 		if a.Text != "" {
-			if err := s.AppendToItem(it.ID, clip(a.Text, 20000)); err != nil {
+			// Text added while the human's question waits is the answer: it
+			// goes under the question, so the item reads as a conversation.
+			text := clip(a.Text, 20000)
+			asks, _ := s.UnansweredAsks(it.ID)
+			var ids []string
+			var q strings.Builder
+			for _, d := range asks {
+				ids = append(ids, d.ID)
+				q.WriteString("**You asked:** " + clip(oneLine(d.Question, 1000), 1000) + "\n\n")
+			}
+			if err := s.AppendToItem(it.ID, q.String()+text); err != nil {
+				return err
+			}
+			if err := s.AnswerAsks(ids); err != nil {
 				return err
 			}
 		}
