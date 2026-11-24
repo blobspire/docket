@@ -23,6 +23,15 @@ File it when it **needs them** and **would otherwise be missed**:
 
 `~/.docket/rules.md` lists items they marked **not worth their time**, often with a note saying why. Read those notes as direct instructions about what not to file.
 
+## docket is the message, not the record
+
+Sessions run for days and they can't follow them 24/7: unless they're talking with you right now, what reaches them through docket is all they see. That's why the bar above matters: send what's critical for them to see, not everything.
+
+docket is how you reach them, not where the work is kept:
+- **The project keeps the record**, the way it already does: its repo, results folders, experiment database, notes. Don't change how a project keeps its records for docket's sake, and don't keep anything only in docket. You and later agents can't read docket back.
+- **A result you file is a summary written for them**: the headline numbers, the verdict, the caveats, what's next. Attach the report with `--evidence` so they can read it in docket.
+- **Say where the full version lives with `--record`**: a path in the project with a commit (`results/libero_plus/lp_v12_analysis @ 3f2a1c9`), or a URL (a pull request, a report page). If they come back to it months later, it's how they or an agent find the data. `docket add <id> --record …` sets it later.
+
 ## Filing
 
 ```sh
@@ -37,7 +46,8 @@ CI has been off since Nov 10: the free minutes ran out.
 EOF
 )"
 docket task "Plug the backup drive into the server" --project infra --place home --component backups
-docket review "LIBERO-plus results: Model A 65.5% vs control 78.6%" --project vlm-teacher --component "Model A" --evidence report.md
+docket review "LIBERO-plus results: Model A 65.5% vs control 78.6%" --project vlm-teacher --component "Model A" \
+  --evidence report.md --record "results/libero_plus/lp_v12_analysis @ 3f2a1c9"
 docket issue "ARC login expired: all training jobs are failing" --project vlm-teacher --urgency now --key arc-auth --why "..."
 ```
 
@@ -45,7 +55,7 @@ docket issue "ARC login expired: all training jobs are failing" --project vlm-te
 |---|---|
 | `ask` | A decision, or an action you're holding for approval. Give `--options` and `--recommend` when you have them. |
 | `task` | Something only a person can do: anything physical, their identity (signing in, sending as them), money, or a secret only they hold. `--blocks "<what it blocks>"` if it blocks work. |
-| `review` | Results or work for them to look at. Attach `--evidence` (screenshots, report, video). If you need a verdict, give `--options` (say, Retrain or Drop it): Done only means they've seen it. |
+| `review` | Results or work for them to look at. Attach `--evidence` (screenshots, report, video) and say where the full version lives with `--record`. If you need a verdict, give `--options` (say, Retrain or Drop it): Done only means they've seen it. |
 | `issue` | Something broken that needs them. |
 
 **Could you do it yourself once they say yes? Then it's an `ask`, not a `task`.** That includes work that auto mode or a permission stopped, work outside your repository (another machine, a service's config, docket's own config), and anything you'd otherwise write up as steps for them to run. File it with options, such as `--options "Do it|Leave it" --recommend "Do it"`, so one tap approves it, then do it when the answer comes. A `task` that hands them commands to run, or a config to edit, costs them a context switch and a terminal, for something you could have done.
@@ -85,6 +95,7 @@ Lead with what you need from them and why, in a sentence or two. Then at most ~5
 
 - `--key <stable-id>`: re-filing with the same key updates the one item instead of adding another: a new title, body or urgency, and answers go to the session that re-filed it. Escalate this way (`--urgency now`): raising an item to now brings it back if it was snoozed, and pushes their phone (unless they set its urgency by hand, which wins). Use it for anything you re-check on a schedule, and close it with `docket done --key <key>`.
 - `--blocking`: you're paused until they answer.
+- `--record <path or URL>`: where the full version lives in the project (see above). Any item can carry one; a review should.
 
 ## After filing: keep the docket true
 

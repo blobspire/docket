@@ -97,7 +97,8 @@ CREATE TABLE IF NOT EXISTS items (
   urgent_since INTEGER NOT NULL DEFAULT 0,
   expires_at INTEGER NOT NULL DEFAULT 0,
   pinned TEXT NOT NULL DEFAULT '',
-  stashed_at INTEGER NOT NULL DEFAULT 0
+  stashed_at INTEGER NOT NULL DEFAULT 0,
+  record TEXT NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX IF NOT EXISTS items_active_dedupe ON items(dedupe_key)
   WHERE dedupe_key IS NOT NULL AND status IN ('maybe','open','snoozed','answered');
@@ -387,6 +388,7 @@ var added = []struct{ table, column, ddl string }{
 	{"email_drafts", "basis", "INTEGER NOT NULL DEFAULT 0"},
 	{"email_messages", "seq", "INTEGER NOT NULL DEFAULT 0"},
 	{"email_drafts", "hand_recipients", "INTEGER NOT NULL DEFAULT 0"},
+	{"items", "record", "TEXT NOT NULL DEFAULT ''"},
 }
 
 func migrate(db *sql.DB) error {
@@ -784,6 +786,7 @@ type Item struct {
 	ExpiresAt    int64  // the item closes on its own after this (0: never)
 	Pinned       string // comma-separated fields the human set by hand
 	StashedAt    int64  // when the human put it on their Stash (0: never)
+	Record       string // where the full version lives in the project (a path or URL), as the agent said
 
 	// Ongoing marks an upsert that re-checks a standing condition (a session
 	// still waiting, a machine still down). It refreshes the item without
@@ -791,13 +794,13 @@ type Item struct {
 	Ongoing bool
 }
 
-const itemCols = `id, kind, status, title, body, options, recommend, blocking, blocks, physical, due, COALESCE(dedupe_key,''), source, machine, session_id, lead, cwd, quote, created_at, updated_at, last_seen_at, mention_count, COALESCE(snoozed_until,0), COALESCE(resolved_at,0), resolution, answer, COALESCE(answered_at,0), COALESCE(pushed_at,0), chief_note, project, component, place, urgency, urgent_since, expires_at, pinned, stashed_at`
+const itemCols = `id, kind, status, title, body, options, recommend, blocking, blocks, physical, due, COALESCE(dedupe_key,''), source, machine, session_id, lead, cwd, quote, created_at, updated_at, last_seen_at, mention_count, COALESCE(snoozed_until,0), COALESCE(resolved_at,0), resolution, answer, COALESCE(answered_at,0), COALESCE(pushed_at,0), chief_note, project, component, place, urgency, urgent_since, expires_at, pinned, stashed_at, record`
 
 func scanItem(sc interface{ Scan(...any) error }) (Item, error) {
 	var it Item
 	var opts string
 	var blocking, physical int
-	err := sc.Scan(&it.ID, &it.Kind, &it.Status, &it.Title, &it.Body, &opts, &it.Recommend, &blocking, &it.Blocks, &physical, &it.Due, &it.DedupeKey, &it.Source, &it.Machine, &it.SessionID, &it.Lead, &it.Cwd, &it.Quote, &it.CreatedAt, &it.UpdatedAt, &it.LastSeenAt, &it.MentionCount, &it.SnoozedUntil, &it.ResolvedAt, &it.Resolution, &it.Answer, &it.AnsweredAt, &it.PushedAt, &it.ChiefNote, &it.Project, &it.Component, &it.Place, &it.Urgency, &it.UrgentSince, &it.ExpiresAt, &it.Pinned, &it.StashedAt)
+	err := sc.Scan(&it.ID, &it.Kind, &it.Status, &it.Title, &it.Body, &opts, &it.Recommend, &blocking, &it.Blocks, &physical, &it.Due, &it.DedupeKey, &it.Source, &it.Machine, &it.SessionID, &it.Lead, &it.Cwd, &it.Quote, &it.CreatedAt, &it.UpdatedAt, &it.LastSeenAt, &it.MentionCount, &it.SnoozedUntil, &it.ResolvedAt, &it.Resolution, &it.Answer, &it.AnsweredAt, &it.PushedAt, &it.ChiefNote, &it.Project, &it.Component, &it.Place, &it.Urgency, &it.UrgentSince, &it.ExpiresAt, &it.Pinned, &it.StashedAt, &it.Record)
 	it.Blocking, it.Physical = blocking != 0, physical != 0
 	_ = json.Unmarshal([]byte(opts), &it.Options)
 	return it, err
@@ -872,6 +875,7 @@ func (s *Store) UpsertItem(it Item) (string, bool, error) {
 				blocking=CASE WHEN ? THEN 1 ELSE blocking END,
 				physical=CASE WHEN ? THEN 1 ELSE physical END,
 				expires_at=CASE WHEN ?>0 THEN ? ELSE expires_at END,
+				record=CASE WHEN ?<>'' THEN ? ELSE record END,
 				session_id=CASE WHEN ?<>'' THEN ? ELSE session_id END,
 				machine=CASE WHEN ?<>'' AND ?<>'' THEN ? ELSE machine END,
 				cwd=CASE WHEN ?<>'' AND ?<>'' THEN ? ELSE cwd END,
@@ -887,6 +891,7 @@ func (s *Store) UpsertItem(it Item) (string, bool, error) {
 				it.Kind, it.Kind,
 				it.Component, it.Component, it.Place, it.Place, it.Due, it.Due, it.Recommend, it.Recommend, opts, opts,
 				it.Blocks, it.Blocks, boolInt(it.Blocking), boolInt(it.Physical), it.ExpiresAt, it.ExpiresAt,
+				it.Record, it.Record,
 				it.SessionID, it.SessionID, it.SessionID, it.Machine, it.Machine, it.SessionID, it.Cwd, it.Cwd,
 				urg, t, urg, urg, urg, id)
 			return id, false, err
@@ -911,10 +916,10 @@ func (s *Store) UpsertItem(it Item) (string, bool, error) {
 		resolvedAt = t
 	}
 	res, err := s.DB.Exec(`INSERT OR IGNORE INTO items(id, kind, status, title, body, options, recommend, blocking, blocks, physical, due, dedupe_key, source, machine, session_id, lead, cwd, quote, created_at, updated_at, last_seen_at,
-		project, component, place, urgency, urgent_since, expires_at, resolution, resolved_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?)`,
+		project, component, place, urgency, urgent_since, expires_at, resolution, resolved_at, record)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?)`,
 		it.ID, it.Kind, it.Status, it.Title, it.Body, string(opts), it.Recommend, boolInt(it.Blocking), it.Blocks, boolInt(it.Physical), it.Due, dedupe, it.Source, it.Machine, it.SessionID, it.Lead, it.Cwd, it.Quote, it.CreatedAt, t, t,
-		it.Project, it.Component, it.Place, it.Urgency, it.UrgentSince, it.ExpiresAt, it.Resolution, resolvedAt)
+		it.Project, it.Component, it.Place, it.Urgency, it.UrgentSince, it.ExpiresAt, it.Resolution, resolvedAt, it.Record)
 	if err != nil {
 		return "", false, err
 	}
@@ -1546,6 +1551,13 @@ func (s *Store) UsageSince(day string) ([]Usage, error) {
 // SetChiefNote stores the chief of staff's annotation on an item.
 func (s *Store) SetChiefNote(id, note string) error {
 	_, err := s.DB.Exec(`UPDATE items SET chief_note=?, updated_at=? WHERE id=?`, note, now(), id)
+	return err
+}
+
+// SetRecord stores where an item's full version lives in the project. It
+// works on a closed item too: the agent may say where the record is later.
+func (s *Store) SetRecord(id, record string) error {
+	_, err := s.DB.Exec(`UPDATE items SET record=?, updated_at=?, last_seen_at=? WHERE id=?`, record, now(), now(), id)
 	return err
 }
 

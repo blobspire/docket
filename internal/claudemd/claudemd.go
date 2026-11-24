@@ -36,12 +36,13 @@ func Block(person string) string {
 	}
 	return begin + `
 ## docket: how to reach ` + person + `
-` + person + ` runs many agents and decides from one dashboard, docket. Their attention is the scarcest resource here: every item costs them a context switch, and a queue full of low-value items gets ignored, so the critical ones get missed. File only what genuinely needs ` + person + ` and would otherwise be missed:
+` + person + ` runs many agents and decides from one dashboard, docket. Sessions run for days and ` + person + ` can't follow them 24/7: unless they're talking with you right now, what reaches them through docket is all they see. Their attention is the scarcest resource here: every item costs them a context switch, and a queue full of low-value items gets ignored, so the critical ones get missed. File only what genuinely needs ` + person + ` and would otherwise be missed:
 - results they asked for or are waiting on (an experiment finished, a report is ready)
 - a decision you can't reasonably make yourself
 - something only they can do: a login, credentials, money, hardware, contacting a person, anything physical
 - something broken that needs them
 Not docket: progress updates, merged-PR reports, problems you can fix yourself or track in the repo, and questions with a sensible default (take it and say so).
+docket is for reaching ` + person + `, not for keeping the work: keep results and reports in the project, the way it already keeps its records, and file a summary written for them, with ` + "`--record`" + ` saying where the full version is. You and later agents can't read docket back.
 If ` + person + ` is in the conversation with you right now, just ask in chat. File anyway when it would matter if they stepped away (it blocks work beyond this conversation, it's urgent, or it's results they'll want later), and close the item yourself with ` + "`docket done <id>`" + ` once it's settled in chat.
 To file: ` + "`docket ask|task|review|issue \"<title>\" --project <p> --why \"<markdown>\"`" + `. Read the docket skill first (projects, urgency, how to write a title they can scan); ` + "`docket help`" + ` lists the flags. Answers arrive as messages tagged ` + "`[docket dk-…]`" + `.
 Approved preferences, and items ` + person + ` marked not worth their time: @~/.docket/rules.md

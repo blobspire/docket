@@ -291,6 +291,8 @@ body.sheet-open { overflow: hidden; }
 .kick .ic { width: 14px; height: 14px; }
 .sh-t { margin: 12px 0 14px; font-size: 25px; line-height: 1.25; font-weight: 650; letter-spacing: -.024em; text-wrap: balance; overflow-wrap: anywhere; }
 .recline { margin: 0 0 14px; padding: 9px 13px; border-radius: 11px; background: var(--accent-tint); font-size: 14.5px; color: var(--fg-2); }
+.rec-l { margin-top: 14px; background: var(--surface-2); border: 1px solid var(--line); overflow-wrap: anywhere; }
+.rec-l code { font-size: .86em; }
 .subh { display: flex; align-items: center; gap: 6px; margin: 30px 0 12px; font-size: 13px; font-weight: 650; color: var(--muted); }
 .subh .ic { width: 15px; height: 15px; }
 .fig { margin: 0 0 18px; }

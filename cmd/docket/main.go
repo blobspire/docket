@@ -40,12 +40,15 @@ const usage = `docket: the list of what your agents need from you.
 
 Reaching the human (for agents; never blocks, keep working afterwards).
 The bar is high: file only what needs them and would otherwise be missed.
+docket is a message to them, not where the work is kept: keep results in the
+project, and say where with --record. Neither you nor later agents can read docket back.
   docket ask "<decision>" --project <p> [--options "a|b"] [--recommend a] [--why "<markdown>"]
       A decision you can't reasonably make yourself, or an action you're holding for approval.
   docket task "<what only they can do>" --project <p> [--place <where>] [--blocks "<work it blocks>"]
       Logins, credentials, money, hardware, people to contact, anything physical.
-  docket review "<results to look at>" --project <p> --evidence <file>[,<file>...] [--why "..."]
+  docket review "<results to look at>" --project <p> --record "<path or URL>" [--evidence <file>,...] [--why "..."]
       Results they asked for or are waiting on: an experiment finished, a report is ready.
+      A summary written for them; --record says where the full version lives in the project.
   docket issue "<something broken that needs them>" --project <p> [--why "..."]
 
   Flags for all of these:
@@ -57,8 +60,9 @@ The bar is high: file only what needs them and would otherwise be missed.
     --expires <when>           closes itself after this, when it no longer matters (date, 6h, 3d)
     --key <stable-id>          re-filing with the same key updates one item (and can raise its urgency)
     --blocking                 you are paused until they answer
+    --record <path or URL>     where the full version lives in the project (a path with a commit, or a URL)
 
-  docket add <dk-id> [--why "<more>"] [--evidence <files>]   add to an item you filed
+  docket add <dk-id> [--why "<more>"] [--evidence <files>] [--record "<path or URL>"]   add to an item you filed
   docket done <dk-id> | --key <key> [--project <p>] [--why "<what happened>"]  close an item (answered in chat, moot, fixed)
   docket list [--project <p>] [--all]     open items from this machine
   docket projects                         projects, components and places in use

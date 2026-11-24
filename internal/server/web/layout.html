@@ -240,6 +240,7 @@
     {{if and $it.Recommend (not $it.Options)}}<p class="recline"><b>Recommends:</b> {{$it.Recommend}}</p>{{end}}
     {{with $it.Blocks}}<p class="recline"><b>Blocks:</b> {{.}}</p>{{end}}
     {{with $it.Body}}<div class="prose">{{md .}}</div>{{end}}
+    {{with $it.Record}}<p class="recline rec-l" title="Where the full version is kept, in the project"><b>Record:</b> {{if isURL .}}<a href="{{.}}" target="_blank" rel="noopener noreferrer">{{.}}</a>{{else}}<code>{{.}}</code>{{with $it.Machine}} <span class="muted">on {{.}}</span>{{end}}{{end}}</p>{{end}}
     {{with $it.Email}}{{$e := .}}
     {{if .Pending}}<div class="banner kept" data-email-pending="{{.Pending.ID}}" data-ms="{{.PendingMs}}">{{template "i" "send"}}<div><b>Sending{{if .PendingMs}} in <span data-left>{{secs .PendingMs}}</span> s{{end}}.</b> To {{range $i, $r := .To}}{{if $i}}, {{end}}{{$r.Email}}{{end}}{{if .Cc}}, cc {{range $i, $r := .Cc}}{{if $i}}, {{end}}{{$r.Email}}{{end}}{{end}}. <button type="button" class="lnk" data-email-undo="{{.Pending.ID}}">Undo</button></div></div>
     {{else if .Sent}}<div class="banner">{{template "i" "check"}}<div><b>Sent {{ago .SentAt}}.</b> This version already went out.</div></div>{{end}}

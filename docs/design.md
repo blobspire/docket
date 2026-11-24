@@ -69,6 +69,14 @@ The first version tried to catch every ask: a regex over agents' messages, a tra
   - Deadlines are only for sorting; nothing escalates on its own.
 - **Expiry** closes an item when it stops mattering.
 
+## The message, not the record
+
+docket is how agents reach the human, not where their work is kept. Sessions run for days and the human can't follow them, so what reaches docket is all they see; but the project owns the record, kept its own way (a repository, results folders, an experiment database with commit hashes), and docket never reads or writes it.
+
+- **The instructions say so.** Agents keep results in the project, file a summary written for the human, and say where the full version lives with `--record` (a path with a commit, or a URL). Neither the filing agent nor a later one can read docket back.
+- **docket keeps what it was sent.** Items, their bodies and copies of their evidence stay in the database after Done (Search finds them); they're the human's reading copy, never the source.
+- **Nightly backups.** The server writes a gzipped snapshot of its database (`VACUUM INTO`) to `<data_dir>/backups` after 4:00 each day and keeps `backup_days` of them (default 7; 0 turns them off). They guard against a bad upgrade or a damaged file, not a lost disk. Evidence files aren't copied: they're named by content and never rewritten.
+
 ## Handing an item back
 
 Agents sometimes file as a task something they could do themselves with the human's go-ahead: a config change outside their repository, a step auto mode refused, commands written up for the human to run. Two things keep that from costing the human a terminal:

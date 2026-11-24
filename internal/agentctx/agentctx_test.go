@@ -113,3 +113,37 @@ func TestServerFolderMappingWinsATie(t *testing.T) {
 		t.Fatalf("a deeper overlay folder should still apply: %q", got)
 	}
 }
+
+// Re-filing with the key of an open item (docket propose run again, say)
+// updates that item; docket list shows it once, under the id answers carry.
+func TestRefileWithTheSameKeyIsListedOnce(t *testing.T) {
+	now := time.Now().Unix()
+	c := Context{Open: []Item{
+		{ID: "dk-first01", Title: "Old plan", Key: "idea-abcdefgh", Project: "docket", CreatedAt: now - 600},
+		{ID: "dk-aliased", Title: "Known by another id", Project: "docket", CreatedAt: now - 600, Aliases: []string{"dk-alias01"}},
+	}}
+	o := Overlay{Filed: []Item{
+		{ID: "dk-second1", Title: "New plan", Key: "idea-abcdefgh", Project: "docket", CreatedAt: now},
+		{ID: "dk-alias01", Title: "Known by another id", Project: "docket", CreatedAt: now},
+		{ID: "dk-elsewhr", Title: "Same key, other project", Key: "idea-abcdefgh", Project: "cwant", CreatedAt: now},
+		// Two filings the server hasn't seen yet, with one key: it merges
+		// the second into the first.
+		{ID: "dk-unseen1", Title: "Nightly report v1", Key: "nightly", Project: "docket", CreatedAt: now},
+		{ID: "dk-unseen2", Title: "Nightly report v2", Key: "nightly", Project: "docket", CreatedAt: now + 1},
+	}}
+	m := c.Merged(o)
+	got := map[string]string{}
+	for _, it := range m.Open {
+		got[it.ID] = it.Title
+	}
+	want := map[string]string{"dk-first01": "New plan", "dk-aliased": "Known by another id", "dk-elsewhr": "Same key, other project", "dk-unseen1": "Nightly report v2"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("open = %v\nwant   %v", got, want)
+	}
+	if it, ok := m.OpenByKey("idea-abcdefgh", "docket", "dk-third01"); !ok || it.ID != "dk-first01" {
+		t.Fatalf("OpenByKey = %+v %v, want dk-first01", it, ok)
+	}
+	if _, ok := m.OpenByKey("", "docket", ""); ok {
+		t.Fatal("an empty key matched")
+	}
+}

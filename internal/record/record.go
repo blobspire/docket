@@ -68,6 +68,10 @@ type Item struct {
 	Root       string `json:"root,omitempty"`    // the filing folder's main repository root
 	Remote     string `json:"remote,omitempty"`  // that repository's origin URL (no credentials)
 	Idea       string `json:"idea,omitempty"`    // a proposal for this idea (docket propose)
+	// Record is where the full version lives in the project: a path (with a
+	// commit) or a URL. docket keeps the agent's summary; the project keeps
+	// the record.
+	Record string `json:"record,omitempty"`
 }
 
 type Evidence struct {

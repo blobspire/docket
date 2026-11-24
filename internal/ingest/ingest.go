@@ -180,6 +180,7 @@ func apply(s *store.Store, e store.RawEvent, o Options) error {
 			ItemID   string            `json:"item_id"`
 			Text     string            `json:"text"`
 			Evidence []record.Evidence `json:"evidence"`
+			Record   string            `json:"record"`
 		}
 		_ = json.Unmarshal(r.Payload, &a)
 		it, ok, _ := s.ResolveItem(a.ItemID)
@@ -188,6 +189,11 @@ func apply(s *store.Store, e store.RawEvent, o Options) error {
 		}
 		if a.Text != "" {
 			if err := s.AppendToItem(it.ID, clip(a.Text, 20000)); err != nil {
+				return err
+			}
+		}
+		if rec := clip(oneLine(a.Record, 500), 500); rec != "" {
+			if err := s.SetRecord(it.ID, rec); err != nil {
 				return err
 			}
 		}
@@ -406,6 +412,7 @@ func fileItem(s *store.Store, r record.Record, base store.Item, o Options) error
 	it.Component = clip(strings.TrimSpace(in.Component), 60)
 	it.Place = store.Slug(in.Place)
 	it.ExpiresAt = in.Expires
+	it.Record = clip(oneLine(in.Record, 500), 500)
 	switch in.Urgency {
 	case "now", "soon", "normal":
 		it.Urgency = in.Urgency

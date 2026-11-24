@@ -56,6 +56,7 @@ var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 	"recommended": recommended,
 	"project":     project,
 	"kindName":    kindName,
+	"isURL":       isURL,
 	"lower":       strings.ToLower,
 	"add":         func(a, b int) int { return a + b },
 	"secs":        func(ms int64) int64 { return (ms + 999) / 1000 },
@@ -382,6 +383,7 @@ type page struct {
 	ProjectList []string // for the capture sheet's project picker
 	Email       *readerView
 	Skipped     *skippedView
+	Backup      *backupStatus
 }
 
 // attachment is one piece of evidence as the item sheet shows it.
@@ -765,7 +767,8 @@ func (s *Server) pageHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	sess, _ := s.st.Sessions(false, 200)
 	quotas, _ := s.st.Quotas()
-	s.render(w, "health.html", page{Title: "Health", Nav: "health", Machines: rows, Sessions: sess, Quotas: quotas, Spend: s.LeadSpend(7)})
+	b := s.backupStatus()
+	s.render(w, "health.html", page{Title: "Health", Nav: "health", Machines: rows, Sessions: sess, Quotas: quotas, Spend: s.LeadSpend(7), Backup: &b})
 }
 
 func (s *Server) act(w http.ResponseWriter, r *http.Request) {
@@ -892,4 +895,11 @@ func localPath(p string) bool {
 	}
 	u, err := url.Parse(p)
 	return err == nil && u.Host == "" && u.Scheme == ""
+}
+
+// isURL reports a web address, which the sheet shows as a link (a record
+// can also be a path in the project, shown as text).
+func isURL(s string) bool {
+	u, err := url.Parse(strings.TrimSpace(s))
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }

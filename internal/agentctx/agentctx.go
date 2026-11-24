@@ -313,11 +313,21 @@ func (c Context) Merged(o Overlay) Context {
 		}
 		return false
 	}
+	// A filing with the key of an open item updates that item (the server
+	// merges it in), so it isn't a second entry; nor is one the server
+	// already knows by another id (an alias).
 	have := map[string]bool{}
+	keyed := map[string]int{} // project + key → index in open
 	var open []Item
 	for _, it := range c.Open {
 		have[it.ID] = true
+		for _, a := range it.Aliases {
+			have[a] = true
+		}
 		if !closed(it) {
+			if it.Key != "" {
+				keyed[it.Project+"\x00"+it.Key] = len(open)
+			}
 			open = append(open, it)
 		}
 	}
@@ -325,10 +335,33 @@ func (c Context) Merged(o Overlay) Context {
 		if it.CreatedAt < cut || seen[it.ID] || have[it.ID] || closed(it) {
 			continue
 		}
+		if it.Key != "" {
+			k := it.Project + "\x00" + it.Key
+			if i, ok := keyed[k]; ok {
+				// The newer filing's words win, under the id answers carry.
+				open[i].Title, open[i].Urgency = it.Title, it.Urgency
+				continue
+			}
+			keyed[k] = len(open)
+		}
 		open = append(open, it)
 	}
 	out.Open = open
 	return out
+}
+
+// OpenByKey is the open item a filing with this key and project updates
+// (the server merges a re-filing into it), other than the filing itself.
+func (c Context) OpenByKey(key, project, except string) (Item, bool) {
+	if key == "" {
+		return Item{}, false
+	}
+	for _, it := range c.Open {
+		if it.Key == key && it.Project == project && it.ID != except {
+			return it, true
+		}
+	}
+	return Item{}, false
 }
 
 // HasDir reports whether this exact folder has a project.
