@@ -556,6 +556,8 @@ a.tl-t:hover, .tl-t a:hover { color: var(--accent); }
 .tl-s { margin: 3px 0 0; color: var(--fg-2); font-size: 14px; overflow-wrap: anywhere; }
 .tl-m { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 4px 0 0; color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
 .tl-m span { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.tl-m .tl-rec { display: inline; }
+.tl-m .tl-rec b { font-weight: 600; white-space: nowrap; }
 .tl-m a { color: var(--accent); text-decoration: none; }
 .tl-m .ic { width: 14px; height: 14px; }
 .tl-note { margin-top: 4px; font-size: 14px; }
@@ -665,6 +667,7 @@ a.tl-t:hover, .tl-t a:hover { color: var(--accent); }
 .pgf-l { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font-weight: 450; }
 .pgf-a { flex: none; color: var(--faint); font-weight: 450; font-size: 13px; }
 .pgf .dl { margin-top: 8px; }
+.pgf .cnt { flex: none; white-space: nowrap; }
 .pg-a { color: var(--k-progress); background: var(--k-progress-bg); }
 .pgf-more { margin: 8px 4px 0; font-size: 13.5px; }
 .pgf-more a { color: var(--accent); font-weight: 550; text-decoration: none; }

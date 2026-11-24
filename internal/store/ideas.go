@@ -439,16 +439,17 @@ func (s *Store) AddClone(machine, dir, project, remote string) error {
 // reach; the machine picks it up at its next sync.
 type Start struct {
 	ID, Machine, Op, Name, Cwd, IdeaID, Prompt, Status, Error string
+	Resume                                                    string // a session to resume (and hand Prompt to)
 	Args                                                      []string
 	CreatedAt, SentAt                                         int64
 }
 
-const startCols = `id, machine, op, name, cwd, idea_id, prompt, args, status, error, created_at, sent_at`
+const startCols = `id, machine, op, name, cwd, idea_id, prompt, args, status, error, created_at, sent_at, resume`
 
 func scanStart(sc interface{ Scan(...any) error }) (Start, error) {
 	var st Start
 	var args string
-	err := sc.Scan(&st.ID, &st.Machine, &st.Op, &st.Name, &st.Cwd, &st.IdeaID, &st.Prompt, &args, &st.Status, &st.Error, &st.CreatedAt, &st.SentAt)
+	err := sc.Scan(&st.ID, &st.Machine, &st.Op, &st.Name, &st.Cwd, &st.IdeaID, &st.Prompt, &args, &st.Status, &st.Error, &st.CreatedAt, &st.SentAt, &st.Resume)
 	_ = json.Unmarshal([]byte(args), &st.Args)
 	return st, err
 }
@@ -462,8 +463,8 @@ func (s *Store) AddStart(st Start) error {
 	if st.Op == "" {
 		st.Op = "start"
 	}
-	_, err := s.DB.Exec(`INSERT INTO starts(`+startCols+`) VALUES (?,?,?,?,?,?,?,?,'pending','',?,0)`,
-		st.ID, st.Machine, st.Op, st.Name, st.Cwd, st.IdeaID, st.Prompt, string(args), now())
+	_, err := s.DB.Exec(`INSERT INTO starts(`+startCols+`) VALUES (?,?,?,?,?,?,?,?,'pending','',?,0,?)`,
+		st.ID, st.Machine, st.Op, st.Name, st.Cwd, st.IdeaID, st.Prompt, string(args), now(), st.Resume)
 	return err
 }
 

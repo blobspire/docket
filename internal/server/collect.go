@@ -299,6 +299,7 @@ type StartCmd struct {
 	Idea   string   `json:"idea,omitempty"`
 	Prompt string   `json:"prompt,omitempty"`
 	Args   []string `json:"args,omitempty"`
+	Resume string   `json:"resume,omitempty"` // resume this session with Prompt (a question for an ended one)
 }
 
 // Hashes is what a laptop already has: the hashes of its rules.md and
@@ -338,6 +339,22 @@ func (s *Server) Receive(machine string, r io.Reader, sessionsJSON []byte, have 
 			s.st.DeliveryDropped(d.ID, "the session isn't running")
 			continue
 		}
+		// A question about an item goes to the session that filed it, which
+		// has usually ended: the laptop resumes it with the question, as the
+		// server does on the machines it reaches. If that keeps failing, it
+		// waits in the mailbox like an answer.
+		if d.Kind == "ask" && sess.State == "ended" && d.Attempts < askResumeTries && resumable(sess) {
+			name := sess.Name
+			if name == "" {
+				name = "docket-" + short(d.SessionID)
+			}
+			id := fmt.Sprintf("%s%d-%s", askStartPrefix, d.Attempts, d.ID) // one start per try
+			if err := s.st.AddStart(store.Start{ID: id, Machine: machine, Name: name, Cwd: sess.Cwd, Prompt: d.Text, Resume: d.SessionID}); err == nil {
+				s.st.DeliverySent(d.ID, "resume")
+				s.st.PatchSession(d.SessionID, store.SessionPatch{State: store.Str("busy")})
+				continue
+			}
+		}
 		// Hand it over even if the session has ended: resuming it later runs
 		// the SessionStart hook, which delivers what is waiting.
 		if sess.HasPlugin {
@@ -351,7 +368,7 @@ func (s *Server) Receive(machine string, r io.Reader, sessionsJSON []byte, have 
 	if starts, err := s.st.Starts(machine, "pending"); err == nil {
 		for _, st := range starts {
 			if s.st.StartSent(st.ID) { // handed out once, even if two syncs overlap
-				reply.Starts = append(reply.Starts, StartCmd{ID: st.ID, Op: st.Op, Name: st.Name, Cwd: st.Cwd, Idea: st.IdeaID, Prompt: st.Prompt, Args: st.Args})
+				reply.Starts = append(reply.Starts, StartCmd{ID: st.ID, Op: st.Op, Name: st.Name, Cwd: st.Cwd, Idea: st.IdeaID, Prompt: st.Prompt, Args: st.Args, Resume: st.Resume})
 			}
 		}
 	}

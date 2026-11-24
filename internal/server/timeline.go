@@ -72,7 +72,7 @@ func (s *Server) pageTimeline(w http.ResponseWriter, r *http.Request) {
 		v.Filter = ""
 	}
 	before, _ := strconv.ParseInt(q.Get("before"), 10, 64)
-	entries, err := s.st.Timeline(v.Project, v.Filter, before, timelineLimit)
+	entries, more, err := s.st.Timeline(v.Project, v.Filter, before, timelineLimit)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -110,7 +110,7 @@ func (s *Server) pageTimeline(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	v.Days = s.tlDays(entries, v.Project == "")
-	if len(entries) == timelineLimit {
+	if more {
 		v.Older = link(v.Project, v.Filter, entries[len(entries)-1].At)
 	}
 	switch {

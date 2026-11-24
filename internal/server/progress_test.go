@@ -2,9 +2,11 @@ package server
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -130,7 +132,7 @@ func TestProgressEntryActions(t *testing.T) {
 	if len(ds) != 1 || !ds[0].Quiet || !strings.Contains(ds[0].Text, "progress entry") || !strings.Contains(ds[0].Text, "major stage") || !strings.Contains(ds[0].Text, "routine, skip these") {
 		t.Fatalf("noise note = %+v", ds)
 	}
-	if tl, _ := e.s.st.Timeline("vlm", "", 0, 10); len(tl) != 0 {
+	if tl, _, _ := e.s.st.Timeline("vlm", "", 0, 10); len(tl) != 0 {
 		t.Fatalf("a dismissed entry is still on the timeline: %+v", tl)
 	}
 	if err := e.s.Decide("dk-prog0001", Action{Kind: "undo"}); err != nil {
@@ -306,28 +308,41 @@ func TestProgressFoldAndTimeline(t *testing.T) {
 	}
 }
 
+// Paging never loses an entry, even when many share the second a page ends
+// in: the page takes that whole second, and the next starts before it.
 func TestTimelineOlderPages(t *testing.T) {
 	e := newEnv(t, "")
 	base := time.Now().Add(-48 * time.Hour).Unix()
-	for i := 0; i < timelineLimit+5; i++ {
-		id := "dk-" + strings.Repeat("0", 4) + string(rune('a'+i/26%26)) + string(rune('a'+i%26)) + "zz"
-		e.s.st.UpsertItem(store.Item{ID: id, Kind: "progress", Status: store.StatusLogged, Title: "step", Project: "vlm", CreatedAt: base + int64(i)})
+	n := timelineLimit + 40
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("dk-p%07d", i)
+		// Twenty entries a second, so page edges fall inside seconds.
+		e.s.st.UpsertItem(store.Item{ID: id, Kind: "progress", Status: store.StatusLogged, Title: "step " + id, Project: "vlm", CreatedAt: base + int64(i/20)})
 	}
-	b := getOK(t, e, "/timeline?p=vlm")
-	i := strings.Index(b, `href="/timeline?before=`)
-	if i < 0 {
-		t.Fatal("no Older link on a full page")
+	seen := map[string]bool{}
+	path, pages := "/timeline?p=vlm", 0
+	for path != "" {
+		pages++
+		if pages > 5 {
+			t.Fatal("paging doesn't end")
+		}
+		b := getOK(t, e, path)
+		for _, m := range regexp.MustCompile(`data-open="(dk-p\d+)"`).FindAllStringSubmatch(b, -1) {
+			if seen[m[1]] {
+				t.Fatalf("%s on two pages", m[1])
+			}
+			seen[m[1]] = true
+		}
+		path = ""
+		if m := regexp.MustCompile(`href="(/timeline\?[^"]*before=[^"]*)"`).FindStringSubmatch(b); m != nil {
+			path = strings.ReplaceAll(m[1], "&amp;", "&")
+			if u, _ := url.Parse(path); u.Query().Get("p") != "vlm" {
+				t.Fatalf("older link %q lost the project", path)
+			}
+		}
 	}
-	older := b[i+6 : i+6+strings.Index(b[i+6:], `"`)]
-	u, _ := url.Parse(strings.ReplaceAll(older, "&amp;", "&"))
-	entries, _ := e.s.st.Timeline("vlm", "", 0, timelineLimit)
-	before := entries[len(entries)-1].At
-	if u.Query().Get("p") != "vlm" || u.Query().Get("before") == "" {
-		t.Fatalf("older link %q", older)
-	}
-	rest, _ := e.s.st.Timeline("vlm", "", before, timelineLimit)
-	if len(rest) != 5 {
-		t.Fatalf("older page has %d, want 5", len(rest))
+	if len(seen) != n || pages != 2 {
+		t.Fatalf("saw %d of %d entries on %d pages", len(seen), n, pages)
 	}
 }
 
@@ -341,5 +356,24 @@ func TestAnswerChoice(t *testing.T) {
 		if got := store.AnswerChoice(c.answer, []string{"Build it", "raise to 10", "raise to 10.5"}); got != c.want {
 			t.Errorf("AnswerChoice(%q) = %q, want %q", c.answer, got, c.want)
 		}
+	}
+}
+
+// More entries than a page in one second: the page holds the whole second
+// (it can't be split), and there's nothing older.
+func TestTimelineOneCrowdedSecond(t *testing.T) {
+	e := newEnv(t, "")
+	at := time.Now().Add(-time.Hour).Unix()
+	for i := 0; i < timelineLimit+10; i++ {
+		e.s.st.UpsertItem(store.Item{ID: fmt.Sprintf("dk-c%07d", i), Kind: "progress", Status: store.StatusLogged, Title: "bulk", Project: "vlm", CreatedAt: at})
+	}
+	e.s.st.UpsertItem(store.Item{ID: "dk-older001", Kind: "progress", Status: store.StatusLogged, Title: "older", Project: "vlm", CreatedAt: at - 60})
+	entries, more, err := e.s.st.Timeline("vlm", "", 0, timelineLimit)
+	if err != nil || len(entries) != timelineLimit+10 || !more {
+		t.Fatalf("first page: %d entries, more=%v, err=%v", len(entries), more, err)
+	}
+	rest, more, _ := e.s.st.Timeline("vlm", "", entries[len(entries)-1].At, timelineLimit)
+	if len(rest) != 1 || rest[0].Item.ID != "dk-older001" || more {
+		t.Fatalf("second page: %+v more=%v", rest, more)
 	}
 }

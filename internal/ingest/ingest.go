@@ -188,20 +188,7 @@ func apply(s *store.Store, e store.RawEvent, o Options) error {
 			return nil
 		}
 		if a.Text != "" {
-			// Text added while the human's question waits is the answer: it
-			// goes under the question, so the item reads as a conversation.
-			text := clip(a.Text, 20000)
-			asks, _ := s.UnansweredAsks(it.ID)
-			var ids []string
-			var q strings.Builder
-			for _, d := range asks {
-				ids = append(ids, d.ID)
-				q.WriteString("**You asked:** " + clip(oneLine(d.Question, 1000), 1000) + "\n\n")
-			}
-			if err := s.AppendToItem(it.ID, q.String()+text); err != nil {
-				return err
-			}
-			if err := s.AnswerAsks(ids); err != nil {
+			if err := addAnswer(s, it.ID, clip(a.Text, 20000)); err != nil {
 				return err
 			}
 		}
@@ -258,6 +245,13 @@ func apply(s *store.Store, e store.RawEvent, o Options) error {
 			}
 			if !ok && !d.Explicit {
 				it, ok = s.ActiveByAgentKey(k, "", r.Machine)
+			}
+		}
+		// An agent may answer the human's question about an item with a
+		// done and a note: the note is the answer.
+		if ok && d.Note != "" && hasReceivedAsk(s, it.ID) {
+			if err := addAnswer(s, it.ID, clip(d.Note, 20000)); err != nil {
+				return err
 			}
 		}
 		// Only an item that still needs someone (or one whose answer the
@@ -652,6 +646,39 @@ func parseTS(ts string) int64 {
 		return t.Unix()
 	}
 	return time.Now().Unix()
+}
+
+// addAnswer adds an agent's text to an item. Text added while a question the
+// human asked (and the agent received) waits is its answer: it goes under
+// the question, so the item reads as a conversation. A question that never
+// reached the agent isn't answered by text it hadn't seen.
+func addAnswer(s *store.Store, id, text string) error {
+	asks, _ := s.UnansweredAsks(id)
+	var ids []string
+	var q strings.Builder
+	for _, d := range asks {
+		if d.Status != "confirmed" {
+			continue
+		}
+		ids = append(ids, d.ID)
+		q.WriteString("**You asked:** " + clip(oneLine(d.Question, 1000), 1000) + "\n\n")
+	}
+	if err := s.AppendToItem(id, q.String()+text); err != nil {
+		return err
+	}
+	return s.AnswerAsks(ids)
+}
+
+// hasReceivedAsk reports a question about the item the agent received and
+// hasn't answered.
+func hasReceivedAsk(s *store.Store, id string) bool {
+	asks, _ := s.UnansweredAsks(id)
+	for _, d := range asks {
+		if d.Status == "confirmed" {
+			return true
+		}
+	}
+	return false
 }
 
 // recordLine is where an item's full version lives, kept as the agent wrote

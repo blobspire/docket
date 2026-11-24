@@ -109,8 +109,20 @@ func sessionStarted(s *store.Store, r record.Record) error {
 		return nil
 	}
 	st, changed, err := s.StartResult(p.StartID, p.OK, clip(p.Error, 500))
-	if err != nil || !changed || p.OK || st.IdeaID == "" || st.Op != "start" {
+	if err != nil || !changed || p.OK {
 		return err
+	}
+	// A laptop couldn't resume a session with the human's question: the
+	// question goes back to waiting (the next sync tries again, then hands
+	// it to the mailbox), saying why.
+	if rest, ok := strings.CutPrefix(st.ID, "ask-"); ok {
+		if _, d, ok := strings.Cut(rest, "-"); ok {
+			return s.AskResumeFailed(d, "couldn't resume the session on "+st.Machine+": "+clip(p.Error, 300))
+		}
+		return nil
+	}
+	if st.IdeaID == "" || st.Op != "start" {
+		return nil
 	}
 	// It didn't start there: back in the queue, where placement skips this
 	// machine for it.

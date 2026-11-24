@@ -307,6 +307,9 @@ func (s *Server) RulesMarkdown() string {
 			if n.Project != "" {
 				line += " (" + n.Project + ")"
 			}
+			if n.Kind == store.KindProgress {
+				line += " [a progress entry: post progress only for major stages]"
+			}
 			if n.Note != "" {
 				line += ": " + n.Note
 			}

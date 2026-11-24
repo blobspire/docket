@@ -33,7 +33,7 @@
             <a class="tl-t" href="/item/{{.Item.ID}}" data-open="{{.Item.ID}}">{{.Item.Title}}</a>
             {{with .Summary}}<p class="tl-s">{{.}}</p>{{end}}
             {{with .Item.Next}}<p class="tl-s">Next: {{.}}</p>{{end}}
-            {{if or .Item.Record .View}}<p class="tl-m">{{with .Item.Record}}<span title="Where the full version is kept">Record: {{if isURL .}}<a href="{{.}}" target="_blank" rel="noopener noreferrer">{{.}}</a>{{else}}<code>{{.}}</code>{{end}}</span>{{end}}{{with .View}}{{$n := add (len .Images) .Docs}}{{if $n}}<span>{{template "i" "clip"}}{{$n}}</span>{{end}}{{end}}</p>{{end}}
+            {{if or .Item.Record .View}}<p class="tl-m">{{with .Item.Record}}<span class="tl-rec" title="Where the full version is kept"><b>Record:</b> {{if isURL .}}<a href="{{.}}" target="_blank" rel="noopener noreferrer">{{.}}</a>{{else}}<code>{{.}}</code>{{end}}</span>{{end}}{{with .View}}{{$n := add (len .Images) .Docs}}{{if $n}}<span>{{template "i" "clip"}}{{$n}}</span>{{end}}{{end}}</p>{{end}}
           {{end}}
         </div>
       </li>

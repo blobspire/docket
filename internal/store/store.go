@@ -283,7 +283,8 @@ CREATE TABLE IF NOT EXISTS starts (
   status TEXT NOT NULL,
   error TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL,
-  sent_at INTEGER NOT NULL DEFAULT 0
+  sent_at INTEGER NOT NULL DEFAULT 0,
+  resume TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS starts_status ON starts(machine, status);
 `
@@ -395,6 +396,7 @@ var added = []struct{ table, column, ddl string }{
 	{"items", "next", "TEXT NOT NULL DEFAULT ''"},
 	{"deliveries", "question", "TEXT NOT NULL DEFAULT ''"},
 	{"deliveries", "answered_at", "INTEGER NOT NULL DEFAULT 0"},
+	{"starts", "resume", "TEXT NOT NULL DEFAULT ''"},
 }
 
 func migrate(db *sql.DB) error {
@@ -1173,7 +1175,7 @@ func (s *Store) UndoIf(id string, expect int64) (string, error) {
 	if _, err := tx.Exec(`UPDATE items SET status=?, snoozed_until=NULL, updated_at=?, answer=CASE WHEN ? IN ('answer','approve','decline','choose') THEN '' ELSE answer END,
 		expires_at=CASE WHEN ?='expire' THEN 0 ELSE expires_at END,
 		stashed_at=CASE WHEN ? IN ('stash','unstash') THEN ? ELSE stashed_at END,
-		resolution=CASE WHEN ? IN ('open','answered','delivered','maybe') THEN '' ELSE resolution END,
+		resolution=CASE WHEN ? IN ('open','answered','delivered','maybe','logged') THEN '' ELSE resolution END,
 		resolved_at=CASE WHEN ? IN ('done','dismissed','expired') THEN COALESCE(resolved_at, ?) ELSE NULL END WHERE id=?`, prev, now(), action, action, action, stashedAt, prev, prev, now(), id); err != nil {
 		if isDedupeConflict(err) {
 			return "", errors.New("can't undo: an open item with the same key has been filed since")
@@ -1367,6 +1369,20 @@ func (s *Store) deliveries(where string, args ...any) ([]Delivery, error) {
 		out = append(out, d)
 	}
 	return out, rows.Err()
+}
+
+// AskResumeFailed puts a question whose session couldn't be resumed back
+// to pending, saying why (sending it counted the try); the session, which
+// was marked busy for the resume, is ended again.
+func (s *Store) AskResumeFailed(id, why string) error {
+	res, err := s.DB.Exec(`UPDATE deliveries SET status='pending', error=? WHERE id=? AND kind='ask' AND status='sent'`, why, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		_, err = s.DB.Exec(`UPDATE sessions SET state='ended' WHERE id=(SELECT session_id FROM deliveries WHERE id=?) AND state='busy'`, id)
+	}
+	return err
 }
 
 // UnansweredAsks are the human's questions about an item that no answer

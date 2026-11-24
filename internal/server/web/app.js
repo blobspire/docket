@@ -206,6 +206,7 @@
     openSheet(order[j], "replace");
   };
   const sheetEl = () => (openId ? $(".sheet") : null);
+  const sheetScroller = (sh) => sh && ($(".sh-b", sh) || sh); // what scrolls in a sheet
   const liveSheet = () => { const sh = sheetEl(); return sh && sh.dataset.id === openId && !sh.classList.contains("busy") && $(".dock", sh) ? sh : null; };
 
   // The answer box: folded under the options until Reply (or r).
@@ -555,7 +556,7 @@
   });
   // Waiting folds stay as you left them.
   const folds = () => { try { return JSON.parse(ss.get("docket.wt") || "[]"); } catch (_) { return []; } };
-  const applyFolds = () => { const open = folds(); $$("details[data-wt]").forEach((d) => { d.open = open.includes(d.dataset.wt); }); };
+  const applyFolds = (root = document) => { const open = folds(); $$("details[data-wt]", root).forEach((d) => { d.open = open.includes(d.dataset.wt); }); };
   document.addEventListener("toggle", (e) => {
     const d = e.target;
     if (!d.matches || !d.matches("details[data-wt]")) return;
@@ -751,7 +752,12 @@
         const side = $(".side"), sideAt = side && [side.scrollLeft, side.scrollTop];
         const q0 = document.activeElement && document.activeElement.id === "q" ? document.activeElement : null;
         const caret = q0 && [q0.selectionStart, q0.selectionEnd, q0.selectionDirection, q0.scrollLeft];
+        // Folds open as you left them before the swap: measured closed for a
+        // moment, a page that only scrolls with a fold open would jump to the top.
+        applyFolds(doc);
+        const y = window.scrollY;
         $(where).replaceWith($(where, doc));
+        if (window.scrollY !== y) window.scrollTo(0, y);
         $("header.bar").replaceWith($("header.bar", doc));
         document.title = openId ? document.title : doc.title;
         v0 = document.body.dataset.version = doc.body.dataset.version;
@@ -980,16 +986,23 @@
   }, 1000);
 
   // A question to the agent: the open item reloads when its answer arrives.
-  let askV = null;
+  // The baseline is the version the sheet was drawn at, so an answer that
+  // lands before the first check still counts; the sheet keeps its scroll.
   setInterval(async () => {
     const sh = solo ? document : sheetEl();
-    if (!sh || document.hidden || !$("[data-asking]", sh)) { askV = null; return; }
+    const w = sh && $("[data-asking]", sh);
+    if (!w || document.hidden) return;
     const f = $("[data-reply] textarea", sh);
     if (f && f.value.trim()) return; // don't swap the sheet under a question being typed
     try {
       const { v } = await (await fetch("/api/version", { signal: timeout(8000) })).json();
-      if (askV !== null && v !== askV) reloadSheet();
-      askV = v;
+      if (w.dataset.v && v !== w.dataset.v) {
+        const box = solo ? document.scrollingElement : sheetScroller(sh);
+        const top = box ? box.scrollTop : 0;
+        await reloadSheet();
+        const nb = solo ? document.scrollingElement : sheetScroller(sheetEl());
+        if (nb) nb.scrollTop = top;
+      }
     } catch (_) {}
   }, 5000);
 

@@ -603,7 +603,7 @@ func runStart(st server.StartCmd, sp spool.Spool) {
 		sessions.Stop(st.Name)
 		return
 	}
-	err := sessions.Start(sessions.StartOpts{Name: st.Name, Cwd: st.Cwd, Idea: st.Idea, Args: st.Args, Prompt: st.Prompt, Home: home})
+	err := sessions.Start(sessions.StartOpts{Name: st.Name, Cwd: st.Cwd, Idea: st.Idea, Args: st.Args, Prompt: st.Prompt, ResumeID: st.Resume, Home: home})
 	r := record.New("session.started", os.Getenv)
 	p := map[string]any{"start_id": st.ID, "ok": err == nil}
 	if err != nil {

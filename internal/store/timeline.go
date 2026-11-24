@@ -41,22 +41,47 @@ const (
 )
 
 // Timeline returns a project's entries before the unix time before (0:
-// now), newest first, at most limit; filter is one of TimelineFilters or ""
-// for all. An empty project means every project.
-func (s *Store) Timeline(project, filter string, before int64, limit int) ([]TimelineEntry, error) {
+// now), newest first; filter is one of TimelineFilters or "" for all, and an
+// empty project means every project. It returns about limit entries: the
+// oldest second it reaches is always whole (entries can share a second), so
+// the next page, before that second, misses none. more reports older ones.
+func (s *Store) Timeline(project, filter string, before int64, limit int) (entries []TimelineEntry, more bool, err error) {
 	if before <= 0 {
 		before = 1 << 62
 	}
+	// One more than a page from each source tells whether there's more.
+	all, err := s.timeline(project, filter, "<", before, limit+1)
+	if err != nil || len(all) <= limit {
+		return all, false, err
+	}
+	// Each source gave its newest limit+1 entries, so every entry newer
+	// than the limit-th is here; the limit-th's second may have more.
+	edge := all[limit-1].At
+	for _, e := range all {
+		if e.At > edge {
+			entries = append(entries, e)
+		}
+	}
+	same, err := s.timeline(project, filter, "=", edge, 1<<20)
+	if err != nil {
+		return nil, false, err
+	}
+	return append(entries, same...), true, nil
+}
+
+// timeline gathers the entries whose time compares (op: "<" or "=") with t,
+// at most limit from each source, newest first.
+func (s *Store) timeline(project, filter, op string, t int64, limit int) ([]TimelineEntry, error) {
 	want := func(k string) bool { return filter == "" || filter == k }
 	var out []TimelineEntry
-	scope, args := "", []any{before}
+	scope, args := "", []any{t}
 	if project != "" {
 		scope = ` AND project=?`
 		args = append(args, project)
 	}
 	args = append(args, limit)
 	items := func(kind, where string) error {
-		rows, err := s.items(`SELECT `+itemCols+` FROM items WHERE `+where+` AND created_at<?`+scope+` ORDER BY created_at DESC LIMIT ?`, args...)
+		rows, err := s.items(`SELECT `+itemCols+` FROM items WHERE `+where+` AND created_at`+op+`?`+scope+` ORDER BY created_at DESC, rowid DESC LIMIT ?`, args...)
 		if err != nil {
 			return err
 		}
@@ -85,13 +110,13 @@ func (s *Store) Timeline(project, filter string, before int64, limit int) ([]Tim
 	if want(TLDecision) {
 		q := `SELECT d.item_id, d.action, d.answer, d.context, i.title, d.ts, ` + prefixed("i.", itemCols) + ` FROM decisions d
 			JOIN items i ON i.id = d.item_id
-			WHERE d.action IN (` + tlDecisions + `) AND i.kind NOT IN ('rule','email') AND i.source<>'email' AND d.ts<?`
-		dargs := []any{before}
+			WHERE d.action IN (` + tlDecisions + `) AND i.kind NOT IN ('rule','email') AND i.source<>'email' AND d.ts` + op + `?`
+		dargs := []any{t}
 		if project != "" {
 			q += ` AND i.project=?`
 			dargs = append(dargs, project)
 		}
-		q += ` ORDER BY d.ts DESC LIMIT ?`
+		q += ` ORDER BY d.ts DESC, d.id DESC LIMIT ?`
 		dargs = append(dargs, limit)
 		rows, err := s.DB.Query(q, dargs...)
 		if err != nil {
@@ -113,8 +138,8 @@ func (s *Store) Timeline(project, filter string, before int64, limit int) ([]Tim
 		}
 	}
 	if want(TLShipped) {
-		where := `WHERE status=? AND ended_at>0 AND ended_at<?`
-		iargs := []any{IdeaBuilt, before}
+		where := `WHERE status=? AND ended_at>0 AND ended_at` + op + `?`
+		iargs := []any{IdeaBuilt, t}
 		if project != "" {
 			where += ` AND project=?`
 			iargs = append(iargs, project)
@@ -128,9 +153,6 @@ func (s *Store) Timeline(project, filter string, before int64, limit int) ([]Tim
 		}
 	}
 	sort.SliceStable(out, func(a, b int) bool { return out[a].At > out[b].At })
-	if len(out) > limit {
-		out = out[:limit]
-	}
 	return out, nil
 }
 
@@ -162,15 +184,15 @@ func (s *Store) progressDigest() string {
 	var n, upd int64
 	s.DB.QueryRow(`SELECT COUNT(*), COALESCE(MAX(updated_at),0) FROM items WHERE status=?`, StatusLogged).Scan(&n, &upd)
 	fmt.Fprintf(h, "%d.%d\n", n, upd)
-	rows, err := s.DB.Query(`SELECT d.id, d.status, d.attempts, i.updated_at + d.answered_at FROM deliveries d JOIN items i ON i.id = d.item_id
+	rows, err := s.DB.Query(`SELECT d.id, d.status, i.updated_at + d.answered_at FROM deliveries d JOIN items i ON i.id = d.item_id
 		WHERE d.kind='ask' AND d.created_at>=? ORDER BY d.id`, now()-24*60*60)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
 			var id, status string
-			var attempts, iupd int64
-			rows.Scan(&id, &status, &attempts, &iupd)
-			fmt.Fprintf(h, "%s\x00%s\x00%d\x00%d\n", id, status, attempts, iupd)
+			var iupd int64
+			rows.Scan(&id, &status, &iupd)
+			fmt.Fprintf(h, "%s\x00%s\x00%d\n", id, status, iupd)
 		}
 	}
 	return fmt.Sprintf("%x", h.Sum(nil)[:6])

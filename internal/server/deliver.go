@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/blobspire/docket/internal/ingest"
 	"github.com/blobspire/docket/internal/mailbox"
@@ -188,6 +189,9 @@ func (s *Server) decide(id string, a Action) error {
 		if action == "noise" {
 			s.rulesChanged()
 			if sentNoise {
+				if now, _, _ := s.st.GetItem(id); now.Status == store.StatusLogged {
+					return s.notifyQuietly(it, fmt.Sprintf("%s took back the \"not worth my time\" on your progress entry %q: it's back on the timeline.", s.cfg.Person, it.Title), "note")
+				}
 				return s.notifyQuietly(it, fmt.Sprintf("%s took back the \"not worth my time\" on %q: it's open again.", s.cfg.Person, it.Title), "note")
 			}
 		}
@@ -458,17 +462,22 @@ func (s *Server) askAgent(it store.Item, q string) error {
 	switch {
 	case q == "":
 		return errors.New("type your question first")
-	case len(q) > maxQuestion:
+	case utf8.RuneCountInString(q) > maxQuestion:
 		return fmt.Errorf("keep the question under %d characters", maxQuestion)
-	case it.Status == "open" || it.Status == "snoozed" || it.Status == "maybe" || it.Status == "answered":
+	case it.Status == "answered":
+		return errors.New("your answer is still on its way to the agent: ask once it has arrived")
+	case it.Status == "open" || it.Status == "snoozed" || it.Status == "maybe":
 		return errors.New("it's still on your docket: reply to it instead")
 	case !askable(it):
 		return errors.New("no agent session filed this item, so there's no one to ask")
 	}
 	when := time.Unix(it.CreatedAt, 0).In(s.cfg.loc).Format("Jan 2")
 	about := fmt.Sprintf("your docket item %q (filed %s; it's off their docket, so don't reopen or re-file it)", it.Title, when)
-	if it.Kind == store.KindProgress {
+	switch {
+	case it.Kind == store.KindProgress:
 		about = fmt.Sprintf("your progress entry %q (posted %s)", it.Title, when)
+	case it.Status == "delivered":
+		about = fmt.Sprintf("your docket item %q (filed %s; you have their answer to it, and it's yours to close when it's done)", it.Title, when)
 	}
 	msg := fmt.Sprintf("%s asks about %s:\n\n%s\n\nAnswer onto the item, where they'll read it: docket add %s --why \"<your answer>\"",
 		s.cfg.Person, about, q, it.ID)
@@ -616,6 +625,21 @@ func (s *Server) paste(ctx context.Context, m Machine, sess store.Session, d sto
 }
 
 // resume restarts a finished session in tmux with the answer as its prompt.
+// askStartPrefix marks a laptop start that resumes a session with a
+// question (Ask the agent): its start id is this, the try, "-" and the
+// delivery's id.
+const askStartPrefix = "ask-"
+
+// askResumeTries is how many times a laptop tries resuming a session for a
+// question before the question waits in the mailbox instead.
+const askResumeTries = 3
+
+// resumable reports an ended session docket can resume: an interactive or
+// background one whose folder it knows.
+func resumable(sess store.Session) bool {
+	return (sess.Kind == "" || sess.Kind == "interactive" || sess.Kind == "bg") && sess.Cwd != ""
+}
+
 func (s *Server) resume(ctx context.Context, m Machine, sess store.Session, d store.Delivery) {
 	if sess.Kind != "" && sess.Kind != "interactive" && sess.Kind != "bg" {
 		s.st.DeliveryFailed(d.ID, "the session has ended and isn't resumable ("+sess.Kind+")")
