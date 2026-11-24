@@ -163,5 +163,10 @@ func (s *Server) backupStatus() backupStatus {
 	return b
 }
 
-// MB is the size in megabytes, for the Health page.
-func (b backupStatus) MB() string { return fmt.Sprintf("%.1f MB", float64(b.Size)/(1<<20)) }
+// MB is the size for the Health page: megabytes, or kilobytes when small.
+func (b backupStatus) MB() string {
+	if b.Size < 1<<20 {
+		return fmt.Sprintf("%d KB", (b.Size+1023)/1024)
+	}
+	return fmt.Sprintf("%.1f MB", float64(b.Size)/(1<<20))
+}

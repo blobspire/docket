@@ -114,3 +114,11 @@ func TestBackupFailureShows(t *testing.T) {
 		t.Fatal("health page hides the failure")
 	}
 }
+
+func TestBackupSizeLabel(t *testing.T) {
+	for size, want := range map[int64]string{1: "1 KB", 40 << 10: "40 KB", 5 << 20: "5.0 MB", 5900000: "5.6 MB"} {
+		if got := (backupStatus{Size: size}).MB(); got != want {
+			t.Errorf("size %d = %q, want %q", size, got, want)
+		}
+	}
+}
