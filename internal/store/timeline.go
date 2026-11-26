@@ -38,8 +38,11 @@ type TimelineEntry struct {
 const (
 	tlResultKinds = `'review','fyi'`
 	tlActionKinds = `'ask','approval','human_task'`
-	tlIssueKinds  = `'issue','blocker'`
-	tlDecisions   = `'approve','decline','choose','answer'`
+	// Items the old hooks guessed from a session, before agents filed them
+	// (the upgrade dismissed the open ones), aren't part of the history.
+	tlFiled      = `source NOT IN ('backfill','notification','permission_denied')`
+	tlIssueKinds = `'issue','blocker'`
+	tlDecisions  = `'approve','decline','choose','answer'`
 )
 
 // Timeline returns a project's entries before the unix time before (0:
@@ -96,14 +99,14 @@ func (s *Store) timeline(project, filter, op string, t int64, limit int) ([]Time
 	// Results the human dismissed or marked not worth it aren't kept for
 	// later; everything else, done or still waiting, is.
 	if want(TLResult) {
-		if err := items(TLResult, `kind IN (`+tlResultKinds+`) AND status<>'dismissed'`); err != nil {
+		if err := items(TLResult, `kind IN (`+tlResultKinds+`) AND status<>'dismissed' AND `+tlFiled); err != nil {
 			return nil, err
 		}
 	}
 	// Action items stay too, done or still open, so a past one is easy to
 	// find again; one the human dismissed didn't matter.
 	if want(TLAction) {
-		if err := items(TLAction, `kind IN (`+tlActionKinds+`) AND status<>'dismissed' AND source<>'email'`); err != nil {
+		if err := items(TLAction, `kind IN (`+tlActionKinds+`) AND status<>'dismissed' AND source<>'email' AND `+tlFiled); err != nil {
 			return nil, err
 		}
 	}
@@ -113,7 +116,7 @@ func (s *Store) timeline(project, filter, op string, t int64, limit int) ([]Time
 		}
 	}
 	if want(TLIssue) {
-		if err := items(TLIssue, `kind IN (`+tlIssueKinds+`) AND status<>'dismissed' AND source<>'email'`); err != nil {
+		if err := items(TLIssue, `kind IN (`+tlIssueKinds+`) AND status<>'dismissed' AND source<>'email' AND `+tlFiled); err != nil {
 			return nil, err
 		}
 	}

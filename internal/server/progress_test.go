@@ -392,6 +392,11 @@ func TestTimelineKeepsActionItems(t *testing.T) {
 	agent("dk-ta000006", "issue", "ARC login expired")
 	st.UpsertItem(store.Item{ID: "dk-ta000007", Kind: "ask", Title: "Order more cubes?", Project: "vlm", ExpiresAt: time.Now().Add(-time.Minute).Unix()})
 	st.UpsertItem(store.Item{ID: "dk-ta000008", Kind: "review", Title: "Ablation results", Project: "vlm"})
+	agent("dk-ta000009", "ask", "Retrain or drop?")
+	// What the old hooks guessed from a session isn't history.
+	st.UpsertItem(store.Item{ID: "dk-ta000010", Kind: "ask", Title: "Guessed from chat", Project: "vlm", Source: "backfill"})
+	st.UpsertItem(store.Item{ID: "dk-ta000011", Kind: "blocker", Title: "Claude is waiting for your input", Project: "vlm", Source: "notification"})
+	st.SetStatus("dk-ta000010", "done", "", "")
 	for id, a := range map[string]Action{
 		"dk-ta000001": {Kind: "done", Text: "reseated it"},
 		"dk-ta000002": {Kind: "choose", Option: 0},
@@ -403,6 +408,12 @@ func TestTimelineKeepsActionItems(t *testing.T) {
 		}
 	}
 	st.SetStatus("dk-ta000005", "done", "approved in chat", "")
+	// An answer its agent has had for two days isn't waiting any more.
+	if err := e.s.Decide("dk-ta000009", Action{Kind: "choose", Option: 1}); err != nil {
+		t.Fatal(err)
+	}
+	confirm(t, st, "dk-ta000009")
+	st.DB.Exec(`UPDATE items SET updated_at=? WHERE id='dk-ta000009'`, time.Now().Add(-48*time.Hour).Unix())
 	if n, err := st.Expire(time.Now().Unix()); err != nil || n != 1 {
 		t.Fatalf("expire: %d %v", n, err)
 	}
@@ -436,7 +447,10 @@ func TestTimelineKeepsActionItems(t *testing.T) {
 	if en := entry(acts, "dk-ta000004"); !strings.Contains(en, `class="chip k-decide"`) || strings.Contains(en, "tl-out") {
 		t.Errorf("an open ask's entry: %s", en)
 	}
-	for _, id := range []string{"dk-ta000003", "dk-ta000006", "dk-ta000008"} {
+	if en := entry(acts, "dk-ta000009"); !strings.Contains(en, "You chose “Tomorrow”") || strings.Contains(en, "waiting") {
+		t.Errorf("an answer delivered two days ago: %s", en)
+	}
+	for _, id := range []string{"dk-ta000003", "dk-ta000006", "dk-ta000008", "dk-ta000010"} {
 		if strings.Contains(acts, `data-open="`+id+`"`) {
 			t.Errorf("the Action items filter shows %s", id)
 		}
@@ -451,5 +465,8 @@ func TestTimelineKeepsActionItems(t *testing.T) {
 	}
 	if strings.Contains(all, `data-open="dk-ta000003"`) || !strings.Contains(all, `data-open="dk-ta000001"`) {
 		t.Error("the timeline keeps the dismissed task, or drops the done one")
+	}
+	if strings.Contains(all, `data-open="dk-ta000010"`) || strings.Contains(all, `data-open="dk-ta000011"`) {
+		t.Error("the timeline shows what the old hooks guessed")
 	}
 }

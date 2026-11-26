@@ -166,8 +166,6 @@ func rcURL(bridge string) string {
 	return "https://claude.ai/code/" + bridge
 }
 
-// kindName is how an item's type reads on the page: what it asks of the
-// human, in one word.
 // closedAt is when an item closed, as the human would put it.
 func closedAt(it store.Item) int64 {
 	at := it.UpdatedAt
@@ -185,6 +183,8 @@ func closedAt(it store.Item) int64 {
 	return at
 }
 
+// kindName is how an item's type reads on the page: what it asks of the
+// human, in one word.
 func kindName(k string) string {
 	switch k {
 	case "ask", "approval":

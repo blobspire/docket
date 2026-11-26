@@ -184,8 +184,9 @@ func (s *Server) tlDays(entries []store.TimelineEntry, showProject bool) []tlDay
 }
 
 // outcome says how an action item or problem ended: closed (and when), or
-// answered and waiting on its agent. One still open says nothing here; the
-// "on your docket" mark says it.
+// answered: waiting on its agent until a day after the agent got it (when
+// the docket lets it go), then just the answer. One still open says nothing
+// here; the "on your docket" mark says it.
 func (te *tlEntry) outcome(v itemView) {
 	switch {
 	case v.Closed():
@@ -194,6 +195,8 @@ func (te *tlEntry) outcome(v itemView) {
 		if v.Status == "expired" {
 			te.OutIcon = "clock"
 		}
+	case v.Status == "delivered" && v.UpdatedAt < time.Now().Unix()-store.WaitWindow:
+		te.Outcome, te.OutIcon = v.ClosedHow(), "check"
 	case v.Waiting():
 		te.Outcome, te.OutIcon = v.ClosedHow()+", waiting on the agent", "clock"
 	}
