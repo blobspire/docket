@@ -118,7 +118,7 @@ func TestQuickActionsEdgeRows(t *testing.T) {
 }
 
 // Undoing (or reopening) a rule decision, one click from the toast or the
-// Done page, makes it a proposal again: agents stop getting it, and the
+// closed item's page, makes it a proposal again: agents stop getting it, and the
 // machines are told (the rules version moves).
 func TestUndoingARuleDecisionRetractsIt(t *testing.T) {
 	for _, c := range []struct{ decide, back string }{

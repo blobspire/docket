@@ -187,9 +187,12 @@ func TestStashLastsThirtyDays(t *testing.T) {
 	st := e.s.st
 	st.UpsertItem(store.Item{ID: "dk-st000005", Kind: "review", Title: "old results", Project: "w"})
 	e.s.Decide("dk-st000005", Action{Kind: "stash"})
+	if !strings.Contains(getOK(t, e, "/stash"), `data-id="dk-st000005"`) {
+		t.Fatal("it isn't on the Stash to begin with")
+	}
 	old := time.Now().Add(-31 * 24 * time.Hour).Unix()
 	st.DB.Exec(`UPDATE items SET stashed_at=?, resolved_at=? WHERE id='dk-st000005'`, old, old)
-	if onPage(e, "/stash", "dk-st000005") || onPage(e, "/", "dk-st000005") {
+	if strings.Contains(getOK(t, e, "/stash"), `data-id="dk-st000005"`) || strings.Contains(getOK(t, e, "/"), `data-id="dk-st000005"`) {
 		t.Fatal("a 31-day-old stash should have left the Stash, closed")
 	}
 	if strings.Contains(get(e, "/"), `class="tc"`) {

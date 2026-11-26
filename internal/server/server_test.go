@@ -249,7 +249,7 @@ func TestWebQueueAndCrossSiteGuard(t *testing.T) {
 	for _, p := range []string{"/", "/item/dk-dd0ne001", "/stash"} {
 		rec = httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest("GET", p, nil))
-		if b := rec.Body.String(); strings.Contains(b, `"/done"`) || strings.Contains(b, "to Done") {
+		if b := rec.Body.String(); rec.Code != 200 || strings.Contains(b, `"/done"`) || strings.Contains(b, "to Done") {
 			t.Fatalf("%s still links to the Done page", p)
 		}
 	}
