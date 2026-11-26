@@ -143,3 +143,14 @@ Per account (`[[email.account]]`): `folders` (default `["INBOX"]`), `sent_folder
 3. **Sort.** New threads go to the triage model in batches, with your projects, your recent corrections, and for each thread who sent it (and whether you've written to them), who it went to, list and bulk markers, and the text. It returns reply, digest or skip and a one-line summary.
 4. **Draft.** Each reply gets a drafting session ([SECURITY.md](../SECURITY.md#email) lists what it can and can't do). docket cleans what comes back, chooses the recipients from the thread, and stores each version. Every version, revisions too, is written from a full prompt (the whole thread as stored then, the version it builds on, your words); no session or transcript is kept.
 5. **Send.** Your tap holds the shown version for the Undo window, then docket builds the message (styled HTML and a matching plain-text part, your signature, the quoted original, threading headers) and sends it over the account's SMTP. Gmail and DavMail put it in your Sent folder.
+
+## Known gaps
+
+Narrow cases left as they are, written down so they aren't rediscovered as new bugs:
+- An ask queued before you reply (not one that failed) that runs after your reply applies to the fresh draft.
+- An edit, an ask and a failure within one second: Redraft drops the ask (Retry keeps it).
+- A crash between storing a draft and ending its job repeats your asks in the rerun's prompt.
+- Past 16,000 characters, the drafting prompt's section of your current asks ("What … asks now") keeps the oldest ones.
+- An ask that starts with docket's work-note prefix ("About the work this email asked for: ") is read as docket's own note.
+- A forward you send as your answer doesn't close the item. This is by design: a forward passes the email on, it doesn't answer it.
+- Only `Fwd:` and `FW:` count as forwards; localized prefixes don't.
