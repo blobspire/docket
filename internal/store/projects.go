@@ -492,7 +492,7 @@ func undoReclassify(tx *sql.Tx, id, answer string) error {
 }
 
 // Expire closes items whose expiry has passed, logging each so it can be
-// undone from the Done page.
+// reopened from its page.
 func (s *Store) Expire(at int64) (int, error) {
 	tx, err := s.DB.Begin()
 	if err != nil {

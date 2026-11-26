@@ -985,33 +985,6 @@ func (s *Store) Items(statuses ...string) ([]Item, error) {
 	return out, rows.Err()
 }
 
-// RecentlyClosed lists items resolved since `since`, leaving out the ones on
-// the Stash. One whose time on the Stash ended since then counts as closed
-// when it left the Stash.
-func (s *Store) RecentlyClosed(since int64, limit int) ([]Item, error) {
-	cut := StashCutoff()
-	// A delivered answer is on the docket, waiting on its agent, for a day
-	// after it was delivered (or last touched).
-	const closedAt = `CASE WHEN status='delivered' THEN updated_at ELSE COALESCE(resolved_at, answered_at, updated_at) END`
-	rows, err := s.DB.Query(`SELECT `+itemCols+` FROM items WHERE status IN ('done','dismissed','delivered','expired') AND stashed_at < ?
-		AND NOT (status='delivered' AND updated_at >= ?)
-		AND (`+closedAt+` >= ? OR (stashed_at > 0 AND stashed_at + ? >= ?))
-		ORDER BY MAX(`+closedAt+`, CASE WHEN stashed_at > 0 THEN stashed_at + ? ELSE 0 END) DESC LIMIT ?`, cut, now()-WaitWindow, since, StashSeconds, since, StashSeconds, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Item
-	for rows.Next() {
-		it, err := scanItem(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, it)
-	}
-	return out, rows.Err()
-}
-
 // SetStatus changes an item's status, logging the change so it can be undone.
 func (s *Store) SetStatus(id, status, resolution, action string) error {
 	return s.SetStatusWith(id, status, resolution, action, "")

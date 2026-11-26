@@ -180,12 +180,12 @@ func TestWaitingCountsFromDelivery(t *testing.T) {
 	e.s.Decide("dk-sf000008", Action{Kind: "choose", Option: 0})
 	st.DB.Exec(`UPDATE items SET answered_at=?, updated_at=? WHERE id='dk-sf000008'`, time.Now().Add(-30*time.Hour).Unix(), time.Now().Add(-30*time.Hour).Unix())
 	confirm(t, st, "dk-sf000008") // delivered only now (a laptop that slept)
-	if !onPage(e, "/", "dk-sf000008") || onPage(e, "/done", "dk-sf000008") {
+	if !onPage(e, "/", "dk-sf000008") {
 		t.Fatal("a late delivery should wait on the docket first")
 	}
 	st.DB.Exec(`UPDATE items SET updated_at=? WHERE id='dk-sf000008'`, time.Now().Add(-48*time.Hour).Unix())
-	if onPage(e, "/", "dk-sf000008") || !onPage(e, "/done", "dk-sf000008") {
-		t.Fatal("two days after delivery it belongs in Done")
+	if onPage(e, "/", "dk-sf000008") {
+		t.Fatal("two days after delivery it should have left the docket")
 	}
 	e.s.Decide("dk-sf000008", Action{Kind: "stash"})
 	if err := e.s.Decide("dk-sf000008", Action{Kind: "reopen"}); err != nil {

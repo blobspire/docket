@@ -14,8 +14,7 @@
   <nav class="tabs" aria-label="Pages">
     <a class="brand{{if eq .Nav "docket"}} on{{end}}" href="/" aria-label="docket: what needs you"><svg class="mk" viewBox="0 0 24 24" aria-hidden="true"><rect x="1.5" y="1.5" width="21" height="21" rx="6.5" fill="var(--accent)"/><path d="M7 8.3h10M7 12h10M7 15.7h5.5" stroke="var(--accent-fg)" stroke-width="2" stroke-linecap="round" fill="none"/></svg><span>docket</span>{{if .Count}}<b class="bc{{if .Hot}} hot{{end}}" title="{{.Count}} need{{if eq .Count 1}}s{{end}} you">{{.Count}}</b>{{end}}</a>
     <a href="/stash"{{if eq .Nav "stash"}} class="on"{{end}}>Stash{{if .StashCount}} <b class="tc">{{.StashCount}}</b>{{end}}</a>
-    <a href="/done"{{if eq .Nav "done"}} class="on"{{end}}>Done</a>
-    <a class="x{{if eq .Nav "timeline"}} on{{end}}" href="/timeline">Timeline</a>
+    <a href="/timeline"{{if eq .Nav "timeline"}} class="on"{{end}}>Timeline</a>
     <a class="x{{if eq .Nav "ideas"}} on{{end}}" href="/ideas">Ideas{{if .IdeaCount}} <b class="pill pill-i">{{.IdeaCount}}</b>{{end}}</a>
     <a class="x{{if eq .Nav "brain"}} on{{end}}" href="/brain">Brain{{if .RuleCount}} <b class="pill">{{.RuleCount}}</b>{{end}}</a>
     <a class="x{{if eq .Nav "leads"}} on{{end}}" href="/leads">Leads</a>
@@ -27,7 +26,6 @@
     <button class="ib keys" type="button" data-help aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">{{template "i" "key"}}</button>
     <div class="morew"><button class="ib more-b" type="button" aria-label="More pages" aria-haspopup="menu" aria-expanded="false">{{template "i" "more"}}</button>
       <div class="menu more-m" role="menu" hidden>
-        <a role="menuitem" href="/timeline"{{if eq .Nav "timeline"}} class="on"{{end}}>Timeline</a>
         <a role="menuitem" href="/ideas"{{if eq .Nav "ideas"}} class="on"{{end}}>Ideas{{if .IdeaCount}} <b class="pill pill-i">{{.IdeaCount}}</b>{{end}}</a>
         <a role="menuitem" href="/brain"{{if eq .Nav "brain"}} class="on"{{end}}>Brain{{if .RuleCount}} <b class="pill">{{.RuleCount}}</b>{{end}}</a>
         <a role="menuitem" href="/leads"{{if eq .Nav "leads"}} class="on"{{end}}>Leads</a>
@@ -171,7 +169,6 @@
       <div class="m">
         {{if .ShowProject}}<span>{{projectName .Item}}</span>{{end}}
         {{if eq .List "stash"}}<span>stashed {{ago .StashedAt}}</span>
-        {{else if eq .List "done"}}<span>closed {{ago (closedAt .Item)}}</span>
         {{else if $w}}<span>{{.AnswerVerb}}{{with .AnswerWhat}} <b>{{.}}</b>{{end}}</span><span{{if .Stuck}} class="stuck"{{end}}>{{.DeliveryText}}</span>
         {{else}}
           {{if and (eq .Urgency "now") (ne .List "docket")}}<span class="now">Act now</span>{{else if eq .Urgency "soon"}}<span class="soon">Soon</span>{{end}}
@@ -186,16 +183,13 @@
         {{end}}
         {{if and .Docs (not .Images)}}<span title="{{.Docs}} attachment{{if gt .Docs 1}}s{{end}}">{{template "i" "clip"}}{{.Docs}}</span>{{end}}
       </div>
-      {{if or (eq .List "stash") (eq .List "done")}}<div class="m2">{{.ClosedHow}}</div>{{end}}
+      {{if eq .List "stash"}}<div class="m2">{{.ClosedHow}}</div>{{end}}
     </div>
     <div class="th"{{with .Images}} data-imgs="{{imgs .}}"{{end}}>{{$id := .ID}}{{range $k, $e := .Thumbs}}<button type="button" class="thb" data-lb="{{$id}}:{{$k}}" aria-label="View {{$e.Name}}"><img src="/blob/{{$e.SHA256}}?type={{$e.Mime}}" alt="" loading="lazy"></button>{{end}}{{with .MoreImages}}<span class="more">+{{.}}</span>{{end}}</div>
     <div class="qa" role="group" aria-label="Quick actions">
       {{if eq .List "stash"}}
         <button type="button" class="qb" data-act="reopen" title="Back to docket">{{template "i" "undo"}}<span>Back to docket</span></button>
-        <button type="button" class="qb" data-act="unstash" title="Remove from the Stash (it moves to Done)">{{template "i" "x"}}<span>Remove</span></button>
-      {{else if eq .List "done"}}
-        {{if .Closed}}<button type="button" class="qb" data-act="reopen" title="Back to docket">{{template "i" "undo"}}<span>Back to docket</span></button>{{end}}
-        {{if not .NoStash}}<button type="button" class="qb" data-act="stash" title="Keep it on your Stash">{{template "i" "stash"}}<span>Stash</span></button>{{end}}
+        <button type="button" class="qb" data-act="unstash" title="Take it off the Stash">{{template "i" "x"}}<span>Remove</span></button>
       {{else if $w}}
         <button type="button" class="qb" data-act="dismiss" title="Take it off your docket; the answer still goes to the agent">{{template "i" "x"}}<span>Dismiss</span></button>
       {{else if not .Kept}}
@@ -214,7 +208,7 @@
 {{define "sheet"}}{{$it := .One}}
 <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-label="{{$it.Title}}" data-id="{{$it.ID}}"{{with $it.Session.BridgeID}} data-session="{{rcURL .}}"{{end}}{{if $it.NoStash}} data-nostash{{end}}{{if eq $it.Kind "email"}} data-email{{end}}>
   <header class="sh-h">
-    <a class="back" href="{{if $it.Stashed}}/stash{{else if $it.Closed}}/done{{else}}/{{end}}" data-back>{{template "i" "chev-l"}}<span>{{if $it.Stashed}}Stash{{else if $it.Closed}}Done{{else}}All{{end}}</span></a>
+    <a class="back" href="{{if $it.Stashed}}/stash{{else}}/{{end}}" data-back>{{template "i" "chev-l"}}<span>{{if $it.Stashed}}Stash{{else}}All{{end}}</span></a>
     <span class="pos" data-pos></span>
     <button type="button" class="ib" data-nav="-1" aria-label="Previous item" hidden>{{template "i" "chev-u"}}</button>
     <button type="button" class="ib" data-nav="1" aria-label="Next item" hidden>{{template "i" "chev-d"}}</button>
@@ -222,7 +216,7 @@
   <div class="sh-b"><div class="sh-in">
     {{if .Error}}<p class="banner stuck">{{template "i" "alert"}}<span>{{.Error}}</span></p>{{end}}
     {{$verb := $it.AnswerVerb}}{{$what := $it.AnswerWhat}}
-    {{if $it.Stashed}}<div class="banner kept">{{template "i" "stash"}}<div><b>On your Stash.</b> You stashed it {{ago $it.StashedAt}}. It moves to Done after 30 days.{{if $verb}} {{$verb}}{{with $what}} “{{.}}”{{end}}.{{end}}</div></div>
+    {{if $it.Stashed}}<div class="banner kept">{{template "i" "stash"}}<div><b>On your Stash.</b> You stashed it {{ago $it.StashedAt}}. It leaves the Stash after 30 days.{{if $verb}} {{$verb}}{{with $what}} “{{.}}”{{end}}.{{end}}</div></div>
     {{else if $it.Closed}}<div class="banner">{{template "i" "check"}}<div><b>Closed {{ago (closedAt $it.Item)}}.</b> {{$it.ClosedHow}}.</div></div>
     {{else if $it.Waiting}}{{$note := $it.DeliveryText}}
       {{if $it.Stuck}}<div class="banner stuck">{{template "i" "alert"}}<div><b>Your answer hasn't reached the agent.</b> {{$verb}}{{with $what}} “{{.}}”{{end}} {{ago $it.AnsweredAt}}. {{$note}}.{{with $it.ResumeCommand}}<div class="acts"><button type="button" class="sb" data-copy="{{.}}">{{template "i" "copy"}}Copy the command to resume it</button></div>{{end}}</div></div>
@@ -341,7 +335,7 @@
   <div class="dk-c">
     {{template "fb" (list "reopen" "undo" "Back to docket" "" "" "Put it back on your docket")}}
     <span class="sp"></span>
-    {{if .Stashed}}{{template "fb" (list "unstash" "x" "Remove from Stash" "" "" "Take it off the Stash; it moves to Done")}}{{else if not .NoStash}}{{template "fb" (list "stash" "stash" "Stash" "t" "" "Keep it on your Stash")}}{{end}}
+    {{if .Stashed}}{{template "fb" (list "unstash" "x" "Remove from Stash" "" "" "Take it off the Stash")}}{{else if not .NoStash}}{{template "fb" (list "stash" "stash" "Stash" "t" "" "Keep it on your Stash")}}{{end}}
   </div>
 {{else if .Waiting}}
   {{if and .SessionID (eq .Status "delivered")}}{{template "reply" (reply .ID "Add a follow-up for the agent" false)}}{{end}}

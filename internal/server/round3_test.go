@@ -198,15 +198,15 @@ func TestDoneRowsFoldsAndNoThirdParty(t *testing.T) {
 	e.s.Decide("dk-r3d00001", Action{Kind: "choose", Option: 0})
 	confirm(t, st, "dk-r3d00001")
 	e.send(t, record.Record{Event: "cli.done", SessionID: "s", Done: &record.Done{ItemID: "dk-r3d00001", Note: "deployed tonight"}}, ingest.Options{})
-	if row := rowHTML(t, get(e, "/done"), "dk-r3d00001"); !strings.Contains(row, "You chose “Tonight”; the agent closed it: deployed tonight") {
-		t.Fatalf("Done row: %s", row)
+	if sh := sheetHTML(t, e, "dk-r3d00001"); !strings.Contains(sh, "You chose “Tonight”; the agent closed it: deployed tonight") {
+		t.Fatalf("closed item: %s", sh)
 	}
 	ask(e, "dk-r3d00002")
 	e.s.Decide("dk-r3d00002", Action{Kind: "choose", Option: 0})
 	if !strings.Contains(get(e, "/"), `data-wt="p:w"`) || !strings.Contains(get(e, "/?p=w"), `data-wt="view:w"`) {
 		t.Error("fold keys aren't per view")
 	}
-	for _, path := range []string{"/", "/item/dk-r3d00002", "/stash", "/done", "/health"} {
+	for _, path := range []string{"/", "/item/dk-r3d00002", "/stash", "/timeline", "/health"} {
 		if p := get(e, path); strings.Contains(p, "googleapis") || strings.Contains(p, "gstatic") {
 			t.Errorf("%s loads from a third party", path)
 		}
@@ -262,9 +262,6 @@ func TestNoStashOfferForWatchdogItems(t *testing.T) {
 	st := e.s.st
 	st.UpsertItem(store.Item{ID: "dk-r3x00001", Kind: "health", Title: "lead down", Project: "admin", Source: ingest.SrcWatchdog})
 	e.s.Decide("dk-r3x00001", Action{Kind: "done"})
-	if q := quickHTML(rowHTML(t, get(e, "/done"), "dk-r3x00001")); strings.Contains(q, `data-act="stash"`) {
-		t.Error("the Done row offers Stash")
-	}
 	if d := dockHTML(t, e, "dk-r3x00001"); strings.Contains(d, `data-act="stash"`) {
 		t.Error("the closed item's dock offers Stash")
 	}

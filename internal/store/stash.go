@@ -72,7 +72,7 @@ func (s *Store) Stash(id string) (closed bool, err error) {
 }
 
 // Unstash takes an item off the Stash. toDone closes it too (one whose
-// answer is with its agent included), so it moves to Done; otherwise it keeps
+// answer is with its agent included); otherwise it keeps
 // its status and goes back to wherever that puts it.
 func (s *Store) Unstash(id string, toDone bool) error {
 	tx, err := s.DB.Begin()
