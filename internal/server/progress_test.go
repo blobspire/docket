@@ -374,3 +374,99 @@ func TestTimelineOneCrowdedSecond(t *testing.T) {
 		t.Fatalf("second page: %+v more=%v", rest, more)
 	}
 }
+
+// The timeline keeps action items, done or not, so a past one is easy to
+// find: each says how it ended, and one dismissed isn't kept.
+func TestTimelineKeepsActionItems(t *testing.T) {
+	e := newEnv(t, "")
+	st := e.s.st
+	agent := func(id, kind, title string) {
+		t.Helper()
+		st.UpsertItem(store.Item{ID: id, Kind: kind, Title: title, Body: "Why: " + title, Project: "vlm", SessionID: "s", Machine: "box", Source: "cli", Options: []string{"Tonight", "Tomorrow"}})
+	}
+	agent("dk-ta000001", "human_task", "Plug the wrist camera back in")
+	agent("dk-ta000002", "ask", "Deploy tonight?")
+	agent("dk-ta000003", "human_task", "Swap the gripper pads")
+	agent("dk-ta000004", "ask", "Which judge prompt?")
+	agent("dk-ta000005", "approval", "Spend $40 on GPU time?")
+	agent("dk-ta000006", "issue", "ARC login expired")
+	st.UpsertItem(store.Item{ID: "dk-ta000007", Kind: "ask", Title: "Order more cubes?", Project: "vlm", ExpiresAt: time.Now().Add(-time.Minute).Unix()})
+	st.UpsertItem(store.Item{ID: "dk-ta000008", Kind: "review", Title: "Ablation results", Project: "vlm"})
+	agent("dk-ta000009", "ask", "Retrain or drop?")
+	// What the old hooks guessed from a session isn't history.
+	st.UpsertItem(store.Item{ID: "dk-ta000010", Kind: "ask", Title: "Guessed from chat", Project: "vlm", Source: "backfill"})
+	st.UpsertItem(store.Item{ID: "dk-ta000011", Kind: "blocker", Title: "Claude is waiting for your input", Project: "vlm", Source: "notification"})
+	st.SetStatus("dk-ta000010", "done", "", "")
+	for id, a := range map[string]Action{
+		"dk-ta000001": {Kind: "done", Text: "reseated it"},
+		"dk-ta000002": {Kind: "choose", Option: 0},
+		"dk-ta000003": {Kind: "dismiss"},
+		"dk-ta000006": {Kind: "done"},
+	} {
+		if err := e.s.Decide(id, a); err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+	}
+	st.SetStatus("dk-ta000005", "done", "approved in chat", "")
+	// An answer its agent has had for two days isn't waiting any more.
+	if err := e.s.Decide("dk-ta000009", Action{Kind: "choose", Option: 1}); err != nil {
+		t.Fatal(err)
+	}
+	confirm(t, st, "dk-ta000009")
+	st.DB.Exec(`UPDATE items SET updated_at=? WHERE id='dk-ta000009'`, time.Now().Add(-48*time.Hour).Unix())
+	if n, err := st.Expire(time.Now().Unix()); err != nil || n != 1 {
+		t.Fatalf("expire: %d %v", n, err)
+	}
+
+	entry := func(page, id string) string {
+		t.Helper()
+		m := regexp.MustCompile(`(?s)<li class="tl-e [^"]*">(?:(?:[^<]|<[^/]|</[^l]|</l[^i])*?)data-open="` + id + `".*?</li>`).FindString(page)
+		if m == "" {
+			t.Fatalf("no timeline entry for %s:\n%s", id, page)
+		}
+		return m
+	}
+	acts := getOK(t, e, "/timeline?p=vlm&f=action")
+	for id, want := range map[string]string{
+		"dk-ta000001": "You marked it done: reseated it",
+		"dk-ta000002": "You chose “Tonight”, waiting on the agent",
+		"dk-ta000004": "on your docket",
+		"dk-ta000005": "The agent closed it: approved in chat",
+		"dk-ta000007": "Expired: no longer relevant after its expiry time ·",
+	} {
+		if en := entry(acts, id); !strings.Contains(en, want) {
+			t.Errorf("%s lacks %q:\n%s", id, want, en)
+		}
+	}
+	if en := entry(acts, "dk-ta000001"); !strings.Contains(en, `class="chip k-do"`) || !strings.Contains(en, "Why: Plug the wrist camera") || !strings.Contains(en, "reseated it · just now") || strings.Contains(en, `class="tl-m"`) {
+		t.Errorf("a done task's entry: %s", en)
+	}
+	if !strings.Contains(entry(acts, "dk-ta000007"), "#i-clock") || !strings.Contains(entry(acts, "dk-ta000001"), "#i-check") {
+		t.Error("an expired item should show a clock, a done one a check")
+	}
+	if en := entry(acts, "dk-ta000004"); !strings.Contains(en, `class="chip k-decide"`) || strings.Contains(en, "tl-out") {
+		t.Errorf("an open ask's entry: %s", en)
+	}
+	if en := entry(acts, "dk-ta000009"); !strings.Contains(en, "You chose “Tomorrow”") || strings.Contains(en, "waiting") {
+		t.Errorf("an answer delivered two days ago: %s", en)
+	}
+	for _, id := range []string{"dk-ta000003", "dk-ta000006", "dk-ta000008", "dk-ta000010"} {
+		if strings.Contains(acts, `data-open="`+id+`"`) {
+			t.Errorf("the Action items filter shows %s", id)
+		}
+	}
+	if !strings.Contains(acts, ">Action items</a>") {
+		t.Error("no Action items chip")
+	}
+	// Everything: the problem marked done says so too; the dismissed task isn't kept.
+	all := getOK(t, e, "/timeline?p=vlm")
+	if en := entry(all, "dk-ta000006"); !strings.Contains(en, "You marked it done") {
+		t.Errorf("a problem marked done: %s", en)
+	}
+	if strings.Contains(all, `data-open="dk-ta000003"`) || !strings.Contains(all, `data-open="dk-ta000001"`) {
+		t.Error("the timeline keeps the dismissed task, or drops the done one")
+	}
+	if strings.Contains(all, `data-open="dk-ta000010"`) || strings.Contains(all, `data-open="dk-ta000011"`) {
+		t.Error("the timeline shows what the old hooks guessed")
+	}
+}

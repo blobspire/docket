@@ -4,7 +4,7 @@
   <div class="mh"><div>
     <h1>{{if $t.Project}}{{$t.Project}} <span class="muted">· Timeline</span>{{else}}Timeline{{end}}</h1>
     {{with $t.Desc}}<p class="desc">{{.}}</p>{{end}}
-    <p>What your agents sent you and what you decided, newest first. Marking something done never removes it from here.</p>
+    <p>What your agents sent you, what they asked of you and what you decided, newest first. Marking something done never removes it from here.</p>
   </div></div>
   <nav class="chips" aria-label="Projects">{{range $t.Projects}}<a class="chip-l{{if .On}} on{{end}}" href="{{.URL}}"{{if .On}} aria-current="page"{{end}}>{{.Label}}</a>{{end}}</nav>
   <nav class="chips" aria-label="Show">{{range $t.Filters}}<a class="chip-l{{if .On}} on{{end}}" href="{{.URL}}"{{if .On}} aria-current="page"{{end}}>{{.Label}}</a>{{end}}</nav>
@@ -13,8 +13,8 @@
   <section class="tl-day">
     <h2>{{.Label}}</h2>
     <ol class="tl">
-    {{range .Entries}}
-      <li class="tl-e tl-{{.Kind}}">
+    {{range .Entries}}{{$e := .}}
+      <li class="tl-e tl-{{.Kind}}{{if eq .Kind "action"}} tl-{{.Class}}{{end}}">
         <span class="tl-dot" aria-hidden="true"></span>
         <div class="tl-c">
           <div class="tl-h">
@@ -33,7 +33,9 @@
             <a class="tl-t" href="/item/{{.Item.ID}}" data-open="{{.Item.ID}}">{{.Item.Title}}</a>
             {{with .Summary}}<p class="tl-s">{{.}}</p>{{end}}
             {{with .Item.Next}}<p class="tl-s">Next: {{.}}</p>{{end}}
-            {{if or .Item.Record .View}}<p class="tl-m">{{with .Item.Record}}<span class="tl-rec" title="Where the full version is kept"><b>Record:</b> {{if isURL .}}<a href="{{.}}" target="_blank" rel="noopener noreferrer">{{.}}</a>{{else}}<code>{{.}}</code>{{end}}</span>{{end}}{{with .View}}{{$n := add (len .Images) .Docs}}{{if $n}}<span>{{template "i" "clip"}}{{$n}}</span>{{end}}{{end}}</p>{{end}}
+            {{with .Outcome}}<p class="tl-out">{{template "i" $e.OutIcon}}<span>{{.}}{{if $e.ClosedAt}} · {{ago $e.ClosedAt}}{{end}}</span></p>{{end}}
+            {{$n := 0}}{{with .View}}{{$n = add (len .Images) .Docs}}{{end}}
+            {{if or .Item.Record $n}}<p class="tl-m">{{with .Item.Record}}<span class="tl-rec" title="Where the full version is kept"><b>Record:</b> {{if isURL .}}<a href="{{.}}" target="_blank" rel="noopener noreferrer">{{.}}</a>{{else}}<code>{{.}}</code>{{end}}</span>{{end}}{{if $n}}<span>{{template "i" "clip"}}{{$n}}</span>{{end}}</p>{{end}}
           {{end}}
         </div>
       </li>

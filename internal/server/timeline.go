@@ -46,13 +46,17 @@ type tlEntry struct {
 	Class       string    // its colour
 	What        string    // a decision: what the human did
 	Summary     string    // a result's or issue's first line
-	OnDocket    bool      // a result still waiting on the human
+	OnDocket    bool      // a result, action item or problem still waiting on the human
+	Outcome     string    // how an action item or problem ended, or what the human answered
+	OutIcon     string    // its icon
+	ClosedAt    int64     // when it closed (0: still open)
 	ShowProject bool
 	Note        template.HTML // a shipped idea's note (with its pull request link)
 }
 
 var tlNames = map[string]struct{ label, class string }{
 	store.TLResult:   {"Result", "review"},
+	store.TLAction:   {"", ""}, // the item's own kind: Decide or Do
 	store.TLProgress: {"Progress", "progress"},
 	store.TLIssue:    {"Problem", "problem"},
 	store.TLDecision: {"Decision", "decide"},
@@ -61,7 +65,7 @@ var tlNames = map[string]struct{ label, class string }{
 
 // tlFilterNames are the filter chips' labels.
 var tlFilterNames = map[string]string{
-	store.TLResult: "Results", store.TLProgress: "Progress", store.TLDecision: "Decisions",
+	store.TLResult: "Results", store.TLAction: "Action items", store.TLProgress: "Progress", store.TLDecision: "Decisions",
 	store.TLIssue: "Problems", store.TLShipped: "Shipped",
 }
 
@@ -118,10 +122,12 @@ func (s *Server) pageTimeline(w http.ResponseWriter, r *http.Request) {
 		v.Empty = "Nothing older."
 	case v.Filter == store.TLResult:
 		v.Empty = "No results yet. The results agents send you with docket review are kept here, after you mark them done too."
+	case v.Filter == store.TLAction:
+		v.Empty = "No action items yet. What agents ask of you shows up here, and stays after it's done."
 	case v.Filter == store.TLProgress:
 		v.Empty = "No progress posted yet. Agents post a line here when they finish a major stage."
 	default:
-		v.Empty = "Nothing here yet. Results, progress, problems, your decisions and what shipped show up here as they happen."
+		v.Empty = "Nothing here yet. Results, action items, progress, problems, your decisions and what shipped show up here as they happen."
 	}
 	title := "Timeline"
 	if v.Project != "" {
@@ -154,9 +160,15 @@ func (s *Server) tlDays(entries []store.TimelineEntry, showProject bool) []tlDay
 			te.View = views[e.Item.ID]
 		}
 		switch e.Kind {
-		case store.TLResult, store.TLIssue:
+		case store.TLResult, store.TLAction, store.TLIssue:
 			te.Summary = firstLine(e.Item.Body)
-			te.OnDocket = e.Kind == store.TLResult && (e.Item.Status == "open" || e.Item.Status == "snoozed")
+			te.OnDocket = e.Item.Status == "open" || e.Item.Status == "snoozed"
+			if e.Kind == store.TLAction {
+				te.Label, te.Class = kindName(e.Item.Kind), kindClass(e.Item.Kind)
+			}
+			if e.Kind != store.TLResult && te.View != nil {
+				te.outcome(*te.View)
+			}
 		case store.TLDecision:
 			te.What = decisionWords(e.Decision, e.Item)
 		case store.TLShipped:
@@ -169,6 +181,25 @@ func (s *Server) tlDays(entries []store.TimelineEntry, showProject bool) []tlDay
 		days[len(days)-1].Entries = append(days[len(days)-1].Entries, te)
 	}
 	return days
+}
+
+// outcome says how an action item or problem ended: closed (and when), or
+// answered: waiting on its agent until a day after the agent got it (when
+// the docket lets it go), then just the answer. One still open says nothing
+// here; the "on your docket" mark says it.
+func (te *tlEntry) outcome(v itemView) {
+	switch {
+	case v.Closed():
+		te.Outcome, te.ClosedAt = v.ClosedHow(), closedAt(v.Item)
+		te.OutIcon = "check"
+		if v.Status == "expired" {
+			te.OutIcon = "clock"
+		}
+	case v.Status == "delivered" && v.UpdatedAt < time.Now().Unix()-store.WaitWindow:
+		te.Outcome, te.OutIcon = v.ClosedHow(), "check"
+	case v.Waiting():
+		te.Outcome, te.OutIcon = v.ClosedHow()+", waiting on the agent", "clock"
+	}
 }
 
 // decisionWords says what the human did, in a few words.

@@ -76,21 +76,7 @@ var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 	"winName": func(w string) string {
 		return map[string]string{"five_hour": "5-hour", "seven_day": "weekly"}[w]
 	},
-	"closedAt": func(it store.Item) int64 {
-		at := it.UpdatedAt
-		switch {
-		case it.Status == "delivered":
-		case it.ResolvedAt > 0:
-			at = it.ResolvedAt
-		case it.AnsweredAt > 0:
-			at = it.AnsweredAt
-		}
-		// One that aged off the Stash closed then.
-		if off := it.StashedAt + store.StashSeconds; it.StashedAt > 0 && off <= time.Now().Unix() && off > at {
-			at = off
-		}
-		return at
-	},
+	"closedAt": closedAt,
 	"bytes": func(n int64) string {
 		switch {
 		case n >= 1<<20:
@@ -178,6 +164,23 @@ func rcURL(bridge string) string {
 		return ""
 	}
 	return "https://claude.ai/code/" + bridge
+}
+
+// closedAt is when an item closed, as the human would put it.
+func closedAt(it store.Item) int64 {
+	at := it.UpdatedAt
+	switch {
+	case it.Status == "delivered":
+	case it.ResolvedAt > 0:
+		at = it.ResolvedAt
+	case it.AnsweredAt > 0:
+		at = it.AnsweredAt
+	}
+	// One that aged off the Stash closed then.
+	if off := it.StashedAt + store.StashSeconds; it.StashedAt > 0 && off <= time.Now().Unix() && off > at {
+		at = off
+	}
+	return at
 }
 
 // kindName is how an item's type reads on the page: what it asks of the

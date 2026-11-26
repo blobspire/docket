@@ -254,8 +254,12 @@ func (v itemView) ClosedHow() string {
 		}
 		return "Dismissed"
 	case "expired":
-		if res != "" && res != "Expired" {
-			return "Expired: " + strings.TrimPrefix(res, "Expired: ")
+		// docket writes "expired: no longer relevant…"; keep one "Expired".
+		if r := strings.TrimSpace(res); len(r) >= 8 && strings.EqualFold(r[:8], "expired:") {
+			res = strings.TrimSpace(r[8:])
+		}
+		if res != "" && !strings.EqualFold(res, "expired") {
+			return "Expired: " + res
 		}
 		return "Expired"
 	}
