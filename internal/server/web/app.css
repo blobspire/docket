@@ -637,6 +637,13 @@ a.tl-t:hover, .tl-t a:hover { color: var(--accent); }
   .evidence { grid-template-columns: 1fr; }
 }
 
+/* A small phone: docket, Stash and Timeline fit with two-digit counts. */
+@media (max-width: 400px) {
+  .tabs a { padding: 0 8px; }
+  .tabs .brand { gap: 6px; }
+  .bar-r .ib { width: 34px; }
+}
+
 /* Email: replies that need you, then the digest, at the bottom of the docket. */
 :root { --k-reply: #0f6e7a; --k-reply-bg: #e6f3f4; }
 @media (prefers-color-scheme: dark) { :root { --k-reply: #7fd0d9; --k-reply-bg: #15292c; } }

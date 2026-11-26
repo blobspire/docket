@@ -85,7 +85,7 @@ var tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 		case it.AnsweredAt > 0:
 			at = it.AnsweredAt
 		}
-		// One that aged off the Stash closed, as far as Done goes, then.
+		// One that aged off the Stash closed then.
 		if off := it.StashedAt + store.StashSeconds; it.StashedAt > 0 && off <= time.Now().Unix() && off > at {
 			at = off
 		}
@@ -268,13 +268,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /item/{id}", s.pageItem)
 	mux.HandleFunc("POST /item/{id}/act", s.act)
 	mux.HandleFunc("POST /project/{name}", s.editProject)
-	mux.HandleFunc("GET /done", s.pageDone)
 	mux.HandleFunc("GET /timeline", s.pageTimeline)
 	mux.HandleFunc("GET /stash", s.pageStash)
 	mux.HandleFunc("GET /search", s.pageSearch)
 	mux.HandleFunc("GET /evidence", s.pageEvidence)
 	// The old "Only you" page is gone; old links land on the queue.
 	mux.Handle("GET /checklist", http.RedirectHandler("/", http.StatusMovedPermanently))
+	// So is Done: the timeline keeps what was dealt with, and Search finds the rest.
+	mux.Handle("GET /done", http.RedirectHandler("/timeline", http.StatusMovedPermanently))
 	mux.HandleFunc("GET /leads", s.pageLeads)
 	mux.HandleFunc("GET /email/skipped", s.pageSkipped)
 	mux.HandleFunc("POST /email/check", s.emailCheck)
@@ -626,11 +627,6 @@ func (s *Server) editProject(w http.ResponseWriter, r *http.Request) {
 	}
 	s.st.Bump()
 	http.Redirect(w, r, back, http.StatusSeeOther)
-}
-
-func (s *Server) pageDone(w http.ResponseWriter, r *http.Request) {
-	closed, _ := s.st.RecentlyClosed(time.Now().Add(-7*24*time.Hour).Unix(), 300)
-	s.render(w, "list.html", page{Title: "Done", Nav: "done", Rows: s.rows(ranked(closed), "done", true, nil)})
 }
 
 func (s *Server) pageStash(w http.ResponseWriter, r *http.Request) {

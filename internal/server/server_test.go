@@ -217,7 +217,7 @@ func TestWebQueueAndCrossSiteGuard(t *testing.T) {
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Disk is 95% full") {
 		t.Fatalf("GET /item = %d", rec.Code)
 	}
-	for _, p := range []string{"/health", "/done", "/static/app.js", "/api/version", "/search?q=disk", "/evidence"} {
+	for _, p := range []string{"/health", "/timeline", "/static/app.js", "/api/version", "/search?q=disk", "/evidence"} {
 		rec = httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest("GET", p, nil))
 		if rec.Code != 200 {
@@ -234,6 +234,24 @@ func TestWebQueueAndCrossSiteGuard(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
 	if b := rec.Body.String(); strings.Contains(b, "/checklist") || strings.Contains(b, "Only you") {
 		t.Fatal("the queue still links to the Only you page")
+	}
+	// So does the retired Done page, to the timeline; nothing links to it,
+	// a closed item's page included.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/done", nil))
+	if rec.Code != http.StatusMovedPermanently || rec.Header().Get("Location") != "/timeline" {
+		t.Fatalf("GET /done = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	e.s.st.UpsertItem(store.Item{ID: "dk-dd0ne001", Kind: "issue", Title: "closed one", Project: "w"})
+	if err := e.s.Decide("dk-dd0ne001", Action{Kind: "done"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/", "/item/dk-dd0ne001", "/stash"} {
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", p, nil))
+		if b := rec.Body.String(); rec.Code != 200 || strings.Contains(b, `"/done"`) || strings.Contains(b, "to Done") {
+			t.Fatalf("%s still links to the Done page", p)
+		}
 	}
 
 	form := url.Values{"action": {"done"}}.Encode()

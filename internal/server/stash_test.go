@@ -78,7 +78,7 @@ func TestDoneTellsTheAgentQuietly(t *testing.T) {
 func onPage(e *env, path, id string) bool { return strings.Contains(get(e, path), `data-id="`+id+`"`) }
 
 // Stashing an open item closes it as done (telling its agent, as Done
-// does) and keeps it on the Stash, off the docket and out of Done. Undo
+// does) and keeps it on the Stash, off the docket. Undo
 // brings back exactly what was there, and takes back the note.
 func TestStashAnOpenItem(t *testing.T) {
 	e := newEnv(t, "")
@@ -91,7 +91,7 @@ func TestStashAnOpenItem(t *testing.T) {
 	if it.Status != "done" || it.StashedAt == 0 || len(quietNotes(t, st, it.ID)) != 1 {
 		t.Fatalf("stashed: status %s stashed_at %d notes %d", it.Status, it.StashedAt, len(quietNotes(t, st, it.ID)))
 	}
-	if !onPage(e, "/stash", it.ID) || onPage(e, "/done", it.ID) || onPage(e, "/", it.ID) {
+	if !onPage(e, "/stash", it.ID) || onPage(e, "/", it.ID) {
 		t.Fatal("a stashed item should be on the Stash only")
 	}
 	if !strings.Contains(get(e, "/stash"), "You stashed it") {
@@ -131,13 +131,13 @@ func TestStashAfterDone(t *testing.T) {
 	if it.Status != "done" || it.StashedAt != 0 || it.ResolvedAt == 0 || len(quietNotes(t, st, it.ID)) != 1 {
 		t.Fatalf("after undoing the stash: status %s stashed_at %d resolved %d notes %d", it.Status, it.StashedAt, it.ResolvedAt, len(quietNotes(t, st, it.ID)))
 	}
-	if !onPage(e, "/done", it.ID) {
-		t.Fatal("it isn't back in Done")
+	if onPage(e, "/stash", it.ID) || onPage(e, "/", it.ID) {
+		t.Fatal("undoing the stash should leave it closed, off the Stash")
 	}
 }
 
-// An answered item can be stashed without touching its answer; Remove moves
-// it to Done; Back to docket from the Stash puts a stashed open item back.
+// An answered item can be stashed without touching its answer; Remove closes
+// it; Back to docket from the Stash puts a stashed open item back.
 func TestStashRemoveAndBackToDocket(t *testing.T) {
 	e := newEnv(t, "")
 	st := e.s.st
@@ -158,8 +158,8 @@ func TestStashRemoveAndBackToDocket(t *testing.T) {
 	if err := e.s.Decide("dk-st000003", Action{Kind: "unstash"}); err != nil {
 		t.Fatal(err)
 	}
-	if it, _, _ := st.GetItem("dk-st000003"); it.Status != "done" || it.StashedAt != 0 || !onPage(e, "/done", it.ID) {
-		t.Fatalf("Remove didn't move it to Done: %+v", it)
+	if it, _, _ := st.GetItem("dk-st000003"); it.Status != "done" || it.StashedAt != 0 || onPage(e, "/stash", it.ID) || onPage(e, "/", it.ID) {
+		t.Fatalf("Remove didn't close it off the Stash: %+v", it)
 	}
 
 	st.UpsertItem(store.Item{ID: "dk-st000004", Kind: "review", Title: "ablation", Project: "w"})
@@ -181,16 +181,19 @@ func TestStashRemoveAndBackToDocket(t *testing.T) {
 	}
 }
 
-// After 30 days an item leaves the Stash for Done, by itself.
+// After 30 days an item leaves the Stash, closed, by itself.
 func TestStashLastsThirtyDays(t *testing.T) {
 	e := newEnv(t, "")
 	st := e.s.st
 	st.UpsertItem(store.Item{ID: "dk-st000005", Kind: "review", Title: "old results", Project: "w"})
 	e.s.Decide("dk-st000005", Action{Kind: "stash"})
+	if !strings.Contains(getOK(t, e, "/stash"), `data-id="dk-st000005"`) {
+		t.Fatal("it isn't on the Stash to begin with")
+	}
 	old := time.Now().Add(-31 * 24 * time.Hour).Unix()
 	st.DB.Exec(`UPDATE items SET stashed_at=?, resolved_at=? WHERE id='dk-st000005'`, old, old)
-	if onPage(e, "/stash", "dk-st000005") || !onPage(e, "/done", "dk-st000005") {
-		t.Fatal("a 31-day-old stash should have moved to Done")
+	if strings.Contains(getOK(t, e, "/stash"), `data-id="dk-st000005"`) || strings.Contains(getOK(t, e, "/"), `data-id="dk-st000005"`) {
+		t.Fatal("a 31-day-old stash should have left the Stash, closed")
 	}
 	if strings.Contains(get(e, "/"), `class="tc"`) {
 		t.Error("the nav still counts it on the Stash")

@@ -108,7 +108,7 @@
         const r = new URL(document.referrer);
         if (r.origin === location.origin && !r.pathname.startsWith("/item/")) {
           back.href = r.pathname + r.search;
-          const names = { "/stash": "Stash", "/done": "Done", "/ideas": "Ideas", "/search": "Search", "/brain": "Brain", "/leads": "Leads", "/evidence": "Evidence", "/health": "Health", "/timeline": "Timeline" };
+          const names = { "/stash": "Stash", "/ideas": "Ideas", "/search": "Search", "/brain": "Brain", "/leads": "Leads", "/evidence": "Evidence", "/health": "Health", "/timeline": "Timeline" };
           const q = r.searchParams;
           $("span", back).textContent = r.pathname === "/" ? (q.get("p") || q.get("place") || (q.get("view") === "now" ? "Act now" : "All")) : names[r.pathname] || "Back";
         }
@@ -250,7 +250,7 @@
       }
       case "snooze": return extra.until === "hour" ? "Snoozed for an hour" : "Snoozed until tomorrow, 9:00";
       case "stash": return "Stashed";
-      case "unstash": return "Moved to Done";
+      case "unstash": return "Off the Stash";
       case "reopen": return "Back on your docket";
       case "reclassify": return "Moved";
       case "undo": return "Undone";

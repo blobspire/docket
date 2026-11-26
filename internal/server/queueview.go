@@ -77,7 +77,7 @@ func (s section) WaitKey() string {
 // itemView is one row (or the item sheet): the item and what its row shows.
 type itemView struct {
 	Ranked
-	List        string // docket | stash | done | list (the other pages)
+	List        string // docket | stash | list (the other pages)
 	ShowProject bool
 	Images      []store.Evidence // fetched images, for thumbnails and the viewer
 	Docs        int              // other attachments

@@ -36,7 +36,7 @@ func startAgent(t *testing.T) func(string) string {
 }
 
 // A progress entry is a line on the project's timeline: it never reaches the
-// docket, its badge, a push, the Done page or the agents' list of open items,
+// docket, its badge, a push or the agents' list of open items,
 // but search finds it.
 func TestProgressNeverAsksForAttention(t *testing.T) {
 	e := newEnv(t, "")
@@ -75,9 +75,6 @@ func TestProgressNeverAsksForAttention(t *testing.T) {
 	}
 	if n := len(active(t, e.s.st)); n != 0 {
 		t.Fatalf("%d active items", n)
-	}
-	if closed, _ := e.s.st.RecentlyClosed(0, 50); len(closed) != 0 {
-		t.Fatalf("progress on the Done page: %+v", closed)
 	}
 	if b := getOK(t, e, "/"); strings.Contains(b, `class="bc`) {
 		t.Fatal("progress counted in the badge")

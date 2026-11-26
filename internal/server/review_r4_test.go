@@ -156,16 +156,15 @@ func TestMoveListLeavesOutUnsorted(t *testing.T) {
 	}
 }
 
-// The Done page reopens (undoing a human close, or reopening an agent's)
-// rather than undoing whatever was logged last.
-func TestDonePageOffersReopen(t *testing.T) {
+// A closed item's page reopens it (undoing a human close, or reopening an
+// agent's) rather than undoing whatever was logged last.
+func TestAClosedItemOffersReopen(t *testing.T) {
 	e := newEnv(t, "")
 	st := e.s.st
 	st.UpsertItem(store.Item{ID: "dk-r4d00001", Kind: "issue", Title: "x", Project: "w"})
 	st.SetStatus("dk-r4d00001", "done", "", "")
-	row := rowHTML(t, get(e, "/done"), "dk-r4d00001")
-	if !strings.Contains(row, `data-act="reopen"`) || strings.Contains(row, `data-act="undo"`) {
-		t.Fatalf("Done row actions: %s", row)
+	if d := dockHTML(t, e, "dk-r4d00001"); !strings.Contains(d, `data-act="reopen"`) || strings.Contains(d, `data-act="undo"`) {
+		t.Fatalf("a closed item's dock: %s", d)
 	}
 }
 

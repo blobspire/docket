@@ -110,18 +110,15 @@ func TestQuickActionsEdgeRows(t *testing.T) {
 	if !strings.Contains(rowHTML(t, page, "dk-q0000011"), "Delivered, no reply yet") {
 		t.Error("a delivered answer isn't waiting on the docket")
 	}
-	if onPage(e, "/done", "dk-q0000011") {
-		t.Error("an answer still waiting on its agent is in Done too")
-	}
 	// Once the agent has had it for a day, it leaves the docket.
 	st.DB.Exec(`UPDATE items SET updated_at=? WHERE id='dk-q0000011'`, time.Now().Add(-25*time.Hour).Unix())
-	if strings.Contains(get(e, "/?p=w"), `data-id="dk-q0000011"`) || !onPage(e, "/done", "dk-q0000011") {
-		t.Error("a day-old delivered answer should have moved from the docket to Done")
+	if strings.Contains(get(e, "/?p=w"), `data-id="dk-q0000011"`) {
+		t.Error("a day-old delivered answer should have left the docket")
 	}
 }
 
 // Undoing (or reopening) a rule decision, one click from the toast or the
-// Done page, makes it a proposal again: agents stop getting it, and the
+// closed item's page, makes it a proposal again: agents stop getting it, and the
 // machines are told (the rules version moves).
 func TestUndoingARuleDecisionRetractsIt(t *testing.T) {
 	for _, c := range []struct{ decide, back string }{
@@ -195,9 +192,5 @@ func TestClosedRowHasNoQuickActions(t *testing.T) {
 	d := dockHTML(t, e, "dk-q0000009")
 	if strings.Contains(d, `data-act="done"`) || strings.Contains(d, "data-noise") || !strings.Contains(d, `data-act="reopen"`) || !strings.Contains(d, `data-act="stash"`) {
 		t.Fatalf("a closed item's dock: %s", d)
-	}
-	row := rowHTML(t, get(e, "/done"), "dk-q0000009")
-	if q := quickHTML(row); strings.Contains(q, `data-act="done"`) || !strings.Contains(q, `data-act="reopen"`) {
-		t.Fatalf("a Done row's actions: %s", q)
 	}
 }
