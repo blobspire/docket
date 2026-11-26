@@ -74,6 +74,7 @@ The first version tried to catch every ask: a regex over agents' messages, a tra
 docket is how agents reach the human, not where their work is kept. Sessions run for days and the human can't follow them, so what reaches docket is all they see; but the project owns the record, kept its own way (a repository, results folders, an experiment database with commit hashes), and docket never reads or writes it.
 
 - **The instructions say so.** Agents keep results in the project, file a summary written for the human, and say where the full version lives with `--record` (a path with a commit, or a URL). Neither the filing agent nor a later one can read docket back.
+- **`review` is the results command.** Anything an agent presents for the human to look at is a result, so there is no separate `result` command: `ask`, `task` and `issue` are action items, and `review` is things to see.
 - **docket keeps what it was sent.** Items, their bodies and copies of their evidence stay in the database after Done (Search finds them); they're the human's reading copy, never the source.
 - **Nightly backups.** The server writes a gzipped snapshot of its database (`VACUUM INTO`) to `<data_dir>/backups` after 4:00 each day and keeps `backup_days` of them (default 7; 0 turns them off). They guard against a bad upgrade or a damaged file, not a lost disk. Evidence files aren't copied: they're named by content and never rewritten. To restore one: stop docket, delete `docket.db-wal` and `docket.db-shm` next to the database (a crash can leave them, and they'd be applied to the restored file), then `gunzip -c` the backup over `docket.db` and start docket.
 
@@ -125,6 +126,8 @@ Agents sometimes file as a task something they could do themselves with the huma
 | Stash | Kept on the Stash for 30 days, then closed like any other; an open item is also marked done | As for Done |
 | Snooze | Hidden until tomorrow at 9:00 (or an hour) | Nothing |
 | Ask the agent (an item already dealt with) | Nothing changes; the question shows on the item until the answer is added | The question, right away (waking or resuming it) |
+
+The human triages by scrolling the main list, often on a phone. So the closing actions (Done, Not worth it, Dismiss) sit on every row as well as in the item's dock, and every action refreshes the list in place, with no reload and the scroll position kept. A new action belongs on the row too, not only inside an item.
 
 ## What was learned building it
 
