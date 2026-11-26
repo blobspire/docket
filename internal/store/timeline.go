@@ -8,13 +8,14 @@ import (
 )
 
 // A project's timeline is its history as the human saw it: the results
-// agents sent, the progress they posted, the problems they raised, what the
-// human decided, and what shipped. It's built from what docket already
+// agents sent, what they asked of the human, the progress they posted, the
+// problems they raised, what the human decided, and what shipped. It's built from what docket already
 // keeps; nothing is copied for it.
 
 // Timeline entry kinds, which are also its filters.
 const (
 	TLResult   = "result"
+	TLAction   = "action"
 	TLProgress = "progress"
 	TLIssue    = "issue"
 	TLDecision = "decision"
@@ -22,13 +23,13 @@ const (
 )
 
 // TimelineFilters are the timeline's filters, in the order its chips show.
-var TimelineFilters = []string{TLResult, TLProgress, TLDecision, TLIssue, TLShipped}
+var TimelineFilters = []string{TLResult, TLAction, TLProgress, TLDecision, TLIssue, TLShipped}
 
 // TimelineEntry is one moment on a project's timeline.
 type TimelineEntry struct {
 	At       int64
 	Kind     string    // TLResult …
-	Item     *Item     // a result, progress entry or issue; for a decision, the item decided on
+	Item     *Item     // a result, action item, progress entry or issue; for a decision, the item decided on
 	Decision *Decision // what the human did (TLDecision)
 	Idea     *Idea     // what shipped (TLShipped)
 }
@@ -36,6 +37,7 @@ type TimelineEntry struct {
 // Kinds of items on the timeline, and the decisions it shows.
 const (
 	tlResultKinds = `'review','fyi'`
+	tlActionKinds = `'ask','approval','human_task'`
 	tlIssueKinds  = `'issue','blocker'`
 	tlDecisions   = `'approve','decline','choose','answer'`
 )
@@ -95,6 +97,13 @@ func (s *Store) timeline(project, filter, op string, t int64, limit int) ([]Time
 	// later; everything else, done or still waiting, is.
 	if want(TLResult) {
 		if err := items(TLResult, `kind IN (`+tlResultKinds+`) AND status<>'dismissed'`); err != nil {
+			return nil, err
+		}
+	}
+	// Action items stay too, done or still open, so a past one is easy to
+	// find again; one the human dismissed didn't matter.
+	if want(TLAction) {
+		if err := items(TLAction, `kind IN (`+tlActionKinds+`) AND status<>'dismissed' AND source<>'email'`); err != nil {
 			return nil, err
 		}
 	}
